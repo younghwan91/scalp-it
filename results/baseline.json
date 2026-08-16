@@ -25,5 +25,71 @@
     "1": 0.01943270158407388,
     "2": 0.006314562445447769,
     "3": -0.010801700278841527
+  },
+  "fold_null": [
+    {
+      "fold": 0,
+      "n_dates": 549,
+      "strategy_mean": 0.008812162763212415,
+      "null_mean": 0.008748572605351073,
+      "percentile": 90.0,
+      "beats_null": false
+    },
+    {
+      "fold": 1,
+      "n_dates": 549,
+      "strategy_mean": 0.01943270158407388,
+      "null_mean": 0.019421782474039948,
+      "percentile": 51.5,
+      "beats_null": false
+    },
+    {
+      "fold": 2,
+      "n_dates": 549,
+      "strategy_mean": 0.006314562445447769,
+      "null_mean": 0.006240517507245489,
+      "percentile": 58.5,
+      "beats_null": false
+    },
+    {
+      "fold": 3,
+      "n_dates": 549,
+      "strategy_mean": -0.010801700278841527,
+      "null_mean": -0.032637055993566644,
+      "percentile": 100.0,
+      "beats_null": true
+    }
+  ],
+  "untouched_window": {
+    "strategy_mean": -0.010801700278841527,
+    "null_mean": -0.032637055993566644,
+    "null_p95": -0.029080407498855,
+    "percentile": 100.0,
+    "net_mean": -0.015401700278841527,
+    "verdict": "FAIL",
+    "n_dates": 549,
+    "start": "2024-03-14",
+    "end": "2026-06-18"
+  },
+  "placebo": {
+    "strategy_mean": 0.0004141260196247421,
+    "null_mean": 0.0004891207107863767,
+    "null_p95": 0.0014641733921800255,
+    "percentile": 47.5,
+    "net_mean": -0.004185873980375258,
+    "verdict": "FAIL"
+  },
+  "overall_verdict": {
+    "checks": {
+      "전체_널_대비": true,
+      "모든_폴드_널_대비": false,
+      "손_안_댄_최종창": false,
+      "플라시보_FAIL": true
+    },
+    "verdict": "FAIL",
+    "failed": [
+      "모든_폴드_널_대비",
+      "손_안_댄_최종창"
+    ]
   }
 }

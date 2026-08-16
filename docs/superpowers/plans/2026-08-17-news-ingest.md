@@ -1755,7 +1755,7 @@ CREATE TABLE IF NOT EXISTS daily_news (
     adv              REAL,
     tv_ratio         REAL,
     hotness          REAL,
-    rank             INTEGER,
+    "rank"           INTEGER,
     in_ops           INTEGER,
     primary_news_id  TEXT,
     PRIMARY KEY (date, code)
@@ -1833,7 +1833,7 @@ def replace_daily_news(conn: sqlite3.Connection, ranked: pd.DataFrame) -> int:
     conn.executemany(
         "INSERT INTO daily_news "
         "(date, code, n_articles, n_outlets, article_ratio, adv, tv_ratio, "
-        " hotness, rank, in_ops, primary_news_id) "
+        " hotness, \"rank\", in_ops, primary_news_id) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         rows,
     )
@@ -1851,12 +1851,12 @@ def load_daily_news(
     """일별 핫함 테이블을 읽는다. ``ops_only`` 면 운영 상위 10건만."""
     sql = (
         "SELECT date, code, n_articles, n_outlets, article_ratio, adv, tv_ratio, "
-        "hotness, rank, in_ops, primary_news_id FROM daily_news "
+        "hotness, \"rank\", in_ops, primary_news_id FROM daily_news "
         "WHERE date >= ? AND date <= ?"
     )
     if ops_only:
         sql += " AND in_ops = 1"
-    sql += " ORDER BY date, rank"
+    sql += " ORDER BY date, \"rank\""
     rows = conn.execute(sql, (start, end)).fetchall()
     df = pd.DataFrame(rows, columns=_DAILY_COLUMNS)
     df["date"] = pd.to_datetime(df["date"])
@@ -1884,6 +1884,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+
+import pandas as pd
 
 from .adapters.db import connect, load_prices, load_stock_master
 from .events import add_liquidity_stats
@@ -1917,9 +1919,7 @@ def main(argv: list[str] | None = None) -> int:
     source = connect(args.db)
     master = load_stock_master(source)
     # adv 는 직전 20거래일 평균이라 앞쪽 여유가 필요하다. 60 달력일이면 충분하다.
-    price_start = (articles["date"].min() - __import__("pandas").Timedelta(days=60)).strftime(
-        "%Y-%m-%d"
-    )
+    price_start = (articles["date"].min() - pd.Timedelta(days=60)).strftime("%Y-%m-%d")
     prices = load_prices(source, price_start, end)
     print(f"종목 마스터 {len(master):,} · 가격 {len(prices):,} 행", file=sys.stderr)
 
@@ -1955,7 +1955,7 @@ if __name__ == "__main__":
 - [ ] **Step 6: 전체 테스트 통과 확인**
 
 Run: `uv run pytest -v`
-Expected: 27 (계획 1) + 62 (계획 2) = 89 passed
+Expected: 27 (계획 1) + 67 (계획 2) = 94 passed
 
 - [ ] **Step 7: 실 데이터로 파이프라인 실행**
 
@@ -1976,7 +1976,7 @@ conn = sqlite3.connect('data/news.db')
 q = '''select d.date, d.code, s.title, d.n_articles, d.n_outlets,
               round(d.article_ratio,1) ar, round(d.tv_ratio,1) tv, round(d.hotness,2) h
        from daily_news d join articles s on s.news_id = d.primary_news_id
-       where d.in_ops = 1 order by d.date desc, d.rank limit 30'''
+       where d.in_ops = 1 order by d.date desc, d.\"rank\" limit 30'''
 pd.set_option('display.width', 200, 'display.max_colwidth', 45)
 print(pd.read_sql(q, conn))
 print()
