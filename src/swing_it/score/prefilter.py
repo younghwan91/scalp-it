@@ -90,7 +90,7 @@ def prefilter_summary(filtered: pd.DataFrame) -> dict[str, int]:
     """필터 결과를 리포트용 카운트로 접는다."""
     counts = filtered["drop_reason"].value_counts()
     summary = {
-        "n_input": int(len(filtered)),
+        "n_input": len(filtered),
         "n_kept": int(filtered["keep"].sum()),
     }
     for reason in DROP_REASONS:

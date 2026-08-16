@@ -10,7 +10,8 @@ API 키는 환경변수로만 받는다. 어떤 경로로도 로그·repr 에 �
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Mapping, Protocol, runtime_checkable
+from collections.abc import Callable, Mapping
+from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
