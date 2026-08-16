@@ -1,0 +1,94 @@
+{
+  "strategy_mean": 0.022207550470811726,
+  "null_mean": 0.00041122449764821617,
+  "null_p95": 0.006901953583838742,
+  "percentile": 100.0,
+  "net_mean": 0.017607550470811726,
+  "verdict": "PASS",
+  "n_events": 25559,
+  "n_codes": 1538,
+  "date_range": [
+    "2017-01-06",
+    "2026-06-18"
+  ],
+  "config": {
+    "start": "2016-09-09",
+    "end": "2026-08-14",
+    "adv_floor": 5000.0,
+    "tv_multiple": 3.0,
+    "hold_end": 40,
+    "top_n": 2,
+    "folds": 4
+  },
+  "per_fold": {
+    "0": 0.01667199890898355,
+    "1": 0.016094686511602136,
+    "2": 0.015486306752441175,
+    "3": 0.040577209710220045
+  },
+  "fold_null": [
+    {
+      "fold": 0,
+      "n_dates": 549,
+      "strategy_mean": 0.01667199890898355,
+      "null_mean": 0.008300706557928585,
+      "percentile": 97.0,
+      "beats_null": true
+    },
+    {
+      "fold": 1,
+      "n_dates": 549,
+      "strategy_mean": 0.016094686511602136,
+      "null_mean": 0.01967397986348532,
+      "percentile": 28.499999999999996,
+      "beats_null": false
+    },
+    {
+      "fold": 2,
+      "n_dates": 549,
+      "strategy_mean": 0.015486306752441175,
+      "null_mean": 0.007355755487833924,
+      "percentile": 86.5,
+      "beats_null": false
+    },
+    {
+      "fold": 3,
+      "n_dates": 549,
+      "strategy_mean": 0.040577209710220045,
+      "null_mean": -0.0318979823609963,
+      "percentile": 100.0,
+      "beats_null": true
+    }
+  ],
+  "untouched_window": {
+    "strategy_mean": 0.040577209710220045,
+    "null_mean": -0.0318979823609963,
+    "null_p95": -0.015882554374709496,
+    "percentile": 100.0,
+    "net_mean": 0.035977209710220046,
+    "verdict": "PASS",
+    "n_dates": 549,
+    "start": "2024-03-14",
+    "end": "2026-06-18"
+  },
+  "placebo": {
+    "strategy_mean": -0.00013187248939578375,
+    "null_mean": 0.0004018935992247821,
+    "null_p95": 0.005961172419529457,
+    "percentile": 41.5,
+    "net_mean": -0.004731872489395783,
+    "verdict": "FAIL"
+  },
+  "overall_verdict": {
+    "checks": {
+      "전체_널_대비": true,
+      "모든_폴드_널_대비": false,
+      "손_안_댄_최종창": true,
+      "플라시보_FAIL": true
+    },
+    "verdict": "FAIL",
+    "failed": [
+      "모든_폴드_널_대비"
+    ]
+  }
+}
