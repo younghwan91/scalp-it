@@ -15,8 +15,8 @@
 |---|---|
 | 설계 스펙 | ✅ [스펙](docs/superpowers/specs/2026-08-17-swing-it-design.md) |
 | 계획 1 — 수급 베이스라인 (①층) | ✅ 구현·실행 완료 · **판정 FAIL** |
-| 계획 2 — 뉴스 인제스트 | 📄 [계획](docs/superpowers/plans/2026-08-17-news-ingest.md) · 빅카인즈 파일 대기 |
-| 계획 3 — LLM 피처 추출 | 📄 [계획](docs/superpowers/plans/2026-08-17-llm-features.md) · API 키 대기 |
+| 계획 2 — 뉴스 인제스트 | ◐ [계획](docs/superpowers/plans/2026-08-17-news-ingest.md) · Task 3·5·6 구현 · 빅카인즈 파일 대기 |
+| 계획 3 — LLM 피처 추출 | ◐ [계획](docs/superpowers/plans/2026-08-17-llm-features.md) · Task 1~6·8 구현 · API 키 대기 |
 | 계획 4 — 층별 비교 + 근거 카드 | 📄 [계획](docs/superpowers/plans/2026-08-17-layers-and-report.md) |
 
 **베이스라인 판정:** 수급 단독으로는 거래대금 급증 이벤트의 D+20~40 초과수익을 예측하지
@@ -32,10 +32,14 @@
 
 ```bash
 uv sync --extra dev
-uv run pytest                      # 37 passed
+uv run pytest                      # 151 passed
 
 export $(grep -v '^#' ../kr-quant/.env | xargs)   # KR_QUANT_DB
 uv run swing-baseline              # 베이스라인 판정 → results/baseline.json
+
+# LLM 배선 확인 (API 키 불필요)
+uv run swing-score --provider fake --news-db <경로> --cache-db <경로> \
+  --start 2026-08-01 --end 2026-08-14
 ```
 
 ## 관련 레포
