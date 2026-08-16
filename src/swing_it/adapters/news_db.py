@@ -59,3 +59,60 @@ def load_articles(conn: sqlite3.Connection, start: str, end: str) -> pd.DataFram
     for column in ("article_id", "code", "press", "title", "body200", "keywords"):
         frame[column] = frame[column].fillna("").astype(str)
     return frame
+
+
+CARD_COLUMNS: list[str] = [
+    "date", "code", "hotness_rank", "hotness",
+    "article_id", "press", "title", "body200", "url",
+]
+
+_SELECT_CARDS = """
+select d.date, d.code, d."rank", d.hotness,
+       a.news_id, a.outlet, a.title, a.body, a.url
+from daily_news d
+left join articles a on a.news_id = d.primary_news_id
+where d.date >= ? and d.date <= ?
+"""
+
+
+def load_article_cards(
+    conn: sqlite3.Connection,
+    start: str,
+    end: str,
+    *,
+    ops_only: bool = False,
+) -> pd.DataFrame:
+    """근거 카드용 — 일별 핫함에 그날의 대표 기사를 붙여 읽는다.
+
+    ``daily_news.primary_news_id → articles.news_id`` 를 LEFT JOIN 한다.
+    ``articles`` 에는 ``code`` 가 없다 — 기사 1건이 종목 N개에 매핑되므로
+    종목은 ``daily_news`` 를 거쳐야 나온다. 근거 카드는 (종목, 날짜)당 대표
+    기사 한 건이면 되므로 이 조인이 맞다.
+
+    대표 기사가 없는 행도 남긴다. 핫함 수치만으로도 카드에 쓸 값이 있고,
+    조인 실패로 후보가 조용히 사라지는 것이 더 나쁘다.
+
+    집계 수치(``n_articles`` 등)는 돌려주지 않는다. ②층 피처로 후보 행에
+    이미 실려 있고, 같은 값을 두 경로로 들여오면 어긋날 여지만 생긴다.
+
+    ``rank`` 는 SQL 예약어이므로 ``"rank"`` 로 인용하고, 반환할 때
+    ``hotness_rank`` 로 개명한다 (``features.news`` 와 같은 이름).
+
+    이 모듈의 기존 ``load_articles`` 와 컬럼 계약을 맞춘다 —
+    ``news_id``→``article_id``, ``outlet``→``press``, ``body``→``body200``.
+    한 어댑터 안에서 두 함수가 다른 이름을 쓰면 호출부가 헷갈린다.
+    ``url`` 은 ``NEWS_COLUMNS`` 에 없지만 근거 카드 링크에 필요해 여기서만 더 뽑는다.
+    """
+    sql = _SELECT_CARDS + (" and d.in_ops = 1" if ops_only else "")
+    sql += ' order by d.date, d."rank"'
+
+    rows = conn.execute(sql, (start, end)).fetchall()
+    raw = pd.DataFrame(rows, columns=CARD_COLUMNS)
+    if raw.empty:
+        return pd.DataFrame(columns=CARD_COLUMNS)
+
+    raw["date"] = pd.to_datetime(raw["date"])
+    raw["code"] = raw["code"].astype(str)
+    for col in ("hotness_rank", "hotness"):
+        raw[col] = pd.to_numeric(raw[col], errors="coerce")
+    return raw[CARD_COLUMNS].reset_index(drop=True)
