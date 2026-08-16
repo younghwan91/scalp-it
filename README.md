@@ -9,9 +9,34 @@
 > ML 이 D+20~40 초과수익으로 학습하고 → kr-quant 게이트가 심판하고 →
 > 통과한 것만 후보 리스트로 나온다.
 
-**상태:** 설계 단계. 구현 전.
+## 상태
 
-- 설계 스펙: [`docs/superpowers/specs/2026-08-17-swing-it-design.md`](docs/superpowers/specs/2026-08-17-swing-it-design.md)
+| 단계 | 상태 |
+|---|---|
+| 설계 스펙 | ✅ [스펙](docs/superpowers/specs/2026-08-17-swing-it-design.md) |
+| 계획 1 — 수급 베이스라인 (①층) | ✅ 구현·실행 완료 · **판정 FAIL** |
+| 계획 2 — 뉴스 인제스트 | 📄 [계획](docs/superpowers/plans/2026-08-17-news-ingest.md) · 빅카인즈 파일 대기 |
+| 계획 3 — LLM 피처 추출 | 📄 [계획](docs/superpowers/plans/2026-08-17-llm-features.md) · API 키 대기 |
+| 계획 4 — 층별 비교 + 근거 카드 | 📄 [계획](docs/superpowers/plans/2026-08-17-layers-and-report.md) |
+
+**베이스라인 판정:** 수급 단독으로는 거래대금 급증 이벤트의 D+20~40 초과수익을 예측하지
+못한다. 3/4 폴드에서 랜덤 진입과 구별되지 않는다.
+자세히 → [`docs/research/2026-08-17-baseline-verdict.md`](docs/research/2026-08-17-baseline-verdict.md)
+
+거래대금 급증만으로는 40일 뒤가 갈리지 않는다는 것은 **무엇 때문에 급증했는가**가 필요하다는
+뜻이다. 이 프로젝트가 뉴스로 가는 이유가 데이터로 확인됐다.
+
+다음에 할 일 → [`docs/HANDOFF.md`](docs/HANDOFF.md)
+
+## 실행
+
+```bash
+uv sync --extra dev
+uv run pytest                      # 37 passed
+
+export $(grep -v '^#' ../kr-quant/.env | xargs)   # KR_QUANT_DB
+uv run swing-baseline              # 베이스라인 판정 → results/baseline.json
+```
 
 ## 관련 레포
 

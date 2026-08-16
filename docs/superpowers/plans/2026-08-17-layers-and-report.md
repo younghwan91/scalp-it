@@ -476,8 +476,11 @@ def _unlabelled_base(
     df = events.merge(supply, on=["code", "date"], how="left")
     df = df.merge(labels, on=["code", "date"], how="left")
 
-    # 진입가가 아직 없는 행(마지막 거래일 이벤트)은 종가로 대체해 스케일을 계산한다.
-    entry = df["entry_price"].fillna(df["adv"] * 0 + df["entry_price"].median())
+    # 진입가가 아직 없는 행(달력 마지막 날 이벤트)은 이벤트일 종가로 대신한다.
+    # 스케일 분모로만 쓰이므로 근사로 충분하고, 라벨에는 영향이 없다.
+    close = prices[["code", "date", "close"]]
+    df = df.merge(close, on=["code", "date"], how="left")
+    entry = df["entry_price"].fillna(df["close"])
     shares_capacity = (df["adv"] * 1e6) / entry
     for scaled, raw in (
         ("smart_money_net_5d_scaled", "smart_money_net_5d"),
@@ -1075,10 +1078,11 @@ def compare_layers(
         for prev, cur in zip(names, names[1:])
     ]
 
+    has_llm_layer = "supply_news_llm" in spec and "supply_news" in spec
     return {
         "rows": rows,
         "deltas": deltas,
-        "llm": llm_verdict(rows, deltas),
+        "llm": llm_verdict(rows, deltas) if has_llm_layer else None,
         "sample": {
             "n_rows": int(len(ds)),
             "n_codes": int(ds["code"].nunique()),
@@ -1251,7 +1255,6 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
 import pandas as pd
 
 PEAD_SHARPE: float = 0.80
@@ -1319,23 +1322,20 @@ __all__ = [
     "overlap_stats",
     "pead_benchmark",
 ]
-
-
-def _unused(_: np.ndarray) -> None:  # pragma: no cover
-    """numpy 는 타입 힌트·향후 확장용으로만 임포트돼 있다."""
 ```
 
-> 마지막 `_unused` 는 두지 말고, `numpy` 임포트가 실제로 필요 없으면 `import numpy as np` 줄을 지워라. ruff 가 `F401` 로 잡는다. 위 구현은 `math` 만 쓰므로 **`numpy` 임포트와 `_unused` 를 함께 삭제**하고 커밋한다.
+이 모듈은 `math` 만 쓴다. `numpy` 를 임포트하지 마라 — ruff 가 `F401` 로 잡는다.
+(테스트 쪽은 `numpy` 를 쓰므로 거기서는 임포트한다.)
 
-- [ ] **Step 4: `numpy` 임포트와 `_unused` 삭제 후 린트**
-
-Run: `uv run ruff check src/swing_it/validate/pead.py`
-Expected: `All checks passed!`
-
-- [ ] **Step 5: 테스트 통과 확인**
+- [ ] **Step 4: 테스트 통과 확인**
 
 Run: `uv run pytest tests/test_validate_pead.py -v`
 Expected: 9 passed
+
+- [ ] **Step 5: 린트**
+
+Run: `uv run ruff check src/swing_it/validate/pead.py`
+Expected: `All checks passed!`
 
 - [ ] **Step 6: 커밋**
 

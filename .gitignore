@@ -23,3 +23,6 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+
+# 빅카인즈 원본 다운로드 (재배포 금지)
+data/bigkinds/
