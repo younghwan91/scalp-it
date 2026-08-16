@@ -1,6 +1,7 @@
 import json
 import sqlite3
 
+import pandas as pd
 import pytest
 
 from swing_it.score.cli import main
@@ -128,3 +129,22 @@ def test_report_contains_no_article_text(workspace):
     blob = json.dumps(report, ensure_ascii=False)
     assert "삼성전자가 미국 A사와" not in blob
     assert "n1" not in blob
+
+
+def test_price_lookback_start_precedes_start_by_more_than_the_window():
+    """이벤트 판정용 가격은 start 보다 앞에서 읽어야 한다.
+
+    회귀 방지: ``adv`` 는 직전 ``event_window`` **거래일** 평균이고 ``min_periods``
+    가 창 크기와 같다. start 부터만 읽으면 창이 끝까지 안 차 이벤트가 0 이 되고,
+    모든 기사가 ``no_volume_event`` 로 조용히 탈락한다. 실 DB 스모크에서
+    31배 급증일(001210 / 2026-08-14)이 탈락하며 발견됐다.
+    """
+    from swing_it.score.cli import price_lookback_start
+
+    start = pd.Timestamp("2026-08-01")
+    got = pd.Timestamp(price_lookback_start("2026-08-01", 20))
+    # 거래일 20일을 덮으려면 달력일로 그보다 훨씬 앞서야 한다
+    assert (start - got).days >= 20 * 2
+    # 창 크기가 커지면 더 앞당겨진다
+    wider = pd.Timestamp(price_lookback_start("2026-08-01", 60))
+    assert wider < got

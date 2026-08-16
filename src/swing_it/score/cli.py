@@ -12,6 +12,8 @@ import os
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 from ..adapters.db import connect, load_prices
 from ..adapters.news_db import connect_news, load_articles
 from ..events import extract_events
@@ -20,6 +22,19 @@ from .cache import open_cache
 from .prefilter import prefilter_articles, prefilter_summary
 from .prompt import PROMPT_VERSION
 from .provider import provider_from_env
+
+
+def price_lookback_start(start: str, event_window: int) -> str:
+    """이벤트 판정용 가격을 얼마나 앞당겨 읽을지 정한다.
+
+    ``extract_events`` 의 ``adv`` 는 직전 ``event_window`` **거래일** 평균이고
+    ``min_periods`` 가 창 크기와 같아 창이 안 차면 전부 ``NaN`` 이 된다.
+    달력일은 주말·공휴일 때문에 거래일보다 성기므로 두 배 + 14일을 앞당긴다
+    (설날·추석 연휴를 낀 최악의 경우도 덮는다).
+    """
+    return (
+        pd.Timestamp(start) - pd.Timedelta(days=event_window * 2 + 14)
+    ).strftime("%Y-%m-%d")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -58,7 +73,11 @@ def main(argv: list[str] | None = None) -> int:
     provider = provider_from_env(env)
 
     articles = load_articles(connect_news(args.news_db), args.start, args.end)
-    prices = load_prices(connect(args.db), args.start, args.end)
+    # 이벤트 판정은 직전 event_window 거래일 평균이 필요하다. start 부터만 읽으면
+    # 롤링 창이 끝까지 안 차서 이벤트가 0 이 되고, 모든 기사가 no_volume_event 로
+    # 조용히 탈락한다. 휴장일을 감안해 넉넉히 앞당겨 읽는다.
+    price_start = price_lookback_start(args.start, args.event_window)
+    prices = load_prices(connect(args.db), price_start, args.end)
     events = extract_events(
         prices,
         adv_floor=args.adv_floor,
