@@ -14,6 +14,8 @@ dependencies = [
     "pandas>=2.0",
     "numpy>=1.24",
     "scikit-learn>=1.3",
+    "openpyxl>=3.1",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +24,8 @@ dev = ["pytest>=8.0", "ruff==0.16.2", "psycopg2-binary>=2.9"]
 
 [project.scripts]
 swing-baseline = "swing_it.cli:main"
+swing-news = "swing_it.cli_news:main"
+swing-score = "swing_it.score.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/swing_it"]
