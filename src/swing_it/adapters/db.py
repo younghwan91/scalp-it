@@ -67,3 +67,31 @@ def load_supply_demand(conn: Any, start: str, end: str) -> pd.DataFrame:
         f"from supply_demand where date >= {ph} and date <= {ph} order by code, date"
     )
     return _query(conn, sql, (start, end), _SUPPLY_COLUMNS)
+
+
+_MASTER_COLUMNS = ["code", "name", "market", "sector", "last_trade_date"]
+
+
+def load_stock_master(conn: Any) -> pd.DataFrame:
+    """상장·폐지 종목을 합친 종목 마스터.
+
+    폐지 종목을 포함하는 이유는 생존편향이다 (스펙 §11). 과거 기사에 나오는
+    회사 중 상당수는 지금 상장돼 있지 않고, 그들을 빼면 표본이
+    '살아남은 회사' 쪽으로 기운다.
+
+    ``last_trade_date`` 가 ``NaT`` 이면 현재 상장 중이라는 뜻이다.
+    """
+    sql = (
+        "select code, name, market, sector, null as last_trade_date from stocks "
+        "union all "
+        "select code, name, market, null as sector, last_trade_date from delisted_stocks"
+    )
+    cur = conn.cursor()
+    cur.execute(sql)
+    df = pd.DataFrame(cur.fetchall(), columns=_MASTER_COLUMNS)
+    cur.close()
+    df["code"] = df["code"].astype(str).str.strip()
+    df["name"] = df["name"].fillna("").astype(str).str.strip()
+    df["last_trade_date"] = pd.to_datetime(df["last_trade_date"], errors="coerce")
+    df = df[df["code"] != ""].drop_duplicates(subset="code", keep="first")
+    return df.sort_values("code").reset_index(drop=True)
