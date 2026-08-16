@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--adv-floor", type=float, default=5000.0)
     parser.add_argument("--tv-multiple", type=float, default=3.0)
     parser.add_argument("--hold-end", type=int, default=40)
-    parser.add_argument("--top-n", type=int, default=15)
+    parser.add_argument("--top-n", type=int, default=2)
     parser.add_argument("--folds", type=int, default=4)
     parser.add_argument("--trials", type=int, default=200)
     parser.add_argument("--boot", type=int, default=2000)
@@ -95,8 +95,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-md", default="results/layers.md")
     args = parser.parse_args(argv)
 
-    if args.top_n < 15:
-        parser.error("top_n 하한은 15 다 (스펙 §2). 집중은 이미 죽은 영역이다.")
+    # 스펙 §2 의 "동시 보유 15종목 이상"은 **동시 보유** 요건이지 날짜당 종목 수가
+    # 아니다. 보유가 hold_end 거래일이므로 동시 보유 ≈ top_n × hold_end 다.
+    # 이것을 top_n >= 15 로 구현하면 하루 후보(중앙값 8건)보다 많이 골라
+    # selection_ratio 가 1.0 이 되고, 전략이 정의상 랜덤 널과 같아진다.
+    # 첫 베이스라인 측정이 정확히 그렇게 망가졌다.
+    # → docs/research/2026-08-17-topn-preregistration.md
+    concurrent = args.top_n * args.hold_end
+    if concurrent < 15:
+        parser.error(
+            f"동시 보유가 {concurrent} 종목뿐이다 (top_n {args.top_n} × 보유 {args.hold_end}일). "
+            "스펙 §2 는 15 이상을 요구한다 — 집중은 이미 죽은 영역이다."
+        )
+    if args.top_n < 1:
+        parser.error("top_n 은 1 이상이어야 한다.")
     if args.tv_multiple > 3.0:
         parser.error(
             "tv_multiple 을 3.0 초과로 올리지 마라. 풀을 좁히는 것은 뉴스 축의 역할이다 "

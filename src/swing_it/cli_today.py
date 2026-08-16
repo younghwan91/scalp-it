@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--layers-json", default="results/layers.json")
     parser.add_argument("--tv-multiple", type=float, default=3.0)
     parser.add_argument("--adv-floor", type=float, default=5000.0)
-    parser.add_argument("--top-n", type=int, default=15)
+    parser.add_argument("--top-n", type=int, default=2)
     parser.add_argument("--hold-end", type=int, default=40)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--log-path", default="data/forward_log.jsonl")

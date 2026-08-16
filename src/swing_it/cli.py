@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--adv-floor", type=float, default=5000.0)
     parser.add_argument("--tv-multiple", type=float, default=3.0)
     parser.add_argument("--hold-end", type=int, default=40)
-    parser.add_argument("--top-n", type=int, default=15)
+    parser.add_argument("--top-n", type=int, default=2)
     parser.add_argument("--folds", type=int, default=4)
     parser.add_argument("--out", default="results/baseline.json")
     args = parser.parse_args(argv)

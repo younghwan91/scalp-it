@@ -26,6 +26,8 @@ dev = ["pytest>=8.0", "ruff==0.16.2", "psycopg2-binary>=2.9"]
 swing-baseline = "swing_it.cli:main"
 swing-news = "swing_it.cli_news:main"
 swing-score = "swing_it.score.cli:main"
+swing-layers = "swing_it.cli_layers:main"
+swing-today = "swing_it.cli_today:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/swing_it"]
