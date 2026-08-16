@@ -31,7 +31,17 @@
 | `stocks` | `code, name, market, sector, kind` | 2,641 (현재 상장) |
 | `delisted_stocks` | `code, name, market, last_trade_date, naver_checked` | 4,162 |
 
-`market` 값은 `거래소` / `코스닥`. `last_trade_date` 는 `text` 타입이며 폐지 종목에만 있다. 현재 상장 종목에는 상장일 컬럼이 **없으므로**, 상장 이전 구간의 오매핑은 이름 규칙이 아니라 가격 데이터 조인으로 걸러낸다(그날 `daily_bars_adjusted` 행이 없으면 유동성 하한에서 탈락한다).
+`market` 값은 `거래소` / `코스닥`.
+
+> **구현 중 정정 (2026-08-17).** `last_trade_date` 로 상장 여부를 판정하면 안 된다.
+> 실 DB 스모크 결과 `delisted_stocks` 4,162 건 중 **3,693 건(89%)이 이 값이 NULL** 이다.
+> 날짜 유무로 판정하면 폐지 종목 대부분을 상장으로 오인해, 생존편향을 막으려고
+> 폐지 종목을 넣어놓고 정작 그 판정이 틀리게 된다. `load_stock_master` 는
+> 출처 테이블 기준 `is_delisted: bool` 을 함께 돌려주며, **Task 4 의 매핑은 이 플래그를 쓴다.**
+> 같은 코드가 양쪽에 있으면(17 건) 상장 쪽을 남긴다.
+> 확인된 규모: 마스터 6,786 = 상장 2,641 + 폐지 4,145.
+
+`last_trade_date` 는 `text` 타입이며 값이 있는 폐지 종목(452 건)에서만 참고값으로 쓴다. 현재 상장 종목에는 상장일 컬럼이 **없으므로**, 상장 이전 구간의 오매핑은 이름 규칙이 아니라 가격 데이터 조인으로 걸러낸다(그날 `daily_bars_adjusted` 행이 없으면 유동성 하한에서 탈락한다).
 
 ## 빅카인즈 다운로드 절차 (사람이 하는 부분)
 
@@ -548,7 +558,7 @@ git commit -m "feat(news): 빅카인즈 엑셀 파서 — 본문 200자 절단·
 **Interfaces:**
 - Consumes: `adapters.db.connect(dsn: str | None = None)` (계획 1 Task 1)
 - Produces:
-  - `load_stock_master(conn) -> pd.DataFrame` — 컬럼 `[code, name, market, sector, last_trade_date]`. `stocks` + `delisted_stocks` 를 합친다. 현재 상장 종목의 `last_trade_date` 는 `NaT`, 폐지 종목의 `sector` 는 `None`. `last_trade_date` 는 `datetime64[ns]`
+  - `load_stock_master(conn) -> pd.DataFrame` — 컬럼 `[code, name, market, sector, last_trade_date, is_delisted]`. `stocks` + `delisted_stocks` 를 합친다. 폐지 종목의 `sector` 는 `None`, `last_trade_date` 는 `datetime64[ns]`. **상장 여부는 `is_delisted` 로만 판정한다** — 위 정정 참고. *(이 태스크는 구현 완료됨)*
 
 생존편향 대응이다(스펙 §11). 폐지 종목을 빼면 과거 기사의 상당수가 매핑 실패로 사라지고, 남은 표본이 "살아남은 회사" 쪽으로 기운다.
 
