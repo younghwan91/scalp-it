@@ -10,7 +10,23 @@ from pathlib import Path
 from .adapters.db import connect, load_prices, load_supply_demand
 from .dataset import build_dataset
 from .model.baseline import portfolio_returns, walk_forward_predict
+from .validate.diagnostics import fold_null_table, placebo_shuffle, untouched_window
 from .validate.gate import gate_report
+
+
+def _overall_verdict(report: dict) -> dict:
+    """전체 PASS 하나로 승격하지 않는다. 네 조건을 모두 요구한다."""
+    checks = {
+        "전체_널_대비": report["verdict"] == "PASS",
+        "모든_폴드_널_대비": all(row["beats_null"] for row in report["fold_null"]),
+        "손_안_댄_최종창": report["untouched_window"]["verdict"] == "PASS",
+        "플라시보_FAIL": report["placebo"]["verdict"] == "FAIL",
+    }
+    return {
+        "checks": checks,
+        "verdict": "PASS" if all(checks.values()) else "FAIL",
+        "failed": [name for name, ok in checks.items() if not ok],
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -61,6 +77,14 @@ def main(argv: list[str] | None = None) -> int:
         int(fold): float(portfolio_returns(group, top_n=args.top_n)["mean_excess"].mean())
         for fold, group in pred.groupby("fold")
     }
+
+    # 전체 평균이 숨기는 것을 드러낸다 — 폴드별 널, 손 안 댄 최종창, 플라시보.
+    report["fold_null"] = fold_null_table(pred, top_n=args.top_n).to_dict("records")
+    report["untouched_window"] = untouched_window(pred, top_n=args.top_n)
+    report["placebo"] = gate_report(placebo_shuffle(pred), top_n=args.top_n)
+
+    # 최종 판정은 셋을 모두 요구한다. 전체 PASS 하나로는 승격하지 않는다.
+    report["overall_verdict"] = _overall_verdict(report)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
