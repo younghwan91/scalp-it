@@ -26,3 +26,6 @@ venv/
 
 # 빅카인즈 원본 다운로드 (재배포 금지)
 data/bigkinds/
+
+# 에이전트 워크트리
+.claude/worktrees/
