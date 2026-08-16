@@ -1,0 +1,25 @@
+# 데이터는 절대 커밋하지 않는다 (기사 저작권 · 빅카인즈 재배포 금지)
+data/
+*.db
+*.sqlite
+*.parquet
+*.csv
+*.xlsx
+*.xls
+*.jsonl
+
+# 자격증명
+.env
+.env.*
+*.key
+secrets/
+
+# 파이썬
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
