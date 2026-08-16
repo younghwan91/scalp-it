@@ -16,6 +16,7 @@ import pandas as pd
 
 from .adapters.db import connect, load_prices, load_stock_master, load_supply_demand
 from .adapters.news_db import connect_news, load_article_cards
+from .cli_layers import MissingPrerequisite, require_sqlite
 from .features.llm import LLM_FEATURE_COLUMNS, load_llm_features
 from .features.news import NEWS_FEATURE_COLUMNS, load_news_features
 from .layers import LAYER_LABELS, build_layered_dataset, layer_features
@@ -50,8 +51,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-md", default=None, help="생략 시 results/today/<기준일>.md")
     args = parser.parse_args(argv)
 
-    if args.top_n < 15:
-        parser.error("top_n 하한은 15 다 (스펙 §2).")
+    # 스펙 §2 는 **동시 보유** 15종목 이상을 요구한다. 날짜당 종목 수가 아니다.
+    # 보유가 hold_end 거래일이므로 동시 보유 ≈ top_n × hold_end.
+    # → docs/research/2026-08-17-topn-preregistration.md
+    concurrent = args.top_n * args.hold_end
+    if concurrent < 15:
+        parser.error(
+            f"동시 보유가 {concurrent} 종목뿐이다 (top_n {args.top_n} × 보유 {args.hold_end}일). "
+            "스펙 §2 는 15 이상을 요구한다."
+        )
+    if args.top_n < 1:
+        parser.error("top_n 은 1 이상이어야 한다.")
+
+    # 선행 산출물을 **가격을 읽기 전에** 확인한다. 570만 행을 로드한 뒤에
+    # "파일이 없다"를 만나면 몇 분을 버린다.
+    try:
+        require_sqlite(args.news_db, what="뉴스 DB", produced_by="swing-news")
+        require_sqlite(args.llm_cache, what="LLM 피처 캐시", produced_by="swing-score")
+    except MissingPrerequisite as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        return 1
 
     conn = connect(args.db)
     end = args.asof or str(pd.Timestamp.today().date())

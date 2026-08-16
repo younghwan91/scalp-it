@@ -27,6 +27,27 @@ from .report.layers_md import render_layer_report
 from .validate.compare import compare_layers
 
 
+class MissingPrerequisite(Exception):
+    """선행 계획의 산출물이 아직 없다."""
+
+
+def require_sqlite(path, *, what: str, produced_by: str):
+    """sqlite 파일이 실제로 있는지 먼저 확인한다.
+
+    없는 상태로 ``sqlite3.connect`` 를 부르면 ``unable to open database file``
+    이라는 원시 오류만 나와서, 무엇을 먼저 돌려야 하는지 알 수 없다.
+    이 프로젝트는 계획 1→2→3→4 순서로 산출물이 쌓이므로 이 상황이 정상이며,
+    정상인 상황일수록 메시지가 분명해야 한다.
+    """
+    target = Path(path)
+    if not target.is_file():
+        raise MissingPrerequisite(
+            f"{what} — 파일이 없다: {target}\n"
+            f"  → 먼저 `{produced_by}` 를 돌려야 한다."
+        )
+    return target
+
+
 def _load_llm(args) -> pd.DataFrame:
     """계획 3 의 (종목, 일자) 접기 결과를 읽고 계획 4 가 안 쓰는 두 컬럼을 뗀다.
 
@@ -34,6 +55,8 @@ def _load_llm(args) -> pd.DataFrame:
     ``material_type`` 은 원-핫 9개가 스펙 §6 상한을 혼자 먹으므로 모델에
     넣지 않는다. ``material_type`` 은 ``swing-today`` 가 카드 표시용으로만 쓴다.
     """
+    require_sqlite(args.llm_cache, what="LLM 피처 캐시", produced_by="swing-score")
+    require_sqlite(args.news_db, what="뉴스 DB", produced_by="swing-news")
     frame = load_llm_features(
         args.llm_cache,
         news_path=args.news_db,
@@ -126,7 +149,16 @@ def main(argv: list[str] | None = None) -> int:
             conn.close()
         return 0
 
-    llm = _load_llm(args)
+    try:
+        llm = _load_llm(args)
+    except MissingPrerequisite as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        print(
+            "층 비교는 ①수급 ②+규칙뉴스 ③+LLM 을 **같은 표본**으로 재는 것이라, "
+            "세 층이 다 있어야 의미가 있다. ①층만 보려면 `swing-baseline` 을 써라.",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.dry_run:
         for candidate in (3.0, 1.0):
