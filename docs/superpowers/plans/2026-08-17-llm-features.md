@@ -71,6 +71,7 @@
 | `src/swing_it/score/compare.py` | 두 모델 산출물 대조 (일치율·MAE·순위상관). **순수** |
 | `src/swing_it/score/cli.py` | `swing-score`, `swing-score-compare` 엔트리포인트 |
 | `src/swing_it/adapters/news_db.py` | `news.db` 읽기. **뉴스 SQL 은 여기에만** |
+| `src/swing_it/features/llm.py` | 기사 단위 피처를 `(code, date)` 격자로 접는다. **계획 4 의 유일한 접점** |
 | `tests/` | 위 각 모듈 대응 테스트 |
 
 ---
@@ -1916,27 +1917,38 @@ from swing_it.adapters.news_db import NEWS_COLUMNS, connect_news, load_articles
 
 @pytest.fixture()
 def news_db(tmp_path):
-    """계획 2 가 만들 articles 테이블과 같은 최소 스키마."""
+    """계획 2 가 만드는 스키마 그대로 — 정규화된 articles + article_codes."""
     path = tmp_path / "news.db"
     conn = sqlite3.connect(path)
     conn.executescript(
         """
         CREATE TABLE articles (
-            article_id TEXT PRIMARY KEY,
-            date TEXT,
-            code TEXT,
-            press TEXT,
-            title TEXT,
-            body200 TEXT,
-            keywords TEXT
+            news_id  TEXT PRIMARY KEY,
+            date     TEXT NOT NULL,
+            outlet   TEXT,
+            title    TEXT,
+            body     TEXT,
+            keywords TEXT,
+            orgs     TEXT,
+            url      TEXT
+        );
+        CREATE TABLE article_codes (
+            news_id    TEXT NOT NULL,
+            code       TEXT NOT NULL,
+            match_kind TEXT NOT NULL,
+            PRIMARY KEY (news_id, code)
         );
         INSERT INTO articles VALUES
-            ('bk-1','2026-01-05','005930','한국경제','삼성전자 HBM 공급 계약',
-             '2조원 규모 계약을 체결했다.','삼성전자,HBM'),
-            ('bk-2','2026-01-06','000660','매일경제','SK하이닉스 증설 발표',
-             '청주 M15X 증설을 결정했다.','SK하이닉스,증설'),
-            ('bk-3','2026-02-01','005930','더벨','삼성전자 후속 보도',
-             '앞선 계약의 진행 상황이다.','삼성전자');
+            ('bk-1','2026-01-05','한국경제','삼성전자 HBM 공급 계약',
+             '2조원 규모 계약을 체결했다.','삼성전자,HBM','삼성전자','http://x/1'),
+            ('bk-2','2026-01-06','매일경제','SK하이닉스 증설 발표',
+             '청주 M15X 증설을 결정했다.','SK하이닉스,증설','SK하이닉스','http://x/2'),
+            ('bk-3','2026-02-01','더벨','삼성전자 후속 보도',
+             '앞선 계약의 진행 상황이다.','삼성전자','삼성전자','http://x/3');
+        INSERT INTO article_codes VALUES
+            ('bk-1','005930','name'),
+            ('bk-2','000660','name'),
+            ('bk-3','005930','name');
         """
     )
     conn.commit()
@@ -2093,9 +2105,14 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.adapters.news
 ```python
 """뉴스 DB 읽기 어댑터 — 뉴스 SQL 은 이 파일에만 존재한다.
 
-입력은 계획 2 가 만드는 로컬 sqlite ``data/news.db`` 의 ``articles`` 테이블이다.
-아래 컬럼 계약이 계획 2 산출물과 일치해야 한다. 계획 2 쪽 컬럼명이 다르면
-여기 SELECT 의 별칭에서 흡수하고, 나머지 모듈은 ``NEWS_COLUMNS`` 만 안다.
+입력은 계획 2 가 만드는 로컬 sqlite ``data/news.db`` 다. 계획 2 는 기사를
+``articles`` 에, 기사→종목 매핑을 ``article_codes`` 에 정규화해 넣는다(기사 1건이
+여러 종목에 걸릴 수 있기 때문이다). 이 어댑터가 조인과 컬럼명 차이를 흡수하고,
+나머지 모듈은 평면화된 ``NEWS_COLUMNS`` 만 안다.
+
+계획 2 컬럼 → 이 계약: ``news_id``→``article_id``, ``outlet``→``press``,
+``body``→``body200``(계획 2 가 이미 200자로 잘라 넣는다), ``article_codes.code``→``code``.
+같은 기사가 두 종목에 걸리면 종목마다 한 행이 된다 — 스코어링 단위가 (기사, 종목) 이므로 의도된 동작이다.
 
 읽기 전용이다. swing-it 의 score 계층은 news.db 에 쓰지 않는다.
 """
@@ -2125,13 +2142,23 @@ def connect_news(path: str | None = None) -> sqlite3.Connection:
     return sqlite3.connect(target)
 
 
+_SELECT_ARTICLES = """
+select a.news_id, a.date, ac.code, a.outlet, a.title, a.body, a.keywords
+from articles a
+join article_codes ac on ac.news_id = a.news_id
+where a.date >= ? and a.date <= ?
+order by a.date, a.news_id, ac.code
+"""
+
+
 def load_articles(conn: sqlite3.Connection, start: str, end: str) -> pd.DataFrame:
-    """기간 내 기사를 컬럼 계약에 맞춰 읽는다."""
-    rows = conn.execute(
-        f"select {', '.join(NEWS_COLUMNS)} from articles "
-        "where date >= ? and date <= ? order by date, article_id",
-        (start, end),
-    ).fetchall()
+    """기간 내 (기사, 종목) 을 컬럼 계약에 맞춰 읽는다.
+
+    계획 2 의 정규화 스키마를 조인해 평면화한다. 종목 매핑이 없는 기사는
+    조인에서 빠진다 — 스코어링 단위가 (기사, 종목) 이므로 종목 없는 기사는
+    애초에 태울 대상이 아니다.
+    """
+    rows = conn.execute(_SELECT_ARTICLES, (start, end)).fetchall()
     frame = pd.DataFrame(rows, columns=NEWS_COLUMNS)
     frame["date"] = pd.to_datetime(frame["date"])
     for column in ("article_id", "code", "press", "title", "body200", "keywords"):
@@ -2662,6 +2689,428 @@ git commit -m "feat(score): 모델 대조 스크립트 + 단가·모델 ID 확�
 
 ---
 
+### Task 8: `(code, date)` 격자 어댑터 — 계획 4 인계 지점
+
+**Files:**
+- Create: `src/swing_it/features/llm.py`
+- Test: `tests/test_features_llm.py`
+
+**Interfaces:**
+- Consumes: `load_features_frame`, `CACHE_TABLE`, `LLM_FEATURE_COLUMNS`, `PROMPT_VERSION`, `connect_news`, `load_articles`
+- Produces:
+  - `LLM_FEATURE_COLUMNS: list[str]` — `score.schema` 에서 **재수출**한다 (재정의 금지)
+  - `LLM_FRAME_COLUMNS: list[str]` = `["code", "date", "material_type", "n_articles", *LLM_FEATURE_COLUMNS]`
+  - `available_models(conn: sqlite3.Connection) -> list[tuple[str, str, int]]` — `(model, prompt_version, n_ok)`, 건수 내림차순
+  - `fold_to_code_date(scores: pd.DataFrame) -> pd.DataFrame` — 입력 `[article_id, code, date, material_type, *LLM_FEATURE_COLUMNS]` → 출력 `LLM_FRAME_COLUMNS`
+  - `load_llm_features(cache_path: str | Path = "data/llm_features.db", *, news_path: str | None = None, model: str | None = None, prompt_version: str | None = None, articles: pd.DataFrame | None = None) -> pd.DataFrame`
+
+**왜 이 태스크가 계획 3 에 있는가.** 계획 3 의 캐시는 **기사 단위**(`article_id`)이고
+모델은 **`(code, date)` 단위**로 학습한다. 그 사이를 잇는 접기 규칙은 캐시 내부
+구조와 `article_id → (code, date)` 조인을 둘 다 알아야 해서, 계획 4 가 아니라
+여기가 맞는 자리다. 계획 4 는 `load_llm_features` 하나만 부르면 된다.
+
+**접기 규칙 — 대표 기사 한 건의 행을 통째로 쓴다.** 컬럼별로 `max` 를 따로
+집계하면 A기사의 구체성과 B기사의 감정이 섞인, 실재하지 않는 기사가 만들어진다.
+대신 그날 **가장 강한 재료 한 건**을 골라 그 행을 그대로 쓴다:
+
+1. `|llm_sentiment|` 최대
+2. 동률이면 `llm_specificity` 최대
+3. 그래도 동률이면 `article_id` 사전순 최소 (재현성)
+
+`n_articles` 는 그 `(code, date)` 의 전체 기사 수다. **계획 2 가 '기사 건수' 피처를
+이미 준다면 계획 4 에서 이 컬럼을 버려라** — 같은 것을 두 번 넣는 셈이다.
+
+**`material_type` 은 수치화하지 않는다.** 9개 값을 원-핫으로 펼치면 LLM 몫이 5개에서
+14개로 뛰어 스펙 §6 의 10~20개 상한을 혼자 먹는다. `LLM_FEATURE_COLUMNS` 5개만
+모델 행렬에 넣고, `material_type` 은 한국어 문자열 그대로 **근거 카드 표시용**으로
+딸려 보낸다. 계획 4 가 굳이 모델에 넣겠다면 walk-forward 폴드 안에서 타깃 인코딩을
+해야 하고(폴드 밖 정보가 새면 안 된다), 그 판단은 계획 4 소관이다.
+
+- [ ] **Step 1: 실패하는 테스트 작성**
+
+`tests/test_features_llm.py`:
+
+```python
+import sqlite3
+
+import pandas as pd
+import pytest
+
+from swing_it.features.llm import (
+    LLM_FEATURE_COLUMNS,
+    LLM_FRAME_COLUMNS,
+    available_models,
+    fold_to_code_date,
+    load_llm_features,
+)
+from swing_it.score.cache import open_cache, put_result
+from swing_it.score.schema import ArticleFeatures
+
+
+def _scores(rows: list[dict]) -> pd.DataFrame:
+    base = {
+        "article_id": "a1",
+        "code": "005930",
+        "date": pd.Timestamp("2026-01-05"),
+        "material_type": "수주",
+        "llm_persistence": 1.0,
+        "llm_specificity": 2.0,
+        "llm_freshness": 2.0,
+        "llm_sentiment": 2.0,
+        "llm_scale": 2.0,
+    }
+    return pd.DataFrame([{**base, **row} for row in rows])
+
+
+def test_fold_output_contract():
+    out = fold_to_code_date(_scores([{}]))
+    assert list(out.columns) == LLM_FRAME_COLUMNS
+    assert pd.api.types.is_datetime64_any_dtype(out["date"])
+    for column in LLM_FEATURE_COLUMNS:
+        assert pd.api.types.is_numeric_dtype(out[column])
+
+
+def test_single_article_passes_through():
+    out = fold_to_code_date(_scores([{}]))
+    assert len(out) == 1
+    assert out.iloc[0]["n_articles"] == 1
+    assert out.iloc[0]["llm_sentiment"] == 2.0
+    assert out.iloc[0]["material_type"] == "수주"
+
+
+def test_strongest_absolute_sentiment_wins():
+    out = fold_to_code_date(
+        _scores(
+            [
+                {"article_id": "a1", "llm_sentiment": 1.0, "material_type": "테마"},
+                {"article_id": "a2", "llm_sentiment": -3.0, "material_type": "루머"},
+                {"article_id": "a3", "llm_sentiment": 2.0, "material_type": "수주"},
+            ]
+        )
+    )
+    assert len(out) == 1
+    assert out.iloc[0]["llm_sentiment"] == -3.0
+    assert out.iloc[0]["material_type"] == "루머"
+    assert out.iloc[0]["n_articles"] == 3
+
+
+def test_specificity_breaks_sentiment_ties():
+    out = fold_to_code_date(
+        _scores(
+            [
+                {"article_id": "a1", "llm_sentiment": 2.0, "llm_specificity": 1.0},
+                {"article_id": "a2", "llm_sentiment": 2.0, "llm_specificity": 3.0},
+            ]
+        )
+    )
+    assert out.iloc[0]["llm_specificity"] == 3.0
+
+
+def test_article_id_breaks_remaining_ties_deterministically():
+    rows = [
+        {"article_id": "z9", "material_type": "정책"},
+        {"article_id": "a1", "material_type": "증설"},
+    ]
+    assert fold_to_code_date(_scores(rows)).iloc[0]["material_type"] == "증설"
+    assert fold_to_code_date(_scores(rows[::-1])).iloc[0]["material_type"] == "증설"
+
+
+def test_fold_keeps_the_whole_row_not_a_column_wise_max():
+    """컬럼별 max 를 섞으면 실재하지 않는 기사가 만들어진다."""
+    out = fold_to_code_date(
+        _scores(
+            [
+                {"article_id": "a1", "llm_sentiment": 3.0, "llm_scale": 0.0},
+                {"article_id": "a2", "llm_sentiment": 1.0, "llm_scale": 3.0},
+            ]
+        )
+    )
+    assert (out.iloc[0]["llm_sentiment"], out.iloc[0]["llm_scale"]) == (3.0, 0.0)
+
+
+def test_separate_code_date_pairs_are_independent():
+    out = fold_to_code_date(
+        _scores(
+            [
+                {"article_id": "a1", "code": "005930"},
+                {"article_id": "a2", "code": "000660"},
+                {"article_id": "a3", "code": "005930", "date": pd.Timestamp("2026-01-06")},
+            ]
+        )
+    )
+    assert len(out) == 3
+    assert list(out["n_articles"]) == [1, 1, 1]
+
+
+def test_empty_input_returns_empty_contract_frame():
+    out = fold_to_code_date(_scores([]).iloc[0:0])
+    assert out.empty
+    assert list(out.columns) == LLM_FRAME_COLUMNS
+
+
+# --- load_llm_features (sqlite fixture, 네트워크·API 없음) -------------------
+
+_F = ArticleFeatures(
+    material_type="수주",
+    persistence="structural",
+    specificity=3,
+    freshness="new",
+    sentiment_direction=1,
+    sentiment_strength=3,
+    scale_vs_size="large",
+)
+
+
+@pytest.fixture()
+def workspace(tmp_path):
+    news_path = tmp_path / "news.db"
+    conn = sqlite3.connect(news_path)
+    conn.executescript(
+        """
+        CREATE TABLE articles (
+            article_id TEXT PRIMARY KEY, date TEXT, code TEXT, press TEXT,
+            title TEXT, body200 TEXT, keywords TEXT
+        );
+        INSERT INTO articles VALUES
+            ('n1','2026-01-05','005930','한국경제','제목1','본문1','키1'),
+            ('n2','2026-01-05','000660','매일경제','제목2','본문2','키2');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    cache_path = tmp_path / "llm.db"
+    cache = open_cache(cache_path)
+    for article_id in ("n1", "n2"):
+        put_result(cache, article_id=article_id, model="cheap", prompt_version="v1",
+                   features=_F, raw=None, error=None)
+    cache.close()
+    return {"news": str(news_path), "cache": str(cache_path)}
+
+
+def test_load_llm_features_end_to_end(workspace):
+    frame = load_llm_features(workspace["cache"], news_path=workspace["news"])
+    assert list(frame.columns) == LLM_FRAME_COLUMNS
+    assert sorted(frame["code"]) == ["000660", "005930"]
+    assert frame["llm_sentiment"].tolist() == [3.0, 3.0]
+    assert pd.api.types.is_datetime64_any_dtype(frame["date"])
+
+
+def test_load_llm_features_auto_detects_the_only_model(workspace):
+    """모델이 하나뿐이면 인자 없이도 찾아낸다."""
+    assert len(load_llm_features(workspace["cache"], news_path=workspace["news"])) == 2
+
+
+def test_load_llm_features_refuses_to_guess_between_models(workspace):
+    cache = open_cache(workspace["cache"])
+    put_result(cache, article_id="n1", model="premium", prompt_version="v1",
+               features=_F, raw=None, error=None)
+    cache.close()
+    with pytest.raises(ValueError, match="cheap"):
+        load_llm_features(workspace["cache"], news_path=workspace["news"])
+
+
+def test_load_llm_features_honours_explicit_model(workspace):
+    cache = open_cache(workspace["cache"])
+    put_result(cache, article_id="n1", model="premium", prompt_version="v1",
+               features=_F, raw=None, error=None)
+    cache.close()
+    frame = load_llm_features(
+        workspace["cache"], news_path=workspace["news"],
+        model="premium", prompt_version="v1",
+    )
+    assert list(frame["code"]) == ["005930"]
+
+
+def test_load_llm_features_accepts_an_articles_frame(workspace):
+    """계획 4 가 이미 기사 프레임을 갖고 있으면 news.db 를 다시 열지 않는다."""
+    articles = pd.DataFrame(
+        {
+            "article_id": ["n1"],
+            "date": pd.to_datetime(["2026-01-05"]),
+            "code": ["005930"],
+        }
+    )
+    frame = load_llm_features(workspace["cache"], articles=articles)
+    assert list(frame["code"]) == ["005930"]
+
+
+def test_available_models_counts_only_success_rows(workspace):
+    cache = open_cache(workspace["cache"])
+    put_result(cache, article_id="n3", model="cheap", prompt_version="v1",
+               features=None, raw=None, error="실패")
+    assert available_models(cache) == [("cheap", "v1", 2)]
+
+
+def test_empty_cache_raises_a_useful_message(tmp_path):
+    open_cache(tmp_path / "empty.db").close()
+    with pytest.raises(ValueError, match="비어 있다"):
+        load_llm_features(tmp_path / "empty.db", articles=pd.DataFrame())
+```
+
+- [ ] **Step 2: 테스트 실패 확인**
+
+Run: `uv run pytest tests/test_features_llm.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.features.llm'`
+
+- [ ] **Step 3: 구현**
+
+`src/swing_it/features/llm.py`:
+
+```python
+"""LLM 피처를 ``(code, date)`` 격자로 접는 어댑터.
+
+계획 3 의 캐시는 기사 단위이고 모델은 ``(code, date)`` 단위로 학습한다.
+그 사이를 잇는 것이 이 파일이며, 계획 4(층별 모델 비교)가 계획 3 에 닿는
+유일한 지점이다.
+
+접기 규칙은 "그날 가장 강한 재료 한 건의 행을 통째로 쓴다"이다. 컬럼별로 max 를
+따로 집계하면 A기사의 구체성과 B기사의 감정이 섞인, 실재하지 않는 기사가 만들어진다.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+import pandas as pd
+
+from ..adapters.news_db import connect_news, load_articles
+from ..score.cache import CACHE_TABLE, load_features_frame
+from ..score.prompt import PROMPT_VERSION
+from ..score.schema import LLM_FEATURE_COLUMNS
+
+__all__ = [
+    "LLM_FEATURE_COLUMNS",
+    "LLM_FRAME_COLUMNS",
+    "available_models",
+    "fold_to_code_date",
+    "load_llm_features",
+]
+
+# material_type 은 모델 행렬에 넣지 않는다 (9개 원-핫이면 스펙 §6 상한을 혼자 먹는다).
+# 한국어 문자열 그대로 근거 카드 표시용으로 딸려 보낸다.
+LLM_FRAME_COLUMNS: list[str] = [
+    "code", "date", "material_type", "n_articles", *LLM_FEATURE_COLUMNS,
+]
+
+_SORT_KEYS = ["code", "date", "_abs_sentiment", "llm_specificity", "article_id"]
+_SORT_ORDER = [True, True, False, False, True]
+
+
+def available_models(conn: sqlite3.Connection) -> list[tuple[str, str, int]]:
+    """캐시에 들어 있는 ``(model, prompt_version, 성공 건수)`` 를 건수 내림차순으로."""
+    rows = conn.execute(
+        f"select model, prompt_version, count(*) from {CACHE_TABLE} "
+        "where status = 'ok' group by model, prompt_version "
+        "order by count(*) desc, model asc"
+    ).fetchall()
+    return [(str(model), str(version), int(count)) for model, version, count in rows]
+
+
+def fold_to_code_date(scores: pd.DataFrame) -> pd.DataFrame:
+    """같은 ``(code, date)`` 의 여러 기사를 대표 한 건으로 접는다.
+
+    우선순위: ``|llm_sentiment|`` 최대 → ``llm_specificity`` 최대 →
+    ``article_id`` 사전순 최소. 마지막 단계는 재현성을 위한 것이다.
+    """
+    if scores.empty:
+        return pd.DataFrame(columns=LLM_FRAME_COLUMNS)
+
+    work = scores.copy()
+    work["date"] = pd.to_datetime(work["date"])
+    work["_abs_sentiment"] = work["llm_sentiment"].abs()
+    work["n_articles"] = work.groupby(["code", "date"], sort=False)["article_id"].transform("size")
+
+    ordered = work.sort_values(_SORT_KEYS, ascending=_SORT_ORDER, kind="mergesort")
+    picked = ordered.groupby(["code", "date"], sort=True, as_index=False).head(1)
+    return picked[LLM_FRAME_COLUMNS].sort_values(["date", "code"]).reset_index(drop=True)
+
+
+def _resolve_version(
+    conn: sqlite3.Connection, model: str | None, prompt_version: str | None
+) -> tuple[str, str]:
+    """모델·프롬프트 버전이 생략되면 캐시에서 유일한 조합을 찾는다.
+
+    여러 조합이 섞여 있으면 **고르지 않고 실패한다.** 저가 모델과 상위 모델의
+    결과가 한 파일에 있는 게 정상 상태이고(계획 3 Task 7 대조), 아무거나 집으면
+    어떤 모델로 학습했는지 모르는 채 결과가 나온다.
+    """
+    if model is not None:
+        return model, prompt_version or PROMPT_VERSION
+    combos = available_models(conn)
+    if not combos:
+        raise ValueError("LLM 피처 캐시가 비어 있다. swing-score 를 먼저 돌려라.")
+    if prompt_version is not None:
+        combos = [c for c in combos if c[1] == prompt_version]
+    if len(combos) > 1:
+        listed = ", ".join(f"{m}@{v}({n}건)" for m, v, n in combos)
+        raise ValueError(
+            f"캐시에 여러 모델이 있다: {listed}. model= 로 명시하라."
+        )
+    return combos[0][0], combos[0][1]
+
+
+def load_llm_features(
+    cache_path: str | Path = "data/llm_features.db",
+    *,
+    news_path: str | None = None,
+    model: str | None = None,
+    prompt_version: str | None = None,
+    articles: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """LLM 피처를 ``(code, date)`` 격자 프레임으로 읽는다.
+
+    Args:
+        cache_path: 계획 3 이 만든 sqlite 캐시. 기본 ``data/llm_features.db``.
+        news_path: ``article_id → (code, date)`` 조인용 뉴스 DB. 생략 시
+            ``SWING_NEWS_DB``, 그것도 없으면 ``data/news.db``.
+        model / prompt_version: 생략하면 캐시에 조합이 하나뿐일 때만 자동 선택한다.
+        articles: 이미 읽어둔 기사 프레임(``article_id, date, code``)이 있으면
+            넘긴다. news DB 를 다시 열지 않는다.
+
+    Returns:
+        컬럼 ``LLM_FRAME_COLUMNS``. ``date`` 는 ``datetime64[ns]``,
+        ``LLM_FEATURE_COLUMNS`` 는 전부 수치형.
+    """
+    conn = sqlite3.connect(Path(cache_path))
+    try:
+        resolved_model, resolved_version = _resolve_version(conn, model, prompt_version)
+        features = load_features_frame(conn, resolved_model, resolved_version)
+    finally:
+        conn.close()
+
+    if articles is None:
+        articles = load_articles(connect_news(news_path), "0001-01-01", "9999-12-31")
+    keys = articles[["article_id", "code", "date"]].copy()
+    keys["date"] = pd.to_datetime(keys["date"])
+
+    joined = features.merge(keys, on="article_id", how="inner")
+    joined = joined[joined["code"].astype(str).str.strip().ne("")]
+    return fold_to_code_date(
+        joined[["article_id", "code", "date", "material_type", *LLM_FEATURE_COLUMNS]]
+    )
+```
+
+- [ ] **Step 4: 테스트 통과 확인**
+
+Run: `uv run pytest tests/test_features_llm.py -v`
+Expected: 16 passed
+
+- [ ] **Step 5: 전체 테스트와 린트**
+
+Run: `uv run pytest -q && uv run ruff check src tests`
+Expected: 전부 통과 (계획 1 의 27건 + 이 계획의 92건 = 119건)
+
+- [ ] **Step 6: 커밋**
+
+```bash
+git add src/swing_it/features/llm.py tests/test_features_llm.py
+git commit -m "feat(features): LLM 피처를 (code, date) 격자로 접는 계획 4 인계 어댑터"
+```
+
+---
+
 ## Self-Review 체크
 
 **스펙 커버리지 (계획 3 범위):**
@@ -2682,20 +3131,38 @@ git commit -m "feat(score): 모델 대조 스크립트 + 단가·모델 ID 확�
 | §9 데이터 커밋 금지 | Task 6 — 리포트에 기사 텍스트·article_id 없음(테스트로 확인) |
 | 부분 실패 처리 | Task 5 — 실패 기록 + 계속 진행 + 연속 실패 중단 |
 | 테스트가 API 를 부르지 않음 | Task 2 `MockTransport`, Task 5·6 `FakeProvider` |
+| 계획 4 인계 — `(code, date)` 격자 프레임 | Task 8 `load_llm_features` |
+
+**계획 4 와의 계약 (Task 8 에서 확정):**
+
+계획 4(`docs/superpowers/plans/2026-08-17-layers-and-report.md`)는 아래 두 이름만
+import 한다. 다른 접점은 없다.
+
+```python
+from swing_it.features.llm import LLM_FEATURE_COLUMNS, load_llm_features
+```
+
+- `LLM_FEATURE_COLUMNS` 5개 — 전부 수치형. 계획 4 는 GBM 에 그대로 넣는다
+- `load_llm_features(...)` 반환 컬럼 `["code", "date", "material_type", "n_articles", *LLM_FEATURE_COLUMNS]`
+- 저장소는 **sqlite** `data/llm_features.db` 다 (parquet 아님). 첫 인자가 그 경로
+- `material_type` 은 문자열이며 **모델 행렬 밖**이다 — 근거 카드 표시용
+- `n_articles` 는 계획 2 가 '기사 건수' 피처를 주면 계획 4 에서 버린다 (중복)
 
 **계획 3 범위 밖 (후속):**
 
-- LLM 피처를 `build_dataset` 에 결합하는 일 — 계획 4. `load_features_frame` 출력을
-  `article_id` 로 붙이고 `(code, date)` 단위로 접는 규칙(같은 날 여러 기사)이
-  거기서 정해진다.
+- LLM 피처를 `build_dataset` 에 결합하는 일 — 계획 4. Task 8 이 격자까지 맞춰주므로
+  계획 4 는 `(code, date)` 로 머지만 하면 된다
 - 층별 기여도 비교(①수급 / ②+규칙뉴스 / ③+LLM) — 계획 4
+- `material_type` 을 모델 피처로 쓸지 여부 — 계획 4. 쓰려면 walk-forward 폴드 안에서
+  타깃 인코딩을 해야 한다 (폴드 밖 정보가 새면 안 된다)
 - 배치 API(비동기 할인) 경로 — Task 7 Step 1 에서 값이 있다고 판단되면 별도 작업
 
 **타입 일관성 확인:**
 
 - `ArticleFeatures` 필드명이 Task 1 정의 → Task 4 `_SCHEMA_COLUMNS` → Task 7
   `CATEGORICAL_FIELDS`/`ORDINAL_FIELDS` 에서 동일하다.
-- `LLM_FEATURE_COLUMNS` 는 Task 1 에서만 정의하고 Task 4 가 그대로 쓴다.
+- `LLM_FEATURE_COLUMNS` 는 Task 1 (`score/schema.py`) 에서만 정의한다. Task 4 가 쓰고,
+  Task 8 은 **재수출만** 한다 — `features/llm.py` 에서 다시 정의하면 두 곳이 갈린다.
 - `provider.model` 은 캐시 키에 그대로 들어간다 — `FakeProvider.model` 기본값
   `"fake-1"` 이 Task 6 CLI 테스트의 `report["model"]` 기대값과 같다.
 - `prefilter_articles` 가 돌려주는 `keep`/`drop_reason`/`dup_count` 를 Task 6 CLI 가 쓴다.
