@@ -601,12 +601,39 @@ def master_db(tmp_path):
 
 def test_master_returns_expected_columns(master_db):
     df = load_stock_master(connect(master_db))
-    assert list(df.columns) == ["code", "name", "market", "sector", "last_trade_date"]
+    assert list(df.columns) == [
+        "code", "name", "market", "sector", "last_trade_date", "is_delisted",
+    ]
 
 
 def test_master_unions_listed_and_delisted(master_db):
     df = load_stock_master(connect(master_db))
     assert set(df["code"]) == {"005930", "000660", "037550"}
+
+
+def test_is_delisted_comes_from_source_table_not_from_date(master_db):
+    # delisted_stocks 4,162 건 중 89% 는 last_trade_date 가 NULL 이다.
+    # 날짜 유무로 판정하면 폐지 종목 대부분을 상장으로 오인한다.
+    df = load_stock_master(connect(master_db)).set_index("code")
+    assert bool(df.loc["005930", "is_delisted"]) is False
+    assert bool(df.loc["037550", "is_delisted"]) is True
+
+
+def test_delisted_without_last_trade_date_is_still_flagged(master_db):
+    conn = connect(master_db)
+    conn.execute("INSERT INTO delisted_stocks VALUES ('900110','이스트아시아','코스닥',NULL,NULL)")
+    conn.commit()
+    df = load_stock_master(conn).set_index("code")
+    assert bool(df.loc["900110", "is_delisted"]) is True
+    assert pd.isna(df.loc["900110", "last_trade_date"])
+
+
+def test_listed_row_wins_when_code_is_in_both_tables(master_db):
+    conn = connect(master_db)
+    conn.execute("INSERT INTO delisted_stocks VALUES ('005930','삼성전자','거래소','2020-01-01',NULL)")
+    conn.commit()
+    df = load_stock_master(conn).set_index("code")
+    assert bool(df.loc["005930", "is_delisted"]) is False
 
 
 def test_listed_rows_have_no_last_trade_date(master_db):
@@ -634,7 +661,7 @@ Expected: FAIL — `ImportError: cannot import name 'load_stock_master'`
 `src/swing_it/adapters/db.py` 끝에 상수 하나와 함수 하나를 추가한다. 기존 `_query` 는 `date` 컬럼을 요구하므로 여기서는 쓰지 않는다.
 
 ```python
-_MASTER_COLUMNS = ["code", "name", "market", "sector", "last_trade_date"]
+_MASTER_COLUMNS = ["code", "name", "market", "sector", "last_trade_date", "is_delisted"]
 
 
 def load_stock_master(conn: Any) -> pd.DataFrame:
@@ -644,12 +671,20 @@ def load_stock_master(conn: Any) -> pd.DataFrame:
     회사 중 상당수는 지금 상장돼 있지 않고, 그들을 빼면 표본이
     '살아남은 회사' 쪽으로 기운다.
 
-    ``last_trade_date`` 가 ``NaT`` 이면 현재 상장 중이라는 뜻이다.
+    **``last_trade_date`` 로 상장 여부를 판정하지 마라.** 실 DB 에서
+    ``delisted_stocks`` 4,162 건 중 3,693 건(89%)이 이 값이 NULL 이다.
+    폐지 여부는 출처 테이블로 정하며 ``is_delisted`` 로 노출한다.
+    ``last_trade_date`` 는 있으면 쓰는 참고값이다.
+
+    같은 코드가 양쪽에 있으면(실 DB 기준 17 건) 상장 쪽을 남긴다 — 재상장·코드
+    재사용 사례이고, 현재 거래 가능한 것이 우선이다.
     """
     sql = (
-        "select code, name, market, sector, null as last_trade_date from stocks "
+        "select code, name, market, sector, null as last_trade_date, 0 as is_delisted "
+        "from stocks "
         "union all "
-        "select code, name, market, null as sector, last_trade_date from delisted_stocks"
+        "select code, name, market, null as sector, last_trade_date, 1 as is_delisted "
+        "from delisted_stocks"
     )
     cur = conn.cursor()
     cur.execute(sql)
@@ -658,6 +693,8 @@ def load_stock_master(conn: Any) -> pd.DataFrame:
     df["code"] = df["code"].astype(str).str.strip()
     df["name"] = df["name"].fillna("").astype(str).str.strip()
     df["last_trade_date"] = pd.to_datetime(df["last_trade_date"], errors="coerce")
+    df["is_delisted"] = df["is_delisted"].astype(bool)
+    # 상장 행이 먼저 오므로 keep="first" 가 곧 '상장 우선'이다.
     df = df[df["code"] != ""].drop_duplicates(subset="code", keep="first")
     return df.sort_values("code").reset_index(drop=True)
 ```
@@ -665,7 +702,7 @@ def load_stock_master(conn: Any) -> pd.DataFrame:
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `uv run pytest tests/test_db_stock_master.py -v`
-Expected: 5 passed
+Expected: 7 passed
 
 - [ ] **Step 5: 실 DB 스모크 확인**
 
@@ -692,7 +729,7 @@ git commit -m "feat(adapters): 종목 마스터 로더 — 상장+폐지 합본"
 - Test: `tests/test_news_mapping.py`
 
 **Interfaces:**
-- Consumes: `normalize_articles` 의 `[news_id, date, outlet, title, body, orgs]`, `load_stock_master` 의 `[code, name, last_trade_date]`
+- Consumes: `normalize_articles` 의 `[news_id, date, outlet, title, body, orgs]`, `load_stock_master` 의 `[code, name, last_trade_date, is_delisted]`
 - Produces:
   - `normalize_name(text: str) -> str` — `주식회사`·`(주)`·`㈜` 제거, 한글/영숫자 외 전부 제거, 소문자화. **공백도 제거한다**(부분문자열 매칭용)
   - `AMBIGUOUS_NAMES: frozenset[str]` — 정규화된 형태의 동음이의 사명 목록
@@ -704,7 +741,7 @@ git commit -m "feat(adapters): 종목 마스터 로더 — 상장+폐지 합본"
 1. **종목코드 우선.** 제목·본문에 6자리 숫자가 단독으로 나오고 그것이 마스터의 코드면 그대로 인정한다(`match_kind="code"`).
 2. **최장 사명 우선.** 한 기사에서 매칭된 이름 중 더 긴 이름의 부분문자열인 짧은 이름은 버린다. `한화솔루션` 기사가 `한화` 로도 잡히는 계열사 혼동을 막는다.
 3. **동음이의는 기관 컬럼으로 확증.** 정규화 길이 2자 이하이거나 `AMBIGUOUS_NAMES` 에 있는 이름은 빅카인즈 `기관` 컬럼에 같이 나올 때만 인정한다. `대상`(對象)·`삼천리` 같은 일반명사 사명이 여기 해당한다.
-4. **point-in-time.** 폐지 종목은 `last_trade_date >= 기사일자` 일 때만 인정한다. 같은 정규화 사명에 코드가 둘 이상 붙어 있으면 이 필터를 적용하고, 그래도 둘 이상 남으면 **버린다.**
+4. **point-in-time.** 상장 종목(`is_delisted == False`)은 항상 통과시킨다 — 상장 이전 구간은 가격 조인이 거른다. 폐지 종목은 `last_trade_date` 가 **있을 때만** 그 날짜로 자른다. 89% 는 NULL 이라 여기서 버리면 생존편향이 그대로 돌아오므로, 그 경우도 통과시키고 폐지 이후 구간은 가격 조인에 맡긴다(위 「구현 중 정정」). 같은 정규화 사명에 코드가 둘 이상 붙어 있으면 이 필터를 적용한 뒤 **상장 종목을 우선**하고, 그래도 둘 이상 남으면 **버린다.**
 
 `AMBIGUOUS_NAMES` 초기 목록은 관찰된 것들이며, Task 7 스모크 실행에서 오매핑이 보이면 여기에 추가한다.
 
@@ -721,15 +758,16 @@ from swing_it.news.mapping import build_name_index, map_articles, normalize_name
 def _master() -> pd.DataFrame:
     return pd.DataFrame(
         [
-            ("005930", "삼성전자", pd.NaT),
-            ("005935", "삼성전자우", pd.NaT),
-            ("009150", "삼성전기", pd.NaT),
-            ("000880", "한화", pd.NaT),
-            ("009830", "한화솔루션", pd.NaT),
-            ("001680", "대상", pd.NaT),
-            ("037550", "쌍방울", pd.Timestamp("2023-06-30")),
+            ("005930", "삼성전자", pd.NaT, False),
+            ("005935", "삼성전자우", pd.NaT, False),
+            ("009150", "삼성전기", pd.NaT, False),
+            ("000880", "한화", pd.NaT, False),
+            ("009830", "한화솔루션", pd.NaT, False),
+            ("001680", "대상", pd.NaT, False),
+            ("037550", "쌍방울", pd.Timestamp("2023-06-30"), True),
+            ("900110", "이스트아시아", pd.NaT, True),  # 폐지일 미상 — 89% 가 이 경우다
         ],
-        columns=["code", "name", "last_trade_date"],
+        columns=["code", "name", "last_trade_date", "is_delisted"],
     )
 
 
@@ -791,6 +829,14 @@ def test_delisted_stock_does_not_map_after_last_trade_date():
     articles = _articles([{"title": "쌍방울 관련 재판", "date": pd.Timestamp("2026-08-17")}])
     out = map_articles(articles, _master())
     assert out.empty
+
+
+def test_delisted_without_last_trade_date_still_maps():
+    # 폐지일을 모르는 종목을 여기서 버리면 생존편향이 그대로 돌아온다.
+    # 폐지 이후 구간은 가격 조인(rank_daily 의 유동성 하한)이 거른다.
+    articles = _articles([{"title": "이스트아시아 유상증자", "date": pd.Timestamp("2018-03-02")}])
+    out = map_articles(articles, _master())
+    assert out["code"].tolist() == ["900110"]
 
 
 def test_one_article_can_map_to_multiple_codes():
@@ -884,8 +930,22 @@ def build_name_index(master: pd.DataFrame) -> dict[str, list[str]]:
     return index
 
 
-def _listed_on(last_trade: dict[str, pd.Timestamp], code: str, date: pd.Timestamp) -> bool:
-    """기사 시점에 상장돼 있었는가. ``NaT`` 는 현재까지 상장 중이라는 뜻이다."""
+def _mappable_on(
+    is_delisted: dict[str, bool],
+    last_trade: dict[str, pd.Timestamp],
+    code: str,
+    date: pd.Timestamp,
+) -> bool:
+    """기사 시점에 매핑을 허용할 종목인가.
+
+    상장 종목은 항상 통과시킨다 — 상장 이전 구간은 가격 조인이 거른다.
+    폐지 종목은 ``last_trade_date`` 가 있을 때만 그 날짜로 자른다.
+    ``delisted_stocks`` 의 89% 는 이 값이 NULL 이고, 그들을 여기서 버리면
+    생존편향을 막으려고 폐지 종목을 넣어놓고 정작 다시 떨어뜨리는 꼴이 된다.
+    폐지 이후 구간은 ``rank_daily`` 의 유동성 하한이 거른다.
+    """
+    if not is_delisted.get(code, False):
+        return True
     value = last_trade.get(code)
     return pd.isna(value) or pd.Timestamp(value) >= pd.Timestamp(date)
 
@@ -900,6 +960,7 @@ def map_articles(
     index = build_name_index(master)
     all_codes = {str(c) for c in master["code"]}
     last_trade = dict(zip(master["code"].astype(str), master["last_trade_date"]))
+    is_delisted = dict(zip(master["code"].astype(str), master["is_delisted"].astype(bool)))
     names_by_length = sorted(index, key=len, reverse=True)
 
     rows: list[dict] = []
@@ -910,7 +971,7 @@ def map_articles(
         hits: dict[str, str] = {}
 
         for code in _CODE_RE.findall(raw_text):
-            if code in all_codes and _listed_on(last_trade, code, article.date):
+            if code in all_codes and _mappable_on(is_delisted, last_trade, code, article.date):
                 hits[code] = "code"
 
         present = [name for name in names_by_length if name in norm_text]
@@ -920,9 +981,15 @@ def map_articles(
             if len(name) <= 2 or name in ambiguous_names:
                 if name not in norm_orgs:
                     continue  # 동음이의 위험 — 기관 컬럼 확증이 없으면 버린다
-            codes = [c for c in index[name] if _listed_on(last_trade, c, article.date)]
+            codes = [
+                c for c in index[name]
+                if _mappable_on(is_delisted, last_trade, c, article.date)
+            ]
+            if len(codes) > 1:
+                # 동명 종목이 남으면 상장 종목을 우선한다. 그래도 갈리면 버린다.
+                codes = [c for c in codes if not is_delisted.get(c, False)]
             if len(codes) != 1:
-                continue  # 상장 중인 동명 종목이 0개거나 2개 이상이면 버린다
+                continue
             hits.setdefault(codes[0], "name")
 
         for code, kind in hits.items():
@@ -946,7 +1013,7 @@ def map_articles(
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `uv run pytest tests/test_news_mapping.py -v`
-Expected: 12 passed
+Expected: 13 passed
 
 - [ ] **Step 5: 커밋**
 
@@ -1979,7 +2046,7 @@ if __name__ == "__main__":
 - [ ] **Step 6: 전체 테스트 통과 확인**
 
 Run: `uv run pytest -v`
-Expected: 27 (계획 1) + 67 (계획 2) = 94 passed
+Expected: 계획 2 몫 70 passed (6+11+7+13+12+11+10), 그리고 기존 테스트 전부 통과. 계획 1·3 테스트가 이미 들어와 있으므로 총계는 그보다 크다 — 중요한 건 **실패가 0** 이라는 것이다.
 
 - [ ] **Step 7: 실 데이터로 파이프라인 실행**
 
@@ -2038,7 +2105,7 @@ git commit -m "feat(news): 로컬 sqlite 적재 + swing-news 인제스트 CLI"
 | §6 사전등록 (가중치 고정) | Task 6 `W_ARTICLES/W_OUTLETS/W_TRADE` 상수 |
 | §8 어댑터 경계 | Task 3 — TimescaleDB SQL 은 `adapters/db.py` 에만 |
 | §8 데이터 커밋 금지 | `.gitignore` 기존 규칙 + 산출물은 `data/` 아래로만 |
-| §11 생존편향 | Task 3 `delisted_stocks` 합본, Task 4 `_listed_on` |
+| §11 생존편향 | Task 3 `delisted_stocks` 합본 + `is_delisted`, Task 4 `_mappable_on` |
 | §12 열린 질문 — 다운로드 쿼리 구성 | 「빅카인즈 다운로드 절차」 — 분기 단위 분할, 20,000행 경고 |
 | §12 열린 질문 — 동음이의·계열사 | Task 4 규칙 2·3, Task 7 Step 8 로 피드백 루프 |
 
