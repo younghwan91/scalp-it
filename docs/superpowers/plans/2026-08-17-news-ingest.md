@@ -1981,6 +1981,7 @@ import pandas as pd
 from .adapters.db import connect, load_prices, load_stock_master
 from .events import add_liquidity_stats
 from .news.bigkinds import load_bigkinds_dir
+from .news.calendar import align_to_trading_days
 from .news.dedupe import cluster_duplicates
 from .news.hotness import add_hotness, daily_counts, rank_daily
 from .news.mapping import map_articles
@@ -2020,7 +2021,13 @@ def main(argv: list[str] | None = None) -> int:
         print("매핑된 기사가 없다. schema.COLUMN_MAP 과 종목 마스터를 확인하라.", file=sys.stderr)
         return 1
 
-    clustered = cluster_duplicates(mapped)
+    # 휴장일 기사를 다음 거래일로 이월한다. 이 줄이 없으면 주말·공휴일 기사가
+    # 통째로 사라진다 — 가격 행이 없어 adv 가 NaN 이 되고 rank_daily 의 유동성
+    # 하한에서 조용히 탈락한다. 구현·검증 완료 (2026-08-17).
+    aligned = align_to_trading_days(mapped, prices["date"])
+    print(f"거래일 이월 후 {len(aligned):,} 쌍", file=sys.stderr)
+
+    clustered = cluster_duplicates(aligned)
     counts = daily_counts(clustered)
     hot = add_hotness(counts, add_liquidity_stats(prices))
     ranked = rank_daily(
