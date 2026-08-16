@@ -69,7 +69,7 @@ def load_supply_demand(conn: Any, start: str, end: str) -> pd.DataFrame:
     return _query(conn, sql, (start, end), _SUPPLY_COLUMNS)
 
 
-_MASTER_COLUMNS = ["code", "name", "market", "sector", "last_trade_date"]
+_MASTER_COLUMNS = ["code", "name", "market", "sector", "last_trade_date", "is_delisted"]
 
 
 def load_stock_master(conn: Any) -> pd.DataFrame:
@@ -79,12 +79,20 @@ def load_stock_master(conn: Any) -> pd.DataFrame:
     회사 중 상당수는 지금 상장돼 있지 않고, 그들을 빼면 표본이
     '살아남은 회사' 쪽으로 기운다.
 
-    ``last_trade_date`` 가 ``NaT`` 이면 현재 상장 중이라는 뜻이다.
+    **``last_trade_date`` 로 상장 여부를 판정하지 마라.** 실 DB 에서
+    ``delisted_stocks`` 4,162 건 중 3,693 건(89%)이 이 값이 NULL 이다.
+    폐지 여부는 출처 테이블로 정하며 ``is_delisted`` 로 노출한다.
+    ``last_trade_date`` 는 있으면 쓰는 참고값이다.
+
+    같은 코드가 양쪽에 있으면(실 DB 기준 17 건) 상장 쪽을 남긴다 — 재상장·코드
+    재사용 사례이고, 현재 거래 가능한 것이 우선이다.
     """
     sql = (
-        "select code, name, market, sector, null as last_trade_date from stocks "
+        "select code, name, market, sector, null as last_trade_date, 0 as is_delisted "
+        "from stocks "
         "union all "
-        "select code, name, market, null as sector, last_trade_date from delisted_stocks"
+        "select code, name, market, null as sector, last_trade_date, 1 as is_delisted "
+        "from delisted_stocks"
     )
     cur = conn.cursor()
     cur.execute(sql)
@@ -93,5 +101,7 @@ def load_stock_master(conn: Any) -> pd.DataFrame:
     df["code"] = df["code"].astype(str).str.strip()
     df["name"] = df["name"].fillna("").astype(str).str.strip()
     df["last_trade_date"] = pd.to_datetime(df["last_trade_date"], errors="coerce")
+    df["is_delisted"] = df["is_delisted"].astype(bool)
+    # 상장 행이 먼저 오므로 keep="first" 가 곧 '상장 우선'이다.
     df = df[df["code"] != ""].drop_duplicates(subset="code", keep="first")
     return df.sort_values("code").reset_index(drop=True)
