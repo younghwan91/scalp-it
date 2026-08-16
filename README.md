@@ -15,16 +15,20 @@
 |---|---|
 | 설계 스펙 | ✅ [스펙](docs/superpowers/specs/2026-08-17-swing-it-design.md) |
 | 계획 1 — 수급 베이스라인 (①층) | ✅ 구현·실행 완료 · **판정 FAIL** |
-| 계획 2 — 뉴스 인제스트 | ◐ [계획](docs/superpowers/plans/2026-08-17-news-ingest.md) · Task 3·5·6 구현 · 빅카인즈 파일 대기 |
-| 계획 3 — LLM 피처 추출 | ◐ [계획](docs/superpowers/plans/2026-08-17-llm-features.md) · Task 1~6·8 구현 · API 키 대기 |
-| 계획 4 — 층별 비교 + 근거 카드 | 📄 [계획](docs/superpowers/plans/2026-08-17-layers-and-report.md) |
+| 계획 2 — 뉴스 인제스트 | ◐ [계획](docs/superpowers/plans/2026-08-17-news-ingest.md) · 빅카인즈 파일 대기 |
+| 계획 3 — LLM 피처 추출 | ◐ [계획](docs/superpowers/plans/2026-08-17-llm-features.md) · API 키 대기 |
+| 계획 4 — 층별 비교 + 근거 카드 | ✅ [계획](docs/superpowers/plans/2026-08-17-layers-and-report.md) |
 
-**베이스라인 판정:** 수급 단독으로는 거래대금 급증 이벤트의 D+20~40 초과수익을 예측하지
-못한다. 3/4 폴드에서 랜덤 진입과 구별되지 않는다.
+미구현으로 남은 것은 외부 입력이 있어야만 가능한 부분뿐이다.
+
+**베이스라인 판정: FAIL** — 종합 판정은 FAIL 이지만 "수급이 무력하다"는 뜻이 아니다.
+4개 폴드 중 2개에서만 랜덤 널을 이겨 재현되지 않는다. **레짐 의존적인 신호가 있고
+아직 재현되지 않는다**가 정확한 요약이다.
 자세히 → [`docs/research/2026-08-17-baseline-verdict.md`](docs/research/2026-08-17-baseline-verdict.md)
 
-거래대금 급증만으로는 40일 뒤가 갈리지 않는다는 것은 **무엇 때문에 급증했는가**가 필요하다는
-뜻이다. 이 프로젝트가 뉴스로 가는 이유가 데이터로 확인됐다.
+첫 측정은 잘못 쟀다 — `top_n=15` 인데 하루 후보가 중앙값 8건이라 선택이 아예
+일어나지 않았다. 사전등록 후 `top_n=2` 로 다시 쟀고, 그 경위를 문서에 남겼다.
+→ [`topn-preregistration.md`](docs/research/2026-08-17-topn-preregistration.md)
 
 다음에 할 일 → [`docs/HANDOFF.md`](docs/HANDOFF.md)
 
@@ -32,14 +36,17 @@
 
 ```bash
 uv sync --extra dev
-uv run pytest                      # 151 passed
+uv run pytest                      # 294 passed
 
 export $(grep -v '^#' ../kr-quant/.env | xargs)   # KR_QUANT_DB
-uv run swing-baseline              # 베이스라인 판정 → results/baseline.json
+uv run swing-baseline              # ①층 판정 → results/baseline.json
 
 # LLM 배선 확인 (API 키 불필요)
 uv run swing-score --provider fake --news-db <경로> --cache-db <경로> \
   --start 2026-08-01 --end 2026-08-14
+
+uv run swing-layers                # ①②③ 층 비교 (계획 2·3 산출물 필요)
+uv run swing-today                 # 오늘의 후보 + 근거 카드 (동일)
 ```
 
 ## 관련 레포
