@@ -33,6 +33,7 @@ swing-dart-layers = "swing_it.cli_dart_layers:main"
 swing-watch = "swing_it.cli_watch:main"
 swing-intraday = "swing_it.cli_intraday:main"
 swing-closebet = "swing_it.cli_closebet:main"
+swing-cbet-watch = "swing_it.cli_cbet_watch:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/swing_it"]
