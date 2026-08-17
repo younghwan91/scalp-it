@@ -106,6 +106,9 @@ MID_ASOF = str(DATES[100].date())
 def _argv(tmp_path, *extra, asof=ASOF):
     return [
         "--db", "x",
+        # 이 파일의 테스트는 volspike 경로를 검증한다. 기본값은 disclosure 이고
+        # 그쪽은 공시 DB 가 필요하므로 명시한다.
+        "--events", "volspike",
         "--asof", asof,
         "--min-train", "100",
         "--folds", "3",
@@ -124,7 +127,7 @@ def test_candidates_are_appended_to_the_log(db, monkeypatch, tmp_path, capsys):
 
     records = _lines(tmp_path / "forward_log.jsonl")
     assert records
-    assert {r["layer"] for r in records} == {"supply"}
+    assert {r["layer"] for r in records} == {"supply_volspike"}
     assert {r["event_date"] for r in records} == {ASOF}
     assert set(records[0]["features"]) == set(cli_watch.FEATURE_COLUMNS)
 
@@ -191,3 +194,46 @@ def test_threshold_comes_from_latest_fold_not_the_pooled_value(db, monkeypatch, 
     monkeypatch.setattr(cli_watch, "concurrency_threshold", _fixed_threshold(1e9, pooled=-1e9))
     assert cli_watch.main(_argv(other)) == 0
     assert not (other / "forward_log.jsonl").exists()
+
+
+def test_default_event_mode_is_disclosure():
+    """실측상 공시 이벤트가 2.5배 강하므로 기본값이어야 한다.
+
+    거래대금 급증 +3.00% / net +2.54% vs 공시 접수 +7.61% / net +7.15%.
+    → docs/research/2026-08-17-disclosure-layer-verdict.md
+    """
+    import argparse
+
+    from swing_it import cli_watch
+
+    parser = argparse.ArgumentParser()
+    # main 의 파서를 직접 만들 수 없으므로 상수로 계약을 고정한다
+    assert set(cli_watch._EVENT_MODES) == {"disclosure", "volspike"}
+    assert cli_watch._EVENT_MODES["disclosure"]["layer"] == "supply_disclosure"
+    assert cli_watch._EVENT_MODES["volspike"]["layer"] == "supply_volspike"
+    del parser
+
+
+def test_verdict_is_not_hardcoded_pass():
+    """공시 경로는 폴드 0 에서 널을 못 이겨 통과한 적이 없다.
+
+    기록에 'PASS' 를 박으면 나중에 전진 기록을 증거로 쓸 때 무엇을 믿고 샀는지가
+    왜곡된다.
+    """
+    from swing_it import cli_watch
+
+    assert cli_watch._EVENT_MODES["disclosure"]["verdict"] == "FAIL_fold0"
+    assert cli_watch._EVENT_MODES["volspike"]["verdict"] == "PASS"
+
+
+def test_disclosure_mode_without_dart_db_fails_clearly(tmp_path, capsys):
+    from swing_it import cli_watch
+
+    rc = cli_watch.main([
+        "--db", "x", "--events", "disclosure",
+        "--dart-db", str(tmp_path / "nope.db"),
+        "--log-path", str(tmp_path / "log.jsonl"),
+    ])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "공시 DB" in err and "swing-dart" in err

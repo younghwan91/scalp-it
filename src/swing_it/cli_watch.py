@@ -21,12 +21,16 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from .adapters.db import connect, load_prices, load_stock_master, load_supply_demand
+from .dart.dataset import build_dart_dataset
+from .dart.store import init_dart_db, load_disclosures
 from .dataset import FEATURE_COLUMNS
 from .layers import build_layered_dataset
 from .model.baseline import walk_forward_predict
@@ -39,11 +43,29 @@ from .report.forward_log import (
 )
 from .report.threshold import concurrency_threshold
 
-LAYER = "supply"
-# ①층 판정은 2026-08-17 기준 PASS 다 (supply-layer-pass.md, 네 조건 전부).
-# 기록에 판정을 박아두는 이유는, 나중에 판정이 바뀌어도 그때 무엇을 믿고 샀는지가
-# 남아야 전진 기록이 증거로 쓰이기 때문이다.
-GATE_VERDICT = "PASS"
+# 이벤트 정의 두 가지를 **둘 다** 기록한다. 어느 쪽이 미래에 나은지는 지금 모르고,
+# 그것을 알아내는 유일한 방법이 전진 기록이기 때문이다. 둘 다 남기는 비용은 거의 없다.
+#
+#   volspike    거래대금 급증 (rev1). 2024+ 에서 **네 조건 전부 통과**.
+#               net +2.54%, 최종창 +6.12%.  → supply-layer-pass.md
+#   disclosure  공시 접수 (rev2). 훨씬 강하지만 **폴드 0 에서 널을 못 이겨 종합 FAIL**.
+#               net +7.15%, 최종창 +18.30%. → disclosure-layer-verdict.md
+#
+# 기록에 판정을 박아두는 이유는, 나중에 판정이 바뀌어도 **그때 무엇을 믿고 샀는지**가
+# 남아야 전진 기록이 증거로 쓰이기 때문이다. 하드코딩된 "PASS" 는 쓰지 않는다 —
+# 공시 쪽은 통과한 적이 없다.
+_EVENT_MODES: dict[str, dict[str, str]] = {
+    "disclosure": {
+        "layer": "supply_disclosure",
+        "verdict": "FAIL_fold0",
+        "label": "공시 접수",
+    },
+    "volspike": {
+        "layer": "supply_volspike",
+        "verdict": "PASS",
+        "label": "거래대금 급증",
+    },
+}
 
 
 def _table(candidates: pd.DataFrame, names: dict[str, str], threshold: float) -> str:
@@ -80,14 +102,14 @@ def _plan_dates(prices: pd.DataFrame, asof: pd.Timestamp, hold_end: int):
     return entry, entry + pd.tseries.offsets.BDay(hold_end)
 
 
-def _score(train: pd.DataFrame, log_path: str) -> int:
+def _score(train: pd.DataFrame, log_path: str, layer: str) -> int:
     """전진 기록 중 라벨이 붙은 것만 채점한다. 나머지는 아직 시간이 안 됐을 뿐이다."""
     log = read_forward_log(log_path)
     if log.empty:
         print(f"전진 기록이 비어 있다: {log_path}")
         return 0
 
-    log = log[log["layer"] == LAYER].copy()
+    log = log[log["layer"] == layer].copy()
     scored = score_forward_log(log, train[["code", "date", "excess_return"]])
     done = scored[scored["realized_excess"].notna()]
     pending = len(scored) - len(done)
@@ -121,9 +143,28 @@ def _score(train: pd.DataFrame, log_path: str) -> int:
     return 0
 
 
+
+def _dart_pool(prices, supply, disc, args) -> pd.DataFrame:
+    """오늘자 공시 이벤트 풀 — 라벨 없이 피처만.
+
+    ``build_dart_dataset`` 은 라벨 결측을 떨구므로 오늘자는 통째로 사라진다.
+    라벨 컬럼만 비운 채 같은 피처를 만들기 위해, 먼 과거의 ``hold_end`` 를 0 으로
+    두는 대신 이벤트·피처 경로를 그대로 쓰고 라벨 요구만 우회한다.
+    """
+    from .dart.dataset import DISC_DATASET_COLUMNS
+
+    full = build_dart_dataset(
+        prices, supply, disc, adv_floor=args.adv_floor, hold_end=0, hold_start=0
+    )
+    return full[[c for c in DISC_DATASET_COLUMNS if c in full.columns]]
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="①층(수급) 전진 기록 — 오늘 후보 기록·채점")
     parser.add_argument("--db", default=None, help="DSN. 생략 시 KR_QUANT_DB")
+    parser.add_argument("--events", choices=sorted(_EVENT_MODES), default="disclosure",
+                        help="이벤트 정의. disclosure 가 실측상 2.5배 강하다")
+    parser.add_argument("--dart-db", default="data/dart_2024.db",
+                        help="--events disclosure 일 때 쓰는 공시 DB")
     parser.add_argument("--start", default="2024-01-01",
                         help="유니버스 일관성 때문에 2024-01 이후만 쓴다 (universe-shift.md)")
     parser.add_argument("--asof", default=None, help="기준일. 생략 시 오늘")
@@ -146,23 +187,47 @@ def main(argv: list[str] | None = None) -> int:
             "스펙 §2 는 15 이상을 요구한다 — 집중은 이미 죽은 영역이다."
         )
 
+    # 선행 산출물을 **DB 접속·로드 전에** 확인한다. 수백만 행을 읽은 뒤에
+    # "파일이 없다"를 만나면 몇 분을 버린다.
+    if args.events == "disclosure" and not Path(args.dart_db).is_file():
+        print(f"\n공시 DB 가 없다: {args.dart_db}\n"
+              f"  → 먼저 `swing-dart` 를 돌리거나 `--events volspike` 를 쓰라.\n",
+              file=sys.stderr)
+        return 1
+
     end = args.asof or str(pd.Timestamp.today().date())
     conn = connect(args.db)
     prices = load_prices(conn, args.start, end)
     supply = load_supply_demand(conn, args.start, end)
 
-    common = {
-        "adv_floor": args.adv_floor,
-        "tv_multiple": args.tv_multiple,
-        "hold_end": args.hold_end,
-    }
-    train = build_layered_dataset(prices, supply, require_label=True, **common)
+    mode = _EVENT_MODES[args.events]
+    if args.events == "disclosure":
+        disc = load_disclosures(
+            init_dart_db(args.dart_db),
+            args.start.replace("-", ""),
+            end.replace("-", ""),
+        )
+        train = build_dart_dataset(
+            prices, supply, disc, adv_floor=args.adv_floor, hold_end=args.hold_end
+        )
+        pool_builder = functools.partial(_dart_pool, prices, supply, disc, args)
+    else:
+        common = {
+            "adv_floor": args.adv_floor,
+            "tv_multiple": args.tv_multiple,
+            "hold_end": args.hold_end,
+        }
+        train = build_layered_dataset(prices, supply, require_label=True, **common)
+        pool_builder = functools.partial(
+            build_layered_dataset, prices, supply, require_label=False, **common
+        )
+
     if train.empty:
         print("학습 표본이 비었다. --start 와 DB 커버리지를 확인하라.", file=sys.stderr)
         return 1
 
     if args.score:
-        return _score(train, args.log_path)
+        return _score(train, args.log_path, mode["layer"])
 
     master = load_stock_master(conn)
     names = dict(zip(master["code"], master["name"]))
@@ -183,11 +248,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     model, _ = fit_final_model(train, FEATURE_COLUMNS, seed=args.seed)
-    pool = build_layered_dataset(prices, supply, require_label=False, **common)
+    pool = pool_builder()
     asof = pd.Timestamp(end)
     today = pool[pool["date"] == asof].copy()
 
-    print(f"# {asof.date()} ①층 수급 후보")
+    print(f"# {asof.date()} ①층 수급 후보 — 이벤트: {mode['label']}")
     print()
     print(
         f"학습 표본 {len(train):,}건 · 오늘 풀 {len(today)}종목 · "
@@ -196,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
     print()
 
     if today.empty:
-        print(f"오늘은 후보 없음 — {asof.date()} 에 거래대금 급증 이벤트가 없다.")
+        print(f"오늘은 후보 없음 — {asof.date()} 에 {mode['label']} 이벤트가 없다.")
         return 0
 
     today["prediction"] = model.predict(today[FEATURE_COLUMNS])
@@ -222,8 +287,8 @@ def main(argv: list[str] | None = None) -> int:
         build_records(
             candidates,
             feature_columns=FEATURE_COLUMNS,
-            layer=LAYER,
-            gate_verdict=GATE_VERDICT,
+            layer=mode["layer"],
+            gate_verdict=mode["verdict"],
             logged_at=str(pd.Timestamp.today().date()),
             entry_date=str(pd.Timestamp(entry).date()),
             exit_date=str(pd.Timestamp(exit_date).date()),
