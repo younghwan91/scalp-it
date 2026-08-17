@@ -246,6 +246,7 @@ def test_entry_date_is_after_the_event_even_at_calendar_end():
     'D+1 시가 진입'이라는 설계가 표시상 무너진다.
     """
     import pandas as pd
+
     from swing_it.cli_watch import _plan_dates
 
     prices = pd.DataFrame({
@@ -260,6 +261,7 @@ def test_entry_date_is_after_the_event_even_at_calendar_end():
 
 def test_entry_date_uses_the_calendar_when_available():
     import pandas as pd
+
     from swing_it.cli_watch import _plan_dates
 
     prices = pd.DataFrame({
