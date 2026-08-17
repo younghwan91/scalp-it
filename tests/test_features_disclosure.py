@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.features.disclosure import DISC_FEATURE_COLUMNS, disclosure_features
+from scalp_it.features.disclosure import DISC_FEATURE_COLUMNS, disclosure_features
 
 CAL = pd.Series(pd.to_datetime(
     ["2026-08-13", "2026-08-14", "2026-08-17", "2026-08-18", "2026-08-19"]))

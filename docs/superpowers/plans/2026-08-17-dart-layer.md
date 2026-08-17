@@ -11,7 +11,7 @@
 
 **Tech Stack:** Python ≥3.10, httpx(이미 의존성), pandas, sqlite3, pytest
 
-**Spec:** `docs/superpowers/specs/2026-08-17-swing-it-design.md`
+**Spec:** `docs/superpowers/specs/2026-08-17-scalp-it-design.md`
 
 ## 왜 이 계획이 생겼나
 
@@ -87,17 +87,17 @@ ZIP 바이트를 돌려준다. 안에 XML 파일 하나. 앞부분에 `<STYLE>` 
 
 | 파일 | 책임 |
 |---|---|
-| `src/swing_it/adapters/dart.py` | OpenDART HTTP. **DART 호출은 이 파일에만** |
-| `src/swing_it/dart/__init__.py` | 패키지 |
-| `src/swing_it/dart/classify.py` | `report_nm` → 재료 유형 (순수 함수) |
-| `src/swing_it/dart/events.py` | **공시 → 이벤트** (계획 1 거래대금 급증을 대체) |
-| `src/swing_it/dart/store.py` | `data/dart.db` 스키마·적재·조회 |
-| `src/swing_it/features/disclosure.py` | ②층 피처 (순수 함수) |
-| `src/swing_it/dart/dataset.py` | 이벤트 + 피처 + 라벨 조립 |
-| `src/swing_it/validate/monotonic.py` | 십분위 단조성 |
-| `src/swing_it/report/threshold.py` | 절대 임계 (동시 보유 역산) |
-| `src/swing_it/cli_dart.py` | `swing-dart` — 수집 CLI |
-| `src/swing_it/cli_dart_layers.py` | `swing-dart-layers` — 판정 CLI |
+| `src/scalp_it/adapters/dart.py` | OpenDART HTTP. **DART 호출은 이 파일에만** |
+| `src/scalp_it/dart/__init__.py` | 패키지 |
+| `src/scalp_it/dart/classify.py` | `report_nm` → 재료 유형 (순수 함수) |
+| `src/scalp_it/dart/events.py` | **공시 → 이벤트** (계획 1 거래대금 급증을 대체) |
+| `src/scalp_it/dart/store.py` | `data/dart.db` 스키마·적재·조회 |
+| `src/scalp_it/features/disclosure.py` | ②층 피처 (순수 함수) |
+| `src/scalp_it/dart/dataset.py` | 이벤트 + 피처 + 라벨 조립 |
+| `src/scalp_it/validate/monotonic.py` | 십분위 단조성 |
+| `src/scalp_it/report/threshold.py` | 절대 임계 (동시 보유 역산) |
+| `src/scalp_it/cli_dart.py` | `scalp-dart` — 수집 CLI |
+| `src/scalp_it/cli_dart_layers.py` | `scalp-dart-layers` — 판정 CLI |
 | `tests/` | 각 모듈 대응 |
 
 ---
@@ -105,7 +105,7 @@ ZIP 바이트를 돌려준다. 안에 XML 파일 하나. 앞부분에 `<STYLE>` 
 ### Task 1: OpenDART 어댑터 — 공시검색
 
 **Files:**
-- Create: `src/swing_it/adapters/dart.py`
+- Create: `src/scalp_it/adapters/dart.py`
 - Test: `tests/test_dart_adapter.py`
 
 **Interfaces:**
@@ -127,7 +127,7 @@ ZIP 바이트를 돌려준다. 안에 XML 파일 하나. 앞부분에 `<STYLE>` 
 import httpx
 import pytest
 
-from swing_it.adapters.dart import DartClient, DartError, api_keys
+from scalp_it.adapters.dart import DartClient, DartError, api_keys
 
 
 def _resp(payload: dict) -> httpx.Response:
@@ -248,11 +248,11 @@ def test_search_all_walks_every_page():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run --extra dev pytest tests/test_dart_adapter.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.adapters.dart'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.adapters.dart'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/adapters/dart.py`:
+`src/scalp_it/adapters/dart.py`:
 
 ```python
 """OpenDART HTTP 어댑터 — DART 호출은 이 파일에만 존재한다.
@@ -376,7 +376,7 @@ Expected: 10 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/adapters/dart.py tests/test_dart_adapter.py
+git add src/scalp_it/adapters/dart.py tests/test_dart_adapter.py
 git commit -m "feat(adapters): OpenDART 공시검색 어댑터 — 키 로테이션·한도 폴백"
 ```
 
@@ -385,8 +385,8 @@ git commit -m "feat(adapters): OpenDART 공시검색 어댑터 — 키 로테이
 ### Task 2: 공시 유형 분류
 
 **Files:**
-- Create: `src/swing_it/dart/__init__.py`
-- Create: `src/swing_it/dart/classify.py`
+- Create: `src/scalp_it/dart/__init__.py`
+- Create: `src/scalp_it/dart/classify.py`
 - Test: `tests/test_dart_classify.py`
 
 **Interfaces:**
@@ -442,7 +442,7 @@ git commit -m "feat(adapters): OpenDART 공시검색 어댑터 — 키 로테이
 import pandas as pd
 import pytest
 
-from swing_it.dart.classify import (
+from scalp_it.dart.classify import (
     MATERIAL_TYPES,
     classify_frame,
     classify_report,
@@ -564,17 +564,17 @@ def test_classify_frame_on_empty():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run --extra dev pytest tests/test_dart_classify.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.dart'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.dart'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/dart/__init__.py`:
+`src/scalp_it/dart/__init__.py`:
 
 ```python
 """DART 공시 처리 — 수집은 adapters/dart.py, 여기는 순수 함수."""
 ```
 
-`src/swing_it/dart/classify.py`:
+`src/scalp_it/dart/classify.py`:
 
 ```python
 """공시 제목을 재료 유형으로 분류한다 — 규칙 기반, LLM 불필요.
@@ -664,7 +664,7 @@ Expected: 24 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/dart tests/test_dart_classify.py
+git add src/scalp_it/dart tests/test_dart_classify.py
 git commit -m "feat(dart): 공시 제목 → 재료 유형 규칙 분류 (사전등록)"
 ```
 
@@ -673,7 +673,7 @@ git commit -m "feat(dart): 공시 제목 → 재료 유형 규칙 분류 (사전
 ### Task 3: 공시 저장소
 
 **Files:**
-- Create: `src/swing_it/dart/store.py`
+- Create: `src/scalp_it/dart/store.py`
 - Test: `tests/test_dart_store.py`
 
 **Interfaces:**
@@ -694,7 +694,7 @@ git commit -m "feat(dart): 공시 제목 → 재료 유형 규칙 분류 (사전
 import pandas as pd
 import pytest
 
-from swing_it.dart.store import (
+from scalp_it.dart.store import (
     DISC_COLUMNS,
     collected_range,
     init_dart_db,
@@ -775,11 +775,11 @@ def test_collected_range_reports_bounds(conn):
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run --extra dev pytest tests/test_dart_store.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.dart.store'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.dart.store'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/dart/store.py`:
+`src/scalp_it/dart/store.py`:
 
 ```python
 """공시 로컬 저장소 — sqlite ``data/dart.db``.
@@ -909,7 +909,7 @@ Expected: 8 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/dart/store.py tests/test_dart_store.py
+git add src/scalp_it/dart/store.py tests/test_dart_store.py
 git commit -m "feat(dart): 공시 로컬 저장소 — 상장 종목만, rcept_no 멱등 적재"
 ```
 
@@ -918,8 +918,8 @@ git commit -m "feat(dart): 공시 로컬 저장소 — 상장 종목만, rcept_n
 ### Task 4: 수집 CLI
 
 **Files:**
-- Create: `src/swing_it/cli_dart.py`
-- Modify: `pyproject.toml` — `[project.scripts]` 에 `swing-dart` 추가
+- Create: `src/scalp_it/cli_dart.py`
+- Modify: `pyproject.toml` — `[project.scripts]` 에 `scalp-dart` 추가
 - Test: `tests/test_cli_dart.py`
 
 **Interfaces:**
@@ -938,7 +938,7 @@ git commit -m "feat(dart): 공시 로컬 저장소 — 상장 종목만, rcept_n
 import httpx
 import pytest
 
-from swing_it.cli_dart import main, quarter_ranges
+from scalp_it.cli_dart import main, quarter_ranges
 
 
 def test_quarter_ranges_never_exceed_ninety_days():
@@ -986,7 +986,7 @@ def test_cli_collects_and_persists(tmp_path, monkeypatch):
     ], client=httpx.Client(transport=httpx.MockTransport(handler)))
     assert rc == 0
 
-    from swing_it.dart.store import init_dart_db, load_disclosures
+    from scalp_it.dart.store import init_dart_db, load_disclosures
 
     got = load_disclosures(init_dart_db(db), "20260801", "20260831")
     assert len(got) == 1
@@ -1011,7 +1011,7 @@ def test_cli_without_key_fails_clearly(tmp_path, monkeypatch):
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run --extra dev pytest tests/test_cli_dart.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.cli_dart'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.cli_dart'`
 
 - [ ] **Step 3: `pyproject.toml` 수정**
 
@@ -1019,22 +1019,22 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.cli_dart'`
 
 ```toml
 [project.scripts]
-swing-baseline = "swing_it.cli:main"
-swing-news = "swing_it.cli_news:main"
-swing-score = "swing_it.score.cli:main"
-swing-layers = "swing_it.cli_layers:main"
-swing-today = "swing_it.cli_today:main"
-swing-dart = "swing_it.cli_dart:main"
+scalp-baseline = "scalp_it.cli:main"
+scalp-news = "scalp_it.cli_news:main"
+scalp-score = "scalp_it.score.cli:main"
+scalp-layers = "scalp_it.cli_layers:main"
+scalp-today = "scalp_it.cli_today:main"
+scalp-dart = "scalp_it.cli_dart:main"
 ```
 
 Run: `uv sync --extra dev`
 
 - [ ] **Step 4: 구현**
 
-`src/swing_it/cli_dart.py`:
+`src/scalp_it/cli_dart.py`:
 
 ```python
-"""`swing-dart` — OpenDART 공시를 로컬 sqlite 에 수집한다.
+"""`scalp-dart` — OpenDART 공시를 로컬 sqlite 에 수집한다.
 
 ``corp_code`` 없는 공시검색은 기간이 3개월로 제한되므로 구간을 쪼개 돈다.
 하루 1,000~1,500건, ``page_count=100`` 이므로 10년치가 약 30,000 콜이다.
@@ -1134,15 +1134,15 @@ Expected: 6 passed
 
 ```bash
 export $(grep -v '^#' ../quant-airflow/.env | grep DART | xargs)
-uv run swing-dart --start 20260801 --end 20260814 --db data/dart.db
+uv run scalp-dart --start 20260801 --end 20260814 --db data/dart.db
 ```
 Expected: 수천 건 적재. **여기서 멈추고 결과를 확인한 뒤** 전 기간을 돌린다.
 
 - [ ] **Step 7: 커밋**
 
 ```bash
-git add pyproject.toml src/swing_it/cli_dart.py tests/test_cli_dart.py
-git commit -m "feat(cli): swing-dart — 3개월 구간 분할 공시 수집"
+git add pyproject.toml src/scalp_it/cli_dart.py tests/test_cli_dart.py
+git commit -m "feat(cli): scalp-dart — 3개월 구간 분할 공시 수집"
 ```
 
 ---
@@ -1150,7 +1150,7 @@ git commit -m "feat(cli): swing-dart — 3개월 구간 분할 공시 수집"
 ### Task 5: 이벤트 빌더 — 공시가 이벤트다
 
 **Files:**
-- Create: `src/swing_it/dart/events.py`
+- Create: `src/scalp_it/dart/events.py`
 - Test: `tests/test_dart_events.py`
 
 **Interfaces:**
@@ -1181,7 +1181,7 @@ git commit -m "feat(cli): swing-dart — 3개월 구간 분할 공시 수집"
 import pandas as pd
 import pytest
 
-from swing_it.dart.events import EVENT_COLUMNS, build_disclosure_events
+from scalp_it.dart.events import EVENT_COLUMNS, build_disclosure_events
 
 
 def _prices(codes, n, adv=9000.0, spike_at=None):
@@ -1293,11 +1293,11 @@ def test_empty_disclosures_returns_empty_with_columns():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run --extra dev pytest tests/test_dart_events.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.dart.events'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.dart.events'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/dart/events.py`:
+`src/scalp_it/dart/events.py`:
 
 ```python
 """이벤트 정의 — 공시가 난 (종목, 날짜) 다 (스펙 rev2 §3).
@@ -1369,7 +1369,7 @@ Expected: 10 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/dart/events.py tests/test_dart_events.py
+git add src/scalp_it/dart/events.py tests/test_dart_events.py
 git commit -m "feat(dart): 이벤트 정의를 공시로 뒤집는다 (스펙 rev2)"
 ```
 
@@ -1378,8 +1378,8 @@ git commit -m "feat(dart): 이벤트 정의를 공시로 뒤집는다 (스펙 re
 ### Task 6: 공시 피처와 데이터셋
 
 **Files:**
-- Create: `src/swing_it/features/disclosure.py`
-- Create: `src/swing_it/dart/dataset.py`
+- Create: `src/scalp_it/features/disclosure.py`
+- Create: `src/scalp_it/dart/dataset.py`
 - Test: `tests/test_features_disclosure.py`
 - Test: `tests/test_dart_dataset.py`
 
@@ -1417,7 +1417,7 @@ git commit -m "feat(dart): 이벤트 정의를 공시로 뒤집는다 (스펙 re
 import numpy as np
 import pandas as pd
 
-from swing_it.features.disclosure import DISC_FEATURE_COLUMNS, disclosure_features
+from scalp_it.features.disclosure import DISC_FEATURE_COLUMNS, disclosure_features
 
 
 CAL = pd.Series(pd.to_datetime(
@@ -1500,9 +1500,9 @@ def test_empty_input():
 ```python
 import pandas as pd
 
-from swing_it.dart.dataset import DISC_DATASET_COLUMNS, build_dart_dataset
-from swing_it.dataset import FEATURE_COLUMNS
-from swing_it.features.disclosure import DISC_FEATURE_COLUMNS
+from scalp_it.dart.dataset import DISC_DATASET_COLUMNS, build_dart_dataset
+from scalp_it.dataset import FEATURE_COLUMNS
+from scalp_it.features.disclosure import DISC_FEATURE_COLUMNS
 
 
 def _prices(codes, n):
@@ -1582,7 +1582,7 @@ Expected: FAIL — 두 모듈 모두 `ModuleNotFoundError`
 
 - [ ] **Step 4: 피처 구현**
 
-`src/swing_it/features/disclosure.py`:
+`src/scalp_it/features/disclosure.py`:
 
 ```python
 """②층 공시 피처 — 무료·규칙 기반, LLM 불필요.
@@ -1685,7 +1685,7 @@ def disclosure_features(
 
 - [ ] **Step 5: 데이터셋 구현**
 
-`src/swing_it/dart/dataset.py`:
+`src/scalp_it/dart/dataset.py`:
 
 ```python
 """공시 이벤트 + 수급 피처 + 공시 피처 + 라벨을 한 표로 조립한다."""
@@ -1762,7 +1762,7 @@ Expected: 13 passed
 - [ ] **Step 7: 커밋**
 
 ```bash
-git add src/swing_it/features/disclosure.py src/swing_it/dart/dataset.py \
+git add src/scalp_it/features/disclosure.py src/scalp_it/dart/dataset.py \
         tests/test_features_disclosure.py tests/test_dart_dataset.py
 git commit -m "feat(dart): 공시 피처 10종과 이벤트 데이터셋 조립"
 ```
@@ -1772,10 +1772,10 @@ git commit -m "feat(dart): 공시 피처 10종과 이벤트 데이터셋 조립"
 ### Task 7: 판정 — 층 비교 · 십분위 단조성 · 절대 임계
 
 **Files:**
-- Create: `src/swing_it/validate/monotonic.py`
-- Create: `src/swing_it/report/threshold.py`
-- Create: `src/swing_it/cli_dart_layers.py`
-- Modify: `pyproject.toml` — `swing-dart-layers` 추가
+- Create: `src/scalp_it/validate/monotonic.py`
+- Create: `src/scalp_it/report/threshold.py`
+- Create: `src/scalp_it/cli_dart_layers.py`
+- Modify: `pyproject.toml` — `scalp-dart-layers` 추가
 - Test: `tests/test_validate_monotonic.py`
 - Test: `tests/test_report_threshold.py`
 
@@ -1785,7 +1785,7 @@ git commit -m "feat(dart): 공시 피처 10종과 이벤트 데이터셋 조립"
   - `decile_table(pred: pd.DataFrame, *, n_bins: int = 10) -> pd.DataFrame` — 컬럼 `[decile, n, mean_excess, median_excess]`. `decile` 0 = 예측 최저
   - `monotonicity(pred: pd.DataFrame, *, n_bins: int = 10) -> dict` — 키 `spearman`, `top_minus_bottom`, `top_vs_median`, `is_monotone`. `is_monotone` 은 `spearman >= 0.6` **그리고** `top_minus_bottom > 0`
   - `concurrency_threshold(pred: pd.DataFrame, *, hold_days: int = 40, target_concurrent: int = 20) -> dict` — 키 `threshold`, `expected_per_day`, `expected_concurrent`, `n_train_days`
-  - `main(argv) -> int` — `swing-dart-layers`
+  - `main(argv) -> int` — `scalp-dart-layers`
 
 **절대 임계 산식 (사전등록).** 성과가 아니라 구조에서 나온다.
 
@@ -1806,7 +1806,7 @@ git commit -m "feat(dart): 공시 피처 10종과 이벤트 데이터셋 조립"
 import numpy as np
 import pandas as pd
 
-from swing_it.validate.monotonic import decile_table, monotonicity
+from scalp_it.validate.monotonic import decile_table, monotonicity
 
 
 def _pred(n: int, signal: float, seed: int = 0) -> pd.DataFrame:
@@ -1862,7 +1862,7 @@ def test_report_has_all_keys():
 import numpy as np
 import pandas as pd
 
-from swing_it.report.threshold import concurrency_threshold
+from scalp_it.report.threshold import concurrency_threshold
 
 
 def _pred(n_days: int, per_day: int, seed: int = 0) -> pd.DataFrame:
@@ -1913,7 +1913,7 @@ Expected: FAIL — 두 모듈 `ModuleNotFoundError`
 
 - [ ] **Step 4: 단조성 구현**
 
-`src/swing_it/validate/monotonic.py`:
+`src/scalp_it/validate/monotonic.py`:
 
 ```python
 """예측값 십분위 단조성 — "확실한 것만"이 성립하는지 (스펙 §6).
@@ -1971,7 +1971,7 @@ def monotonicity(pred: pd.DataFrame, *, n_bins: int = 10) -> dict:
 
 - [ ] **Step 5: 임계 구현**
 
-`src/swing_it/report/threshold.py`:
+`src/scalp_it/report/threshold.py`:
 
 ```python
 """절대 임계 — "확실한 것만" (스펙 §6).
@@ -2023,10 +2023,10 @@ def concurrency_threshold(
 
 - [ ] **Step 6: 판정 CLI 구현**
 
-`src/swing_it/cli_dart_layers.py`:
+`src/scalp_it/cli_dart_layers.py`:
 
 ```python
-"""`swing-dart-layers` — ①수급 vs ②+공시 판정.
+"""`scalp-dart-layers` — ①수급 vs ②+공시 판정.
 
 FAIL 이 나와도 exit 0 이다. 부정 결과는 오류가 아니라 결과다 (스펙 §11).
 파라미터를 바꿔 재시도하는 경로는 만들지 않는다.
@@ -2070,7 +2070,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if not Path(args.dart_db).is_file():
-        print(f"\n공시 DB 가 없다: {args.dart_db}\n  → 먼저 `swing-dart` 를 돌려야 한다.\n",
+        print(f"\n공시 DB 가 없다: {args.dart_db}\n  → 먼저 `scalp-dart` 를 돌려야 한다.\n",
               file=sys.stderr)
         return 1
 
@@ -2141,7 +2141,7 @@ Task 4 구현본을 따른다. 실제 키가 다르면 **CLI 를 맞춘다** —
 - [ ] **Step 7: `pyproject.toml` 에 엔트리포인트 추가**
 
 ```toml
-swing-dart-layers = "swing_it.cli_dart_layers:main"
+scalp-dart-layers = "scalp_it.cli_dart_layers:main"
 ```
 
 Run: `uv sync --extra dev`
@@ -2154,8 +2154,8 @@ Expected: 전부 통과. 기존 테스트가 하나도 깨지지 않아야 한�
 - [ ] **Step 9: 커밋**
 
 ```bash
-git add src/swing_it/validate/monotonic.py src/swing_it/report/threshold.py \
-        src/swing_it/cli_dart_layers.py pyproject.toml \
+git add src/scalp_it/validate/monotonic.py src/scalp_it/report/threshold.py \
+        src/scalp_it/cli_dart_layers.py pyproject.toml \
         tests/test_validate_monotonic.py tests/test_report_threshold.py
 git commit -m "feat(validate): 십분위 단조성 · 절대 임계 · 공시 층 판정 CLI"
 ```

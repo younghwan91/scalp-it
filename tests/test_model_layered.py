@@ -2,9 +2,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from swing_it.dataset import FEATURE_COLUMNS
-from swing_it.model.baseline import walk_forward_predict
-from swing_it.model.layered import (
+from scalp_it.dataset import FEATURE_COLUMNS
+from scalp_it.model.baseline import walk_forward_predict
+from scalp_it.model.layered import (
     fit_final_model,
     fold_dates,
     walk_forward_predict_features,

@@ -1,8 +1,8 @@
 import pandas as pd
 
-from swing_it.dart.dataset import DISC_DATASET_COLUMNS, build_dart_dataset
-from swing_it.dataset import FEATURE_COLUMNS
-from swing_it.features.disclosure import DISC_FEATURE_COLUMNS
+from scalp_it.dart.dataset import DISC_DATASET_COLUMNS, build_dart_dataset
+from scalp_it.dataset import FEATURE_COLUMNS
+from scalp_it.features.disclosure import DISC_FEATURE_COLUMNS
 
 
 def _prices(codes, n):

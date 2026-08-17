@@ -1,4 +1,4 @@
-"""`swing-layers` — 세 층을 동일 조건에서 비교하고 판정을 출력한다.
+"""`scalp-layers` — 세 층을 동일 조건에서 비교하고 판정을 출력한다.
 
 **FAIL 이어도 종료 코드는 0 이다.** FAIL 은 오류가 아니라 결과다(스펙 §10).
 종료 코드로 FAIL 을 표현하면 래퍼나 CI 가 "실패했으니 파라미터 바꿔 재시도"
@@ -53,10 +53,10 @@ def _load_llm(args) -> pd.DataFrame:
 
     ``n_articles`` 는 ②층의 ``article_count`` 와 같은 축이라 중복이고,
     ``material_type`` 은 원-핫 9개가 스펙 §6 상한을 혼자 먹으므로 모델에
-    넣지 않는다. ``material_type`` 은 ``swing-today`` 가 카드 표시용으로만 쓴다.
+    넣지 않는다. ``material_type`` 은 ``scalp-today`` 가 카드 표시용으로만 쓴다.
     """
-    require_sqlite(args.llm_cache, what="LLM 피처 캐시", produced_by="swing-score")
-    require_sqlite(args.news_db, what="뉴스 DB", produced_by="swing-news")
+    require_sqlite(args.llm_cache, what="LLM 피처 캐시", produced_by="scalp-score")
+    require_sqlite(args.news_db, what="뉴스 DB", produced_by="scalp-news")
     frame = load_llm_features(
         args.llm_cache,
         news_path=args.news_db,
@@ -155,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n{exc}\n", file=sys.stderr)
         print(
             "층 비교는 ①수급 ②+규칙뉴스 ③+LLM 을 **같은 표본**으로 재는 것이라, "
-            "세 층이 다 있어야 의미가 있다. ①층만 보려면 `swing-baseline` 을 써라.",
+            "세 층이 다 있어야 의미가 있다. ①층만 보려면 `scalp-baseline` 을 써라.",
             file=sys.stderr,
         )
         return 1

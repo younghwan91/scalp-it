@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.validate.monotonic import decile_table, monotonicity
+from scalp_it.validate.monotonic import decile_table, monotonicity
 
 
 def _pred(n: int, signal: float, seed: int = 0) -> pd.DataFrame:

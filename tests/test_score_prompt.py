@@ -1,5 +1,5 @@
-from swing_it.score.prompt import FORBIDDEN_PROMPT_TERMS, PROMPT_VERSION, build_prompt
-from swing_it.score.schema import MATERIAL_TYPES
+from scalp_it.score.prompt import FORBIDDEN_PROMPT_TERMS, PROMPT_VERSION, build_prompt
+from scalp_it.score.schema import MATERIAL_TYPES
 
 _ARTICLE = {
     "code": "005930",

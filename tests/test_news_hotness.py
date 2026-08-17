@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.news.hotness import (
+from scalp_it.news.hotness import (
     W_ARTICLES,
     W_OUTLETS,
     W_TRADE,

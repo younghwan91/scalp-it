@@ -3,7 +3,7 @@
 > ## ⚠️ 방향 전환 (같은 날 오후) — 이 문서 앞부분은 rev1 기준이다
 >
 > **이벤트를 "거래대금 급증"에서 "공시 접수"로 뒤집었다.** 스펙 rev2 를 먼저 읽어라.
-> → `docs/superpowers/specs/2026-08-17-swing-it-design.md` §0
+> → `docs/superpowers/specs/2026-08-17-scalp-it-design.md` §0
 >
 > 바뀐 이유: 검증된 PEAD 가 이미 '재료→드리프트' 구조이고, 공시 접수일자가 정확한
 > 정보 공개 시점이라 자연 실험이 깨끗하며, 급증 종목의 재료를 찾는 것은 역인과다.
@@ -48,10 +48,10 @@ CLI 4종이 등록돼 있다:
 
 | CLI | 하는 일 | 지금 되는가 |
 |---|---|---|
-| `swing-baseline` | ①층 수급 베이스라인 판정 | ✅ 실 DB 로 실행 완료 |
-| `swing-score` | 기사 → LLM 고정 스키마 피처 | ✅ `--provider fake` 로 확인 |
-| `swing-layers` | ①②③ 층 비교 판정 | 계획 2·3 산출물 필요 |
-| `swing-today` | 오늘의 후보 + 근거 카드 | 계획 2·3 산출물 필요 |
+| `scalp-baseline` | ①층 수급 베이스라인 판정 | ✅ 실 DB 로 실행 완료 |
+| `scalp-score` | 기사 → LLM 고정 스키마 피처 | ✅ `--provider fake` 로 확인 |
+| `scalp-layers` | ①②③ 층 비교 판정 | 계획 2·3 산출물 필요 |
+| `scalp-today` | 오늘의 후보 + 근거 카드 | 계획 2·3 산출물 필요 |
 
 뒤의 둘은 지금 돌리면 **1.5초 안에 무엇을 먼저 돌려야 하는지 알려주고 끝난다.**
 
@@ -85,7 +85,7 @@ CLI 4종이 등록돼 있다:
 배선은 이미 확인됐다. 키 없이 이렇게 돌려볼 수 있다:
 
 ```bash
-uv run swing-score --provider fake --news-db <경로> --cache-db <경로> \
+uv run scalp-score --provider fake --news-db <경로> --cache-db <경로> \
   --start 2026-08-01 --end 2026-08-14
 ```
 
@@ -100,7 +100,7 @@ uv run swing-score --provider fake --news-db <경로> --cache-db <경로> \
 
 | 문서 | 내용 |
 |---|---|
-| `docs/superpowers/specs/2026-08-17-swing-it-design.md` | 설계 스펙 |
+| `docs/superpowers/specs/2026-08-17-scalp-it-design.md` | 설계 스펙 |
 | `docs/superpowers/plans/2026-08-17-baseline-skeleton.md` | 계획 1 — **구현 완료** |
 | `docs/superpowers/plans/2026-08-17-news-ingest.md` | 계획 2 — 뉴스 인제스트 (7 태스크) |
 | `docs/superpowers/plans/2026-08-17-llm-features.md` | 계획 3 — LLM 피처 추출 (7 태스크) |
@@ -110,7 +110,7 @@ uv run swing-score --provider fake --news-db <경로> --cache-db <경로> \
 ### 계획 1 구현 — 37개 테스트 통과, ruff 통과
 
 ```
-src/swing_it/
+src/scalp_it/
   adapters/db.py          읽기 전용 DB 어댑터 (SQL 은 여기에만)
   events.py               거래대금 급증 이벤트 + point-in-time 유동성 하한
   labels.py               D+1 시가 진입 → D+40 종가 청산, 횡단면 디민 초과수익
@@ -119,10 +119,10 @@ src/swing_it/
   model/baseline.py       walk-forward (GBM max_depth=2)
   validate/gate.py        음성대조 널
   validate/diagnostics.py 폴드별 널 · 손 안 댄 최종창 · 플라시보
-  cli.py                  swing-baseline
+  cli.py                  scalp-baseline
 ```
 
-재현: `export $(grep -v '^#' ../kr-quant/.env | xargs) && uv run swing-baseline`
+재현: `export $(grep -v '^#' ../kr-quant/.env | xargs) && uv run scalp-baseline`
 
 ### 판정 결과: FAIL — 단, 한 번 정정했다
 
@@ -167,7 +167,7 @@ src/swing_it/
 
 5. **계획 3 의 뉴스 어댑터를 계획 2 의 정규화 스키마에 맞춰 수정**했다. 계획 2 가 `articles` + `article_codes` 로 나눈 게 옳다(기사 1건이 여러 종목에 걸린다). 어댑터 SELECT 에서 조인·별칭으로 흡수한다.
 
-6. **`swing-score` 의 가격 룩백 버그를 고쳤다.** `--start` 부터만 가격을 읽어 `adv`
+6. **`scalp-score` 의 가격 룩백 버그를 고쳤다.** `--start` 부터만 가격을 읽어 `adv`
    롤링 창이 안 차서 **이벤트가 항상 0** 이 되고 모든 기사가 `no_volume_event` 로
    조용히 탈락했다. 실패가 아니라 정상 종료로 보여서 더 위험했다. 실 DB 스모크에서
    31배 급증일 기사가 탈락하며 발견. 수정 후 같은 조건에서 이벤트 0 → 343건.

@@ -3,7 +3,7 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from swing_it.adapters.news_db import NEWS_COLUMNS, connect_news, load_articles
+from scalp_it.adapters.news_db import NEWS_COLUMNS, connect_news, load_articles
 
 
 @pytest.fixture()

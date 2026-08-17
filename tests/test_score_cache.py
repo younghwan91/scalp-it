@@ -1,7 +1,7 @@
 import pandas as pd
 
-from swing_it.score.cache import get_cached, load_features_frame, open_cache, put_result
-from swing_it.score.schema import LLM_FEATURE_COLUMNS, ArticleFeatures
+from scalp_it.score.cache import get_cached, load_features_frame, open_cache, put_result
+from scalp_it.score.schema import LLM_FEATURE_COLUMNS, ArticleFeatures
 
 _F = ArticleFeatures(
     material_type="수주",

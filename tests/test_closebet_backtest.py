@@ -7,8 +7,8 @@ import math
 import pandas as pd
 import pytest
 
-from swing_it.cli_closebet import build_parser, format_summary, parse_rule, parse_rules
-from swing_it.closebet.backtest import apply_rules, run_close_bet
+from scalp_it.cli_closebet import build_parser, format_summary, parse_rule, parse_rules
+from scalp_it.closebet.backtest import apply_rules, run_close_bet
 
 
 def frames(rows: list[dict]) -> tuple[pd.DataFrame, pd.DataFrame]:

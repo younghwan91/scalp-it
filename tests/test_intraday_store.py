@@ -9,7 +9,7 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from swing_it.intraday.store import (
+from scalp_it.intraday.store import (
     _CREATE_TABLE,
     _placeholder,
     count_bars,

@@ -1,4 +1,4 @@
-from swing_it.report.layers_md import render_layer_report
+from scalp_it.report.layers_md import render_layer_report
 
 CHECKS_PASS = {
     "전체_널_대비": True, "모든_폴드_널_대비": True,

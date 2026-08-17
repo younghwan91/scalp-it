@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from swing_it.dart.classify import (
+from scalp_it.dart.classify import (
     MATERIAL_TYPES,
     classify_frame,
     classify_report,

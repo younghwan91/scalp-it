@@ -3,7 +3,7 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from swing_it.adapters.db import connect, load_stock_master
+from scalp_it.adapters.db import connect, load_stock_master
 
 
 @pytest.fixture()

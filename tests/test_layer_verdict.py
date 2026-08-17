@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.validate.layer_verdict import (
+from scalp_it.validate.layer_verdict import (
     CHECK_NAMES,
     downside_stats,
     layer_verdict,

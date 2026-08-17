@@ -6,15 +6,15 @@ llm_features.db 도 없다. 그때 원시 sqlite 오류를 던지면 무엇이 �
 
 import pytest
 
-from swing_it.cli_layers import MissingPrerequisite, require_sqlite
+from scalp_it.cli_layers import MissingPrerequisite, require_sqlite
 
 
 def test_missing_file_raises_with_actionable_message(tmp_path):
     with pytest.raises(MissingPrerequisite) as exc:
-        require_sqlite(tmp_path / "nope.db", what="LLM 피처 캐시", produced_by="swing-score")
+        require_sqlite(tmp_path / "nope.db", what="LLM 피처 캐시", produced_by="scalp-score")
     message = str(exc.value)
     assert "LLM 피처 캐시" in message
-    assert "swing-score" in message
+    assert "scalp-score" in message
     assert "nope.db" in message
 
 

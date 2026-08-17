@@ -1,6 +1,6 @@
 import pandas as pd
 
-from swing_it.news.store import (
+from scalp_it.news.store import (
     init_db,
     load_daily_news,
     replace_daily_news,

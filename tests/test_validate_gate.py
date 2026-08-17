@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.validate.gate import gate_report, random_null
+from scalp_it.validate.gate import gate_report, random_null
 
 
 def _pred(n_dates: int, n_per_date: int, signal: bool, seed: int = 0) -> pd.DataFrame:

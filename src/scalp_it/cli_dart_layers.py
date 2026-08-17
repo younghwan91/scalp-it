@@ -1,4 +1,4 @@
-"""`swing-dart-layers` — ①수급 vs ②+공시 판정.
+"""`scalp-dart-layers` — ①수급 vs ②+공시 판정.
 
 FAIL 이 나와도 exit 0 이다. 부정 결과는 오류가 아니라 결과다 (스펙 §11).
 파라미터를 바꿔 재시도하는 경로는 만들지 않는다.
@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if not Path(args.dart_db).is_file():
-        print(f"\n공시 DB 가 없다: {args.dart_db}\n  → 먼저 `swing-dart` 를 돌려야 한다.\n",
+        print(f"\n공시 DB 가 없다: {args.dart_db}\n  → 먼저 `scalp-dart` 를 돌려야 한다.\n",
               file=sys.stderr)
         return 1
 
@@ -75,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"\n이벤트는 {len(events):,} 건 있으나 라벨이 하나도 안 만들어졌다.\n"
                 f"  마지막 이벤트 {last_event} · 마지막 가격 {last_price}\n"
                 f"  D+{args.hold_end} 청산 시점이 가격 데이터 끝을 넘어간다.\n"
-                f"  → 공시 수집 시작일을 앞당기거나(`swing-dart --start`), "
+                f"  → 공시 수집 시작일을 앞당기거나(`scalp-dart --start`), "
                 f"--end 를 최소 {args.hold_end} 거래일 이전으로 당겨라.",
                 file=sys.stderr,
             )

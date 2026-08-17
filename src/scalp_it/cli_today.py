@@ -1,6 +1,6 @@
-"""`swing-today` — 오늘 후보의 근거 카드를 내고 전진 기록에 남긴다 (스펙 §1·§9).
+"""`scalp-today` — 오늘 후보의 근거 카드를 내고 전진 기록에 남긴다 (스펙 §1·§9).
 
-층은 ``--layer`` 로 고른다. 기본은 ③이지만, `swing-layers` 판정이
+층은 ``--layer`` 로 고른다. 기본은 ③이지만, `scalp-layers` 판정이
 ``LLM_NOT_JUSTIFIED`` 였다면 ②를 쓰는 것이 옳다. 그 선택은 사람이 한다 —
 판정에 따라 자동으로 층을 바꾸면 리포트를 안 읽게 된다.
 """
@@ -66,8 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     # 선행 산출물을 **가격을 읽기 전에** 확인한다. 570만 행을 로드한 뒤에
     # "파일이 없다"를 만나면 몇 분을 버린다.
     try:
-        require_sqlite(args.news_db, what="뉴스 DB", produced_by="swing-news")
-        require_sqlite(args.llm_cache, what="LLM 피처 캐시", produced_by="swing-score")
+        require_sqlite(args.news_db, what="뉴스 DB", produced_by="scalp-news")
+        require_sqlite(args.llm_cache, what="LLM 피처 캐시", produced_by="scalp-score")
     except MissingPrerequisite as exc:
         print(f"\n{exc}\n", file=sys.stderr)
         return 1
@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
             if row["layer"] == args.layer:
                 verdict = row["overall_verdict"]
     else:
-        print("results/layers.json 이 없다. 먼저 swing-layers 를 돌려라.", file=sys.stderr)
+        print("results/layers.json 이 없다. 먼저 scalp-layers 를 돌려라.", file=sys.stderr)
 
     # 진입은 기준일 다음 거래일 시가, 목표 청산은 그로부터 hold_end 거래일 뒤.
     calendar = prices["date"].drop_duplicates().sort_values().reset_index(drop=True)

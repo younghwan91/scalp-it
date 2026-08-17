@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from swing_it.dart.store import (
+from scalp_it.dart.store import (
     DISC_COLUMNS,
     collected_range,
     init_dart_db,

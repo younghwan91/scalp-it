@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "swing-it"
+name = "scalp-it"
 version = "0.1.0"
 description = "한국 주식 2~8주 스윙 후보 리서치 툴 — 뉴스 재료 강도 + 수급 확증"
 readme = "README.md"
@@ -23,20 +23,20 @@ pg = ["psycopg2-binary>=2.9"]
 dev = ["pytest>=8.0", "ruff==0.16.2", "psycopg2-binary>=2.9"]
 
 [project.scripts]
-swing-baseline = "swing_it.cli:main"
-swing-news = "swing_it.cli_news:main"
-swing-score = "swing_it.score.cli:main"
-swing-layers = "swing_it.cli_layers:main"
-swing-today = "swing_it.cli_today:main"
-swing-dart = "swing_it.cli_dart:main"
-swing-dart-layers = "swing_it.cli_dart_layers:main"
-swing-watch = "swing_it.cli_watch:main"
-swing-intraday = "swing_it.cli_intraday:main"
-swing-closebet = "swing_it.cli_closebet:main"
-swing-cbet-watch = "swing_it.cli_cbet_watch:main"
+scalp-baseline = "scalp_it.cli:main"
+scalp-news = "scalp_it.cli_news:main"
+scalp-score = "scalp_it.score.cli:main"
+scalp-layers = "scalp_it.cli_layers:main"
+scalp-today = "scalp_it.cli_today:main"
+scalp-dart = "scalp_it.cli_dart:main"
+scalp-dart-layers = "scalp_it.cli_dart_layers:main"
+scalp-watch = "scalp_it.cli_watch:main"
+scalp-intraday = "scalp_it.cli_intraday:main"
+scalp-closebet = "scalp_it.cli_closebet:main"
+scalp-cbet-watch = "scalp_it.cli_cbet_watch:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/swing_it"]
+packages = ["src/scalp_it"]
 
 [tool.ruff]
 line-length = 100

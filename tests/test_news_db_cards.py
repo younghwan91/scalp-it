@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from swing_it.adapters.news_db import connect_news, load_article_cards
+from scalp_it.adapters.news_db import connect_news, load_article_cards
 
 
 def test_columns_and_order(news_db):
@@ -14,7 +14,7 @@ def test_columns_and_order(news_db):
 
 def test_column_names_match_the_sibling_loader(news_db):
     """같은 어댑터의 load_articles 와 같은 이름을 쓴다 — 호출부가 헷갈리지 않게."""
-    from swing_it.adapters.news_db import NEWS_COLUMNS
+    from scalp_it.adapters.news_db import NEWS_COLUMNS
 
     df = load_article_cards(connect_news(news_db), "2026-08-14", "2026-08-14")
     for shared in ("article_id", "date", "code", "press", "title", "body200"):

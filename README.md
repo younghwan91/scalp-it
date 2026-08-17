@@ -1,4 +1,4 @@
-# swing-it
+# scalp-it
 
 > ⚠️ **레포 이름은 역사의 잔재다.** 지금은 스윙이 아니라
 > **트레이더 만쥬의 일중 단타 시스템 복제**를 만든다.
@@ -30,11 +30,11 @@ uv run pytest                       # 500+ passed
 export $(grep -v '^#' ../kr-quant/.env | xargs)          # KR_QUANT_DB
 export $(grep -v '^#' ../quant-airflow/.env | grep KIWOOM | xargs)
 
-uv run swing-closebet --start 2016-09-09 --end 2026-08-14 \
+uv run scalp-closebet --start 2016-09-09 --end 2026-08-14 \
   --rule tv_ratio:3.0: --rule close_pos:0.8: --exit open   # 종가베팅 백테스트
-uv run swing-cbet-watch                                    # 오늘 후보 기록
-uv run swing-cbet-watch --score                            # 전진 기록 채점
-uv run swing-intraday --codes 005930 --pages 5             # 분봉 수집
+uv run scalp-cbet-watch                                    # 오늘 후보 기록
+uv run scalp-cbet-watch --score                            # 전진 기록 채점
+uv run scalp-intraday --codes 005930 --pages 5             # 분봉 수집
 ```
 
 ## 문서

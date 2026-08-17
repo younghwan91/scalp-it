@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.labels import excess_return, forward_return
+from scalp_it.labels import excess_return, forward_return
 
 
 def _series(code: str, opens: list[float], closes: list[float]) -> pd.DataFrame:

@@ -4,7 +4,7 @@ import httpx
 import pandas as pd
 import pytest
 
-from swing_it.adapters.kiwoom import (
+from scalp_it.adapters.kiwoom import (
     CHART_ROWS_KEY,
     KiwoomClient,
     KiwoomError,

@@ -2,7 +2,7 @@ import itertools
 
 import httpx
 
-from swing_it.cli_dart import main, quarter_ranges
+from scalp_it.cli_dart import main, quarter_ranges
 
 
 def test_quarter_ranges_spans_are_positive_and_bounded():
@@ -55,7 +55,7 @@ def test_cli_collects_and_persists(tmp_path, monkeypatch):
     ], client=httpx.Client(transport=httpx.MockTransport(handler)))
     assert rc == 0
 
-    from swing_it.dart.store import init_dart_db, load_disclosures
+    from scalp_it.dart.store import init_dart_db, load_disclosures
 
     got = load_disclosures(init_dart_db(db), "20260801", "20260831")
     assert len(got) == 1

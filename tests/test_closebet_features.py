@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from swing_it.closebet.features import CB_FEATURE_COLUMNS, close_bet_features
+from scalp_it.closebet.features import CB_FEATURE_COLUMNS, close_bet_features
 
 
 def make_ohlcv(rows: list[dict], code: str = "000001") -> pd.DataFrame:

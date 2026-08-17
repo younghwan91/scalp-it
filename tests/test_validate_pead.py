@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.validate.pead import (
+from scalp_it.validate.pead import (
     COMPARABLE_RATIO,
     PEAD_SHARPE,
     PEAD_T,

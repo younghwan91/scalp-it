@@ -1,4 +1,4 @@
-"""`swing-cbet-watch` — 종가베팅 전진 기록. 오늘 후보를 남기고, 지난 기록을 채점한다.
+"""`scalp-cbet-watch` — 종가베팅 전진 기록. 오늘 후보를 남기고, 지난 기록을 채점한다.
 
 종가베팅은 이 프로젝트에서 시험한 7개 중 **유일하게 채택된 전략**이다
 (`docs/research/manju/06-closebet-preregistration.md`). 11년 4,000여 건에서
@@ -111,7 +111,7 @@ def build_records(
 ) -> list[dict]:
     """후보 프레임을 전진 기록 레코드로 바꾼다.
 
-    ``layer`` 는 ``strategy`` 와 같은 값을 넣는다. :data:`~swing_it.report.forward_log.LOG_KEY`
+    ``layer`` 는 ``strategy`` 와 같은 값을 넣는다. :data:`~scalp_it.report.forward_log.LOG_KEY`
     가 ``layer`` 로 중복을 판정하므로, 이 별칭이 있어야 기존 append 로직을
     고치지 않고 (logged_at, strategy, code, event_date) 중복 제거가 성립한다.
     """

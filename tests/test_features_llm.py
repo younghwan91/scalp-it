@@ -3,15 +3,15 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from swing_it.features.llm import (
+from scalp_it.features.llm import (
     LLM_FEATURE_COLUMNS,
     LLM_FRAME_COLUMNS,
     available_models,
     fold_to_code_date,
     load_llm_features,
 )
-from swing_it.score.cache import open_cache, put_result
-from swing_it.score.schema import ArticleFeatures
+from scalp_it.score.cache import open_cache, put_result
+from scalp_it.score.schema import ArticleFeatures
 
 
 def _scores(rows: list[dict]) -> pd.DataFrame:

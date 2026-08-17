@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from swing_it.report.forward_log import (
+from scalp_it.report.forward_log import (
     append_forward_log,
     build_records,
     read_forward_log,

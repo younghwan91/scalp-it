@@ -1,6 +1,6 @@
-"""`swing-closebet` — 종가베팅 규칙 하나를 10년 일봉에 돌려본다.
+"""`scalp-closebet` — 종가베팅 규칙 하나를 10년 일봉에 돌려본다.
 
-    swing-closebet --start 2016-09-09 --end 2026-08-14 \\
+    scalp-closebet --start 2016-09-09 --end 2026-08-14 \\
         --rule tv_ratio:3.0: --rule close_pos:0.8: --exit open
 
 규칙은 ``컬럼:최소:최대`` 이고 비우면 무제한이다 (``tv_ratio:3.0:`` = 3 이상).

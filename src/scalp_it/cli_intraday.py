@@ -1,4 +1,4 @@
-"""`swing-intraday` — 키움 분봉을 TimescaleDB ``minute_bars`` 에 수집한다.
+"""`scalp-intraday` — 키움 분봉을 TimescaleDB ``minute_bars`` 에 수집한다.
 
 한 콜에 900행(≈2.5 거래일)이고 기본 40 페이지면 종목당 약 100 거래일이다.
 종목당 40콜이라 100종목이면 4,000콜 — sleep 0.12s 기준 8분쯤 걸린다.

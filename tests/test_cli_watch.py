@@ -1,4 +1,4 @@
-"""`swing-watch` — ①층 전진 기록 CLI.
+"""`scalp-watch` — ①층 전진 기록 CLI.
 
 네트워크도 실 DB 도 쓰지 않는다. 어댑터 네 함수를 monkeypatch 로 갈아끼우고
 합성 프레임만 흘린다. 전진 기록은 append-only 라, 여기서 고정하는 것은
@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from swing_it import cli_watch
+from scalp_it import cli_watch
 
 CODES = [f"{i:06d}" for i in range(30)]
 N_DAYS = 220
@@ -204,7 +204,7 @@ def test_default_event_mode_is_disclosure():
     """
     import argparse
 
-    from swing_it import cli_watch
+    from scalp_it import cli_watch
 
     parser = argparse.ArgumentParser()
     # main 의 파서를 직접 만들 수 없으므로 상수로 계약을 고정한다
@@ -220,14 +220,14 @@ def test_verdict_is_not_hardcoded_pass():
     기록에 'PASS' 를 박으면 나중에 전진 기록을 증거로 쓸 때 무엇을 믿고 샀는지가
     왜곡된다.
     """
-    from swing_it import cli_watch
+    from scalp_it import cli_watch
 
     assert cli_watch._EVENT_MODES["disclosure"]["verdict"] == "FAIL_fold0"
     assert cli_watch._EVENT_MODES["volspike"]["verdict"] == "PASS"
 
 
 def test_disclosure_mode_without_dart_db_fails_clearly(tmp_path, capsys):
-    from swing_it import cli_watch
+    from scalp_it import cli_watch
 
     rc = cli_watch.main([
         "--db", "x", "--events", "disclosure",
@@ -236,7 +236,7 @@ def test_disclosure_mode_without_dart_db_fails_clearly(tmp_path, capsys):
     ])
     assert rc == 1
     err = capsys.readouterr().err
-    assert "공시 DB" in err and "swing-dart" in err
+    assert "공시 DB" in err and "scalp-dart" in err
 
 
 def test_entry_date_is_after_the_event_even_at_calendar_end():
@@ -247,7 +247,7 @@ def test_entry_date_is_after_the_event_even_at_calendar_end():
     """
     import pandas as pd
 
-    from swing_it.cli_watch import _plan_dates
+    from scalp_it.cli_watch import _plan_dates
 
     prices = pd.DataFrame({
         "code": ["A"] * 3,
@@ -262,7 +262,7 @@ def test_entry_date_is_after_the_event_even_at_calendar_end():
 def test_entry_date_uses_the_calendar_when_available():
     import pandas as pd
 
-    from swing_it.cli_watch import _plan_dates
+    from scalp_it.cli_watch import _plan_dates
 
     prices = pd.DataFrame({
         "code": ["A"] * 4,

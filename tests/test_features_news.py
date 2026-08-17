@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from swing_it.features.news import NEWS_FEATURE_COLUMNS, news_features
+from scalp_it.features.news import NEWS_FEATURE_COLUMNS, news_features
 
 
 def _daily_news(n: int = 3) -> pd.DataFrame:
@@ -85,7 +85,7 @@ def test_empty_input_returns_empty_frame_with_columns():
 
 
 def test_load_news_features_reads_sqlite(news_db):
-    from swing_it.features.news import load_news_features
+    from scalp_it.features.news import load_news_features
 
     out = load_news_features(news_db, start="2026-08-14", end="2026-08-14")
     assert list(out.columns) == ["code", "date", *NEWS_FEATURE_COLUMNS]
@@ -94,7 +94,7 @@ def test_load_news_features_reads_sqlite(news_db):
 
 
 def test_load_news_features_fails_when_the_db_is_missing(tmp_path):
-    from swing_it.features.news import load_news_features
+    from scalp_it.features.news import load_news_features
 
     with pytest.raises(FileNotFoundError, match="뉴스 DB 가 없다"):
         load_news_features(str(tmp_path / "nope.db"), start="2026-01-01", end="2026-12-31")

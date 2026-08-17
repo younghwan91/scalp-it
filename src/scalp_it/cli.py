@@ -1,4 +1,4 @@
-"""`swing-baseline` — 베이스라인 파이프라인 전체를 실 DB 로 한 번 돌린다."""
+"""`scalp-baseline` — 베이스라인 파이프라인 전체를 실 DB 로 한 번 돌린다."""
 
 from __future__ import annotations
 

@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.dataset import FEATURE_COLUMNS
-from swing_it.model.baseline import portfolio_returns, walk_forward_predict
+from scalp_it.dataset import FEATURE_COLUMNS
+from scalp_it.model.baseline import portfolio_returns, walk_forward_predict
 
 
 def _dataset(n: int, seed: int = 0) -> pd.DataFrame:

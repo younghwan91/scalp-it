@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.model.layered import fit_final_model
-from swing_it.report.cards import feature_contributions, find_analogs, render_card
+from scalp_it.model.layered import fit_final_model
+from scalp_it.report.cards import feature_contributions, find_analogs, render_card
 
 COLS = ["tv_ratio", "article_count", "outlet_count", "article_ratio", "llm_specificity"]
 

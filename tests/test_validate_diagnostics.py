@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.validate.diagnostics import fold_null_table, placebo_shuffle, untouched_window
+from scalp_it.validate.diagnostics import fold_null_table, placebo_shuffle, untouched_window
 
 
 def _pred(n_dates: int, n_per_date: int, signal: bool, n_folds: int = 4,

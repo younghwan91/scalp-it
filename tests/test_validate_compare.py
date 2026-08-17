@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from swing_it.dataset import FEATURE_COLUMNS
-from swing_it.validate.compare import compare_layers, llm_verdict, paired_bootstrap
+from scalp_it.dataset import FEATURE_COLUMNS
+from scalp_it.validate.compare import compare_layers, llm_verdict, paired_bootstrap
 
 NEWS = ["article_count"]
 LLM = ["llm_specificity"]

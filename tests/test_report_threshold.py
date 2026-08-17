@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.report.threshold import concurrency_threshold
+from scalp_it.report.threshold import concurrency_threshold
 
 
 def _pred(n_days: int, per_day: int, seed: int = 0) -> pd.DataFrame:

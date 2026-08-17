@@ -1,4 +1,4 @@
-"""`swing-dart` — OpenDART 공시를 로컬 sqlite 에 수집한다.
+"""`scalp-dart` — OpenDART 공시를 로컬 sqlite 에 수집한다.
 
 ``corp_code`` 없는 공시검색은 기간이 3개월로 제한되므로 구간을 쪼개 돈다.
 하루 1,000~1,500건, ``page_count=100`` 이므로 10년치가 약 30,000 콜이다.

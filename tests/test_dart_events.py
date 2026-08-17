@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from swing_it.dart.events import EVENT_COLUMNS, build_disclosure_events
+from scalp_it.dart.events import EVENT_COLUMNS, build_disclosure_events
 
 
 def _prices(codes, n, adv=9000.0, spike_at=None):

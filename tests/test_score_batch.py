@@ -1,10 +1,10 @@
 import pandas as pd
 import pytest
 
-from swing_it.score.batch import BatchAborted, score_articles
-from swing_it.score.cache import get_cached, open_cache
-from swing_it.score.prompt import PROMPT_VERSION
-from swing_it.score.provider import FakeProvider, ProviderError
+from scalp_it.score.batch import BatchAborted, score_articles
+from scalp_it.score.cache import get_cached, open_cache
+from scalp_it.score.prompt import PROMPT_VERSION
+from scalp_it.score.provider import FakeProvider, ProviderError
 
 _OK = (
     '{"material_type":"수주","persistence":"multi_quarter","specificity":3,'

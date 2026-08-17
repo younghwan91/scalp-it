@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from swing_it.closebet.labels import CB_LABEL_COLUMNS, close_bet_labels
+from scalp_it.closebet.labels import CB_LABEL_COLUMNS, close_bet_labels
 
 
 def make_ohlcv(rows: list[dict], code: str = "000001") -> pd.DataFrame:

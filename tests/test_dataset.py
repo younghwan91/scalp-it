@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.dataset import FEATURE_COLUMNS, build_dataset
+from scalp_it.dataset import FEATURE_COLUMNS, build_dataset
 
 
 def _prices(codes: list[str], n: int, spike_at: int) -> pd.DataFrame:

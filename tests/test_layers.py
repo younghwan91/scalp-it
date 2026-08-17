@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.dataset import FEATURE_COLUMNS
-from swing_it.layers import (
+from scalp_it.dataset import FEATURE_COLUMNS
+from scalp_it.layers import (
     LAYER_LABELS,
     LAYER_NAMES,
     build_layered_dataset,

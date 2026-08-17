@@ -1,6 +1,6 @@
 import pandas as pd
 
-from swing_it.score.prefilter import normalize_title, prefilter_articles, prefilter_summary
+from scalp_it.score.prefilter import normalize_title, prefilter_articles, prefilter_summary
 
 _BODY = "삼성전자가 미국 A사와 3년간 2조원 규모의 HBM 공급 계약을 체결했다고 공시했다."
 

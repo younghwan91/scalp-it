@@ -1,6 +1,6 @@
 import pandas as pd
 
-from swing_it.news.dedupe import cluster_duplicates, jaccard, normalize_title, title_tokens
+from scalp_it.news.dedupe import cluster_duplicates, jaccard, normalize_title, title_tokens
 
 
 def _mapped(rows: list[tuple[str, str, str]], date="2026-08-17", code="005930"):

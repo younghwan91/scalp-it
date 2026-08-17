@@ -80,7 +80,7 @@ def _resolve_version(
         return model, prompt_version or PROMPT_VERSION
     combos = available_models(conn)
     if not combos:
-        raise ValueError("LLM 피처 캐시가 비어 있다. swing-score 를 먼저 돌려라.")
+        raise ValueError("LLM 피처 캐시가 비어 있다. scalp-score 를 먼저 돌려라.")
     if prompt_version is not None:
         combos = [c for c in combos if c[1] == prompt_version]
     if len(combos) > 1:

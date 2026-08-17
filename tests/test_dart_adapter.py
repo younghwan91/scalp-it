@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from swing_it.adapters.dart import DartClient, DartError, api_keys
+from scalp_it.adapters.dart import DartClient, DartError, api_keys
 
 
 def _resp(payload: dict) -> httpx.Response:

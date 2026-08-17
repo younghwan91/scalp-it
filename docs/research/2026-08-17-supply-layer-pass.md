@@ -1,7 +1,7 @@
 # ①층 수급이 통과했다 — 일관 유니버스에서
 
 **날짜:** 2026-08-17
-**재현:** `swing-baseline --start 2024-01-01 --end 2026-08-14 --top-n 2`
+**재현:** `scalp-baseline --start 2024-01-01 --end 2026-08-14 --top-n 2`
 **결과 파일:** `results/baseline_2024.json`
 
 ## 판정: PASS (네 조건 전부)

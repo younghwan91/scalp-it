@@ -9,7 +9,7 @@
 ``body``→``body200``(계획 2 가 이미 200자로 잘라 넣는다), ``article_codes.code``→``code``.
 같은 기사가 두 종목에 걸리면 종목마다 한 행이 된다 — 스코어링 단위가 (기사, 종목) 이므로 의도된 동작이다.
 
-읽기 전용이다. swing-it 의 score 계층은 news.db 에 쓰지 않는다.
+읽기 전용이다. scalp-it 의 score 계층은 news.db 에 쓰지 않는다.
 """
 
 from __future__ import annotations

@@ -8,16 +8,16 @@
 
 **Tech Stack:** Python ≥3.10, uv, pandas ≥2.0, openpyxl, sqlite3(표준 라이브러리), pytest, ruff
 
-**Spec:** `docs/superpowers/specs/2026-08-17-swing-it-design.md`
+**Spec:** `docs/superpowers/specs/2026-08-17-scalp-it-design.md`
 
-**선행 계획:** `docs/superpowers/plans/2026-08-17-baseline-skeleton.md` (계획 1). 이 계획은 계획 1 Task 1 의 `src/swing_it/adapters/db.py` 와 Task 2 의 `src/swing_it/events.add_liquidity_stats` 를 소비한다. 계획 1 이 끝나 있어야 실행 가능하다.
+**선행 계획:** `docs/superpowers/plans/2026-08-17-baseline-skeleton.md` (계획 1). 이 계획은 계획 1 Task 1 의 `src/scalp_it/adapters/db.py` 와 Task 2 의 `src/scalp_it/events.add_liquidity_stats` 를 소비한다. 계획 1 이 끝나 있어야 실행 가능하다.
 
 ## Global Constraints
 
 - **본문은 200자만 저장한다.** 빅카인즈 제약이자 학습/운영 입력 통일 결정이다. 운영(krx-news-rest-api)은 전문을 주지만 모델 입력은 200자로 절단한다. 스펙 §4.
 - **데이터 커밋 금지.** 엑셀 원본은 `data/bigkinds/`, 산출 DB 는 `data/news.db`. `.gitignore` 가 `data/`·`*.xlsx`·`*.db` 를 이미 차단한다. 스펙 §8.
-- **DB 쓰기 금지.** TimescaleDB(`kr_quant`)는 읽기 전용이다. swing-it 의 모든 쓰기는 로컬 sqlite `data/news.db` 로만 간다.
-- **외부 접근은 어댑터에만.** TimescaleDB SQL 은 `src/swing_it/adapters/db.py` 에만 존재한다. `news/` 모듈은 DataFrame 만 받는다. 스펙 §8.
+- **DB 쓰기 금지.** TimescaleDB(`kr_quant`)는 읽기 전용이다. scalp-it 의 모든 쓰기는 로컬 sqlite `data/news.db` 로만 간다.
+- **외부 접근은 어댑터에만.** TimescaleDB SQL 은 `src/scalp_it/adapters/db.py` 에만 존재한다. `news/` 모듈은 DataFrame 만 받는다. 스펙 §8.
 - **'핫함'은 과거·현재 동일 계산 가능한 것만.** ①기사 건수 급증 배수 ②보도 매체 수 ③거래대금 급증 배수. 조회수·댓글수처럼 과거 데이터가 없는 지표는 쓰지 않는다. 스펙 §4.
 - **point-in-time 엄수.** 기사 건수 baseline 은 반드시 `.shift(1)` 이후 계산한다. 종목 매핑은 기사 시점에 상장돼 있던 종목만 인정한다(폐지 종목 포함 — 생존편향 대응, 스펙 §11).
 - **유동성 하한.** 랭킹 대상은 `adv >= 5000` (단위 백만원 = 50억원). 계획 1 과 같은 값. 스펙 §5.
@@ -53,16 +53,16 @@
 
 | 파일 | 책임 |
 |---|---|
-| `pyproject.toml` | openpyxl 의존성 · `swing-news` 엔트리포인트 추가 (수정) |
+| `pyproject.toml` | openpyxl 의존성 · `scalp-news` 엔트리포인트 추가 (수정) |
 | `scripts/inspect_bigkinds.py` | 엑셀 실제 헤더를 찍어보는 일회성 조사 스크립트 |
-| `src/swing_it/news/schema.py` | 빅카인즈 컬럼명 ↔ 내부 정규 컬럼명 매핑. **Task 1 의 사람 확인 산출물** |
-| `src/swing_it/news/bigkinds.py` | 엑셀 → 정규화 기사 테이블 (순수 함수 + 파일 읽기) |
-| `src/swing_it/adapters/db.py` | `load_stock_master` 추가 (수정) |
-| `src/swing_it/news/mapping.py` | 기사 → 종목 매핑 (순수 함수) |
-| `src/swing_it/news/dedupe.py` | 같은 사건 중복 기사 클러스터링 (순수 함수) |
-| `src/swing_it/news/hotness.py` | 핫함 3축 계산 + 일별 랭킹 (순수 함수) |
-| `src/swing_it/news/store.py` | 로컬 sqlite 적재·조회 |
-| `src/swing_it/cli_news.py` | `swing-news` 엔트리포인트 |
+| `src/scalp_it/news/schema.py` | 빅카인즈 컬럼명 ↔ 내부 정규 컬럼명 매핑. **Task 1 의 사람 확인 산출물** |
+| `src/scalp_it/news/bigkinds.py` | 엑셀 → 정규화 기사 테이블 (순수 함수 + 파일 읽기) |
+| `src/scalp_it/adapters/db.py` | `load_stock_master` 추가 (수정) |
+| `src/scalp_it/news/mapping.py` | 기사 → 종목 매핑 (순수 함수) |
+| `src/scalp_it/news/dedupe.py` | 같은 사건 중복 기사 클러스터링 (순수 함수) |
+| `src/scalp_it/news/hotness.py` | 핫함 3축 계산 + 일별 랭킹 (순수 함수) |
+| `src/scalp_it/news/store.py` | 로컬 sqlite 적재·조회 |
+| `src/scalp_it/cli_news.py` | `scalp-news` 엔트리포인트 |
 | `tests/` | 위 각 모듈 대응 테스트 |
 
 ---
@@ -74,8 +74,8 @@
 **Files:**
 - Modify: `pyproject.toml`
 - Create: `scripts/inspect_bigkinds.py`
-- Create: `src/swing_it/news/__init__.py`
-- Create: `src/swing_it/news/schema.py`
+- Create: `src/scalp_it/news/__init__.py`
+- Create: `src/scalp_it/news/schema.py`
 - Test: `tests/test_news_schema.py`
 
 **Interfaces:**
@@ -102,8 +102,8 @@ dependencies = [
 
 ```toml
 [project.scripts]
-swing-baseline = "swing_it.cli:main"
-swing-news = "swing_it.cli_news:main"
+scalp-baseline = "scalp_it.cli:main"
+scalp-news = "scalp_it.cli_news:main"
 ```
 
 Run: `uv sync`
@@ -170,7 +170,7 @@ Expected: 컬럼 목록과 샘플 값이 출력된다.
 ```python
 from openpyxl import Workbook
 
-from swing_it.news.schema import (
+from scalp_it.news.schema import (
     BODY_MAX_CHARS,
     CANONICAL_COLUMNS,
     COLUMN_MAP,
@@ -216,11 +216,11 @@ def test_inspect_columns_reads_header_row(tmp_path):
 - [ ] **Step 5: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_news_schema.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.news'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.news'`
 
 - [ ] **Step 6: 구현**
 
-`src/swing_it/news/__init__.py`:
+`src/scalp_it/news/__init__.py`:
 
 ```python
 """뉴스 인제스트 — 기사 수집·종목 매핑·중복 제거·point-in-time 저장 (스펙 §8).
@@ -230,7 +230,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.news'`
 """
 ```
 
-`src/swing_it/news/schema.py`:
+`src/scalp_it/news/schema.py`:
 
 ```python
 """빅카인즈 엑셀의 컬럼 계약.
@@ -300,7 +300,7 @@ Expected: 6 passed
 Run:
 ```bash
 uv run python -c "
-from swing_it.news.schema import COLUMN_MAP, REQUIRED_SOURCE_COLUMNS, inspect_columns
+from scalp_it.news.schema import COLUMN_MAP, REQUIRED_SOURCE_COLUMNS, inspect_columns
 import glob
 cols = inspect_columns(sorted(glob.glob('data/bigkinds/*.xlsx'))[0])
 missing = [c for c in REQUIRED_SOURCE_COLUMNS if c not in cols]
@@ -313,7 +313,7 @@ Expected: `필수 누락: []`. 비어 있지 않으면 Step 6 의 `COLUMN_MAP` �
 - [ ] **Step 9: 커밋**
 
 ```bash
-git add pyproject.toml scripts/inspect_bigkinds.py src/swing_it/news tests/test_news_schema.py
+git add pyproject.toml scripts/inspect_bigkinds.py src/scalp_it/news tests/test_news_schema.py
 git commit -m "feat(news): 빅카인즈 컬럼 계약 확정 + 헤더 조사 스크립트"
 ```
 
@@ -322,7 +322,7 @@ git commit -m "feat(news): 빅카인즈 컬럼 계약 확정 + 헤더 조사 스
 ### Task 2: 엑셀 → 정규화 기사 테이블
 
 **Files:**
-- Create: `src/swing_it/news/bigkinds.py`
+- Create: `src/scalp_it/news/bigkinds.py`
 - Test: `tests/test_news_bigkinds.py`
 
 **Interfaces:**
@@ -342,13 +342,13 @@ import pandas as pd
 import pytest
 from openpyxl import Workbook
 
-from swing_it.news.bigkinds import (
+from scalp_it.news.bigkinds import (
     load_bigkinds_dir,
     load_bigkinds_excel,
     normalize_articles,
     parse_dates,
 )
-from swing_it.news.schema import CANONICAL_COLUMNS
+from scalp_it.news.schema import CANONICAL_COLUMNS
 
 _HEADER = ["뉴스 식별자", "일자", "언론사", "제목", "본문", "키워드", "기관", "URL"]
 
@@ -446,11 +446,11 @@ def test_load_dir_raises_when_empty(tmp_path):
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_news_bigkinds.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.news.bigkinds'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.news.bigkinds'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/news/bigkinds.py`:
+`src/scalp_it/news/bigkinds.py`:
 
 ```python
 """빅카인즈 엑셀 → 정규화 기사 테이블.
@@ -543,7 +543,7 @@ Expected: 11 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/news/bigkinds.py tests/test_news_bigkinds.py
+git add src/scalp_it/news/bigkinds.py tests/test_news_bigkinds.py
 git commit -m "feat(news): 빅카인즈 엑셀 파서 — 본문 200자 절단·news_id 중복 제거"
 ```
 
@@ -552,7 +552,7 @@ git commit -m "feat(news): 빅카인즈 엑셀 파서 — 본문 200자 절단·
 ### Task 3: 종목 마스터 로더
 
 **Files:**
-- Modify: `src/swing_it/adapters/db.py` (함수 추가만. 기존 함수는 건드리지 않는다)
+- Modify: `src/scalp_it/adapters/db.py` (함수 추가만. 기존 함수는 건드리지 않는다)
 - Test: `tests/test_db_stock_master.py`
 
 **Interfaces:**
@@ -572,7 +572,7 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from swing_it.adapters.db import connect, load_stock_master
+from scalp_it.adapters.db import connect, load_stock_master
 
 
 @pytest.fixture()
@@ -658,7 +658,7 @@ Expected: FAIL — `ImportError: cannot import name 'load_stock_master'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/adapters/db.py` 끝에 상수 하나와 함수 하나를 추가한다. 기존 `_query` 는 `date` 컬럼을 요구하므로 여기서는 쓰지 않는다.
+`src/scalp_it/adapters/db.py` 끝에 상수 하나와 함수 하나를 추가한다. 기존 `_query` 는 `date` 컬럼을 요구하므로 여기서는 쓰지 않는다.
 
 ```python
 _MASTER_COLUMNS = ["code", "name", "market", "sector", "last_trade_date", "is_delisted"]
@@ -716,7 +716,7 @@ Expected: `2641|4162` 부근의 값.
 - [ ] **Step 6: 커밋**
 
 ```bash
-git add src/swing_it/adapters/db.py tests/test_db_stock_master.py
+git add src/scalp_it/adapters/db.py tests/test_db_stock_master.py
 git commit -m "feat(adapters): 종목 마스터 로더 — 상장+폐지 합본"
 ```
 
@@ -725,7 +725,7 @@ git commit -m "feat(adapters): 종목 마스터 로더 — 상장+폐지 합본"
 ### Task 4: 기사 → 종목 매핑
 
 **Files:**
-- Create: `src/swing_it/news/mapping.py`
+- Create: `src/scalp_it/news/mapping.py`
 - Test: `tests/test_news_mapping.py`
 
 **Interfaces:**
@@ -752,7 +752,7 @@ git commit -m "feat(adapters): 종목 마스터 로더 — 상장+폐지 합본"
 ```python
 import pandas as pd
 
-from swing_it.news.mapping import build_name_index, map_articles, normalize_name
+from scalp_it.news.mapping import build_name_index, map_articles, normalize_name
 
 
 def _master() -> pd.DataFrame:
@@ -864,11 +864,11 @@ def test_empty_input_returns_empty_frame_with_columns():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_news_mapping.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.news.mapping'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.news.mapping'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/news/mapping.py`:
+`src/scalp_it/news/mapping.py`:
 
 ```python
 """기사 → 종목 매핑.
@@ -1018,7 +1018,7 @@ Expected: 13 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/news/mapping.py tests/test_news_mapping.py
+git add src/scalp_it/news/mapping.py tests/test_news_mapping.py
 git commit -m "feat(news): 기사→종목 매핑 — 코드 우선·최장 사명·동음이의 확증"
 ```
 
@@ -1027,7 +1027,7 @@ git commit -m "feat(news): 기사→종목 매핑 — 코드 우선·최장 사�
 ### Task 5: 중복 기사 제거
 
 **Files:**
-- Create: `src/swing_it/news/dedupe.py`
+- Create: `src/scalp_it/news/dedupe.py`
 - Test: `tests/test_news_dedupe.py`
 
 **Interfaces:**
@@ -1049,7 +1049,7 @@ git commit -m "feat(news): 기사→종목 매핑 — 코드 우선·최장 사�
 ```python
 import pandas as pd
 
-from swing_it.news.dedupe import cluster_duplicates, jaccard, normalize_title, title_tokens
+from scalp_it.news.dedupe import cluster_duplicates, jaccard, normalize_title, title_tokens
 
 
 def _mapped(rows: list[tuple[str, str, str]], date="2026-08-17", code="005930"):
@@ -1155,11 +1155,11 @@ def test_empty_input_keeps_columns():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_news_dedupe.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.news.dedupe'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.news.dedupe'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/news/dedupe.py`:
+`src/scalp_it/news/dedupe.py`:
 
 ```python
 """같은 사건을 다룬 중복 기사 클러스터링.
@@ -1248,7 +1248,7 @@ Expected: 12 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/news/dedupe.py tests/test_news_dedupe.py
+git add src/scalp_it/news/dedupe.py tests/test_news_dedupe.py
 git commit -m "feat(news): 제목 자카드 기반 중복 기사 클러스터링"
 ```
 
@@ -1257,7 +1257,7 @@ git commit -m "feat(news): 제목 자카드 기반 중복 기사 클러스터링
 ### Task 6: '핫함' 계산과 일별 랭킹
 
 **Files:**
-- Create: `src/swing_it/news/hotness.py`
+- Create: `src/scalp_it/news/hotness.py`
 - Test: `tests/test_news_hotness.py`
 
 **Interfaces:**
@@ -1288,7 +1288,7 @@ hotness = 0.4·log1p(기사 급증 배수) + 0.3·log1p(매체 수) + 0.3·log1p
 import numpy as np
 import pandas as pd
 
-from swing_it.news.hotness import (
+from scalp_it.news.hotness import (
     W_ARTICLES,
     W_OUTLETS,
     W_TRADE,
@@ -1456,11 +1456,11 @@ def test_rank_output_columns():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_news_hotness.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.news.hotness'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.news.hotness'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/news/hotness.py`:
+`src/scalp_it/news/hotness.py`:
 
 ```python
 """'핫함' 3축 계산과 일별 랭킹.
@@ -1616,17 +1616,17 @@ Expected: 11 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/news/hotness.py tests/test_news_hotness.py
+git add src/scalp_it/news/hotness.py tests/test_news_hotness.py
 git commit -m "feat(news): 핫함 3축 계산 + 학습50/운영10 일별 랭킹"
 ```
 
 ---
 
-### Task 7: sqlite 적재와 `swing-news` CLI
+### Task 7: sqlite 적재와 `scalp-news` CLI
 
 **Files:**
-- Create: `src/swing_it/news/store.py`
-- Create: `src/swing_it/cli_news.py`
+- Create: `src/scalp_it/news/store.py`
+- Create: `src/scalp_it/cli_news.py`
 - Test: `tests/test_news_store.py`
 
 **Interfaces:**
@@ -1670,7 +1670,7 @@ sqlite 스키마:
 ```python
 import pandas as pd
 
-from swing_it.news.store import (
+from scalp_it.news.store import (
     init_db,
     load_daily_news,
     replace_daily_news,
@@ -1795,11 +1795,11 @@ def test_load_on_empty_db_returns_typed_empty_frame(tmp_path):
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_news_store.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.news.store'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.news.store'`
 
 - [ ] **Step 3: 저장소 구현**
 
-`src/swing_it/news/store.py`:
+`src/scalp_it/news/store.py`:
 
 ```python
 """로컬 sqlite 적재.
@@ -1962,10 +1962,10 @@ Expected: 10 passed
 
 - [ ] **Step 5: CLI 구현**
 
-`src/swing_it/cli_news.py`:
+`src/scalp_it/cli_news.py`:
 
 ```python
-"""`swing-news` — 빅카인즈 엑셀 → 종목 매핑 → 핫함 → 로컬 sqlite.
+"""`scalp-news` — 빅카인즈 엑셀 → 종목 매핑 → 핫함 → 로컬 sqlite.
 
 수동 다운로드를 전제한 반자동 파이프라인이다. 사람이 하는 일은
 `data/bigkinds/` 에 엑셀을 놓는 것뿐이고 나머지는 이 명령이 한다.
@@ -2060,7 +2060,7 @@ Expected: 계획 2 몫 70 passed (6+11+7+13+12+11+10), 그리고 기존 테스�
 Run:
 ```bash
 export $(grep -v '^#' ../kr-quant/.env | xargs)
-uv run swing-news --xlsx-dir data/bigkinds --news-db data/news.db
+uv run scalp-news --xlsx-dir data/bigkinds --news-db data/news.db
 ```
 Expected: `data/news.db` 생성, 일평균 건수가 출력된다.
 
@@ -2089,8 +2089,8 @@ Expected: 상위 30건의 제목과 종목이 실제로 맞아떨어진다.
 - [ ] **Step 9: 커밋**
 
 ```bash
-git add src/swing_it/news/store.py src/swing_it/cli_news.py tests/test_news_store.py
-git commit -m "feat(news): 로컬 sqlite 적재 + swing-news 인제스트 CLI"
+git add src/scalp_it/news/store.py src/scalp_it/cli_news.py tests/test_news_store.py
+git commit -m "feat(news): 로컬 sqlite 적재 + scalp-news 인제스트 CLI"
 ```
 
 ---

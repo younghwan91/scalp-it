@@ -1,6 +1,6 @@
 import pytest
 
-from swing_it.score.schema import (
+from scalp_it.score.schema import (
     LLM_FEATURE_COLUMNS,
     ArticleFeatures,
     SchemaError,

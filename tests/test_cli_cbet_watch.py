@@ -1,4 +1,4 @@
-"""`swing-cbet-watch` — 종가베팅 전진 기록 CLI.
+"""`scalp-cbet-watch` — 종가베팅 전진 기록 CLI.
 
 네트워크도 실 DB 도 쓰지 않는다. 어댑터 세 함수를 monkeypatch 로 갈아끼우고
 합성 OHLCV 만 흘린다. 여기서 고정하는 것은 사전등록 확정 규칙(거래대금 50억,
@@ -11,7 +11,7 @@ import json
 import pandas as pd
 import pytest
 
-from swing_it import cli_cbet_watch
+from scalp_it import cli_cbet_watch
 
 DATES = pd.bdate_range("2026-01-05", periods=40)
 ASOF = str(DATES[-1].date())

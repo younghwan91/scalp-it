@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from swing_it.news.calendar import align_to_trading_days
+from scalp_it.news.calendar import align_to_trading_days
 
 
 @pytest.fixture()

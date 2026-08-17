@@ -1,4 +1,4 @@
-"""`swing-watch` — ①층(수급) 전진 기록. 오늘 후보를 남기고, 지난 기록을 채점한다.
+"""`scalp-watch` — ①층(수급) 전진 기록. 오늘 후보를 남기고, 지난 기록을 채점한다.
 
 ①층은 2024+ 일관 유니버스에서 전면 통과했다
 (`docs/research/2026-08-17-supply-layer-pass.md`). 그런데 같은 문서가 "아직 믿지
@@ -7,7 +7,7 @@
 못 푼다.** 손대지 않은 미래 데이터만이 푼다. 그래서 이 CLI 의 값어치는 기능이
 아니라 **오늘부터 도는 것** 에 있다.
 
-`swing-today` 와 겹쳐 보이지만 다른 물건이다. 저쪽은 ③층(뉴스+LLM)이라 계획 2·3
+`scalp-today` 와 겹쳐 보이지만 다른 물건이다. 저쪽은 ③층(뉴스+LLM)이라 계획 2·3
 산출물이 있어야 돌고, 날짜당 상위 N 을 고른다. 이쪽은 수급만 쓰므로 가격·수급 DB
 하나로 오늘 돌릴 수 있고, **절대 임계** 만 쓴다 (스펙 §6) — 재료가 시원찮은 날은
 0 건이 정답이다. 0 건은 실패가 아니므로 종료 코드도 0 이다.
@@ -197,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     # "파일이 없다"를 만나면 몇 분을 버린다.
     if args.events == "disclosure" and not Path(args.dart_db).is_file():
         print(f"\n공시 DB 가 없다: {args.dart_db}\n"
-              f"  → 먼저 `swing-dart` 를 돌리거나 `--events volspike` 를 쓰라.\n",
+              f"  → 먼저 `scalp-dart` 를 돌리거나 `--events volspike` 를 쓰라.\n",
               file=sys.stderr)
         return 1
 

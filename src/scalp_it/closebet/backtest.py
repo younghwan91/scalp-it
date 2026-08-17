@@ -95,8 +95,8 @@ def run_close_bet(
     """규칙에 맞는 종가베팅 거래를 뽑아 성과를 낸다.
 
     Args:
-        features: :func:`~swing_it.closebet.features.close_bet_features` 출력.
-        labels: :func:`~swing_it.closebet.labels.close_bet_labels` 출력.
+        features: :func:`~scalp_it.closebet.features.close_bet_features` 출력.
+        labels: :func:`~scalp_it.closebet.labels.close_bet_labels` 출력.
         rules: ``{컬럼: (min, max)}``. 피처·라벨 어느 쪽 컬럼이든 쓸 수 있다.
         top_n: 주어지면 **날짜별로** ``tv_ratio`` 상위 N 종목만 남긴다.
         cost_round_trip: 왕복 비용. ``net_mean = mean - cost``.

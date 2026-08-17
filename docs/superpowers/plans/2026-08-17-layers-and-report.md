@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python ≥3.10, uv, pandas ≥2.0, scikit-learn, numpy, sqlite3, pytest, ruff
 
-**Spec:** `docs/superpowers/specs/2026-08-17-swing-it-design.md`
+**Spec:** `docs/superpowers/specs/2026-08-17-scalp-it-design.md`
 
 **선행 계획:**
 - 계획 1 `docs/superpowers/plans/2026-08-17-baseline-skeleton.md` (필수)
@@ -34,16 +34,16 @@
 
 | 이름 | 시그니처 |
 |---|---|
-| `swing_it.dataset.FEATURE_COLUMNS` | `list[str]` — 7개 수급·유동성 피처 |
-| `swing_it.dataset.build_dataset` | `(prices, supply_demand, *, adv_floor=5000.0, tv_multiple=3.0, entry_offset=1, hold_start=20, hold_end=40) -> pd.DataFrame` |
-| `swing_it.model.baseline.walk_forward_predict` | `(ds, *, n_folds=4, min_train=200, seed=0) -> pd.DataFrame` |
-| `swing_it.model.baseline.portfolio_returns` | `(pred, *, top_n=15) -> pd.DataFrame` |
-| `swing_it.validate.gate.gate_report` | `(pred, *, top_n=15, n_trials=200, cost_one_way=0.0023, seed=0) -> dict` |
-| `swing_it.validate.gate.random_null` | `(pred, *, top_n=15, n_trials=200, seed=0) -> np.ndarray` |
-| `swing_it.validate.diagnostics.fold_null_table` | `(pred, *, top_n=15, n_trials=200, seed=0) -> pd.DataFrame` — 컬럼 `[fold, n_dates, strategy_mean, null_mean, percentile, beats_null]` |
-| `swing_it.validate.diagnostics.untouched_window` | `(pred, *, fraction=0.25, top_n=15, n_trials=200, cost_one_way=0.0023, seed=0) -> dict` — `gate_report` 키 + `n_dates, start, end` |
-| `swing_it.validate.diagnostics.placebo_shuffle` | `(pred, *, seed=0) -> pd.DataFrame` — 날짜 안에서 라벨만 섞은 프레임 |
-| `swing_it.adapters.db.load_stock_master` | `(conn) -> pd.DataFrame` — 컬럼 `[code, name, market, sector, last_trade_date, is_delisted]` |
+| `scalp_it.dataset.FEATURE_COLUMNS` | `list[str]` — 7개 수급·유동성 피처 |
+| `scalp_it.dataset.build_dataset` | `(prices, supply_demand, *, adv_floor=5000.0, tv_multiple=3.0, entry_offset=1, hold_start=20, hold_end=40) -> pd.DataFrame` |
+| `scalp_it.model.baseline.walk_forward_predict` | `(ds, *, n_folds=4, min_train=200, seed=0) -> pd.DataFrame` |
+| `scalp_it.model.baseline.portfolio_returns` | `(pred, *, top_n=15) -> pd.DataFrame` |
+| `scalp_it.validate.gate.gate_report` | `(pred, *, top_n=15, n_trials=200, cost_one_way=0.0023, seed=0) -> dict` |
+| `scalp_it.validate.gate.random_null` | `(pred, *, top_n=15, n_trials=200, seed=0) -> np.ndarray` |
+| `scalp_it.validate.diagnostics.fold_null_table` | `(pred, *, top_n=15, n_trials=200, seed=0) -> pd.DataFrame` — 컬럼 `[fold, n_dates, strategy_mean, null_mean, percentile, beats_null]` |
+| `scalp_it.validate.diagnostics.untouched_window` | `(pred, *, fraction=0.25, top_n=15, n_trials=200, cost_one_way=0.0023, seed=0) -> dict` — `gate_report` 키 + `n_dates, start, end` |
+| `scalp_it.validate.diagnostics.placebo_shuffle` | `(pred, *, seed=0) -> pd.DataFrame` — 날짜 안에서 라벨만 섞은 프레임 |
+| `scalp_it.adapters.db.load_stock_master` | `(conn) -> pd.DataFrame` — 컬럼 `[code, name, market, sector, last_trade_date, is_delisted]` |
 
 `build_dataset` 의 시그니처는 손대지 않는다. 층 확장은 **피처 목록을 인자로 받는 새 함수**(`build_layered_dataset`, `walk_forward_predict_features`)로 옆에 둔다. Task 3 은 `walk_forward_predict_features(ds, FEATURE_COLUMNS)` 가 `walk_forward_predict(ds)` 와 **행 단위로 동일한 결과**를 내는지 테스트로 고정한다 — 이게 계획 1 과의 호환 계약이다.
 
@@ -83,18 +83,18 @@
 
 | 이름 | 계약 |
 |---|---|
-| `swing_it.news.store.load_daily_news(conn, start, end, *, ops_only=False)` | 컬럼 `[date, code, n_articles, n_outlets, article_ratio, adv, tv_ratio, hotness, rank, in_ops, primary_news_id]`. `date` `datetime64[ns]`, `in_ops` bool |
+| `scalp_it.news.store.load_daily_news(conn, start, end, *, ops_only=False)` | 컬럼 `[date, code, n_articles, n_outlets, article_ratio, adv, tv_ratio, hotness, rank, in_ops, primary_news_id]`. `date` `datetime64[ns]`, `in_ops` bool |
 | `data/news.db` 테이블 | `articles`(PK `news_id`) / `article_codes`(PK `news_id, code`) / `daily_news`(PK `date, code`) |
 | `articles` 컬럼 | `[news_id, date, outlet, title, body, keywords, orgs, url]`. `body` 는 **최대 200자** |
 | 근거 카드 조인 | `daily_news.primary_news_id → articles.news_id` (그 종목·그 날 클러스터 대표 기사 1건) |
 
 주의 두 가지:
 - SQL 에서 `rank` 는 예약어라 `"rank"` 로 인용해야 한다. 계획 2 코드가 그렇게 쓰고 있다.
-- `replace_daily_news` 는 날짜를 통째로 지우고 다시 넣는다(baseline 이 후행 데이터에 따라 바뀌므로). 계획 4 는 `data/news.db` 를 **읽기만** 하며, 재계산이 필요하면 `swing-news` 를 통째로 다시 돌린다.
+- `replace_daily_news` 는 날짜를 통째로 지우고 다시 넣는다(baseline 이 후행 데이터에 따라 바뀌므로). 계획 4 는 `data/news.db` 를 **읽기만** 하며, 재계산이 필요하면 `scalp-news` 를 통째로 다시 돌린다.
 
 ## 계획 3 에서 받는 것
 
-계획 3 Task 8 이 `swing_it.features.llm` 을 소유한다. **계획 4 는 소비만 한다 — 재정의하지 않는다.**
+계획 3 Task 8 이 `scalp_it.features.llm` 을 소유한다. **계획 4 는 소비만 한다 — 재정의하지 않는다.**
 
 | 이름 | 계약 |
 |---|---|
@@ -153,19 +153,19 @@
 
 | 파일 | 책임 |
 |---|---|
-| `src/swing_it/features/news.py` | `daily_news` → 규칙 기반 뉴스 피처 (순수 함수) |
-| `src/swing_it/adapters/news_db.py` | **수정** — `load_article_cards` 추가 (뉴스 읽기 SQL 은 이 어댑터에만 둔다) |
-| `src/swing_it/layers.py` | 층 정의 + 세 층 피처를 모두 붙인 단일 데이터셋 조립 |
-| `src/swing_it/model/layered.py` | 피처 목록을 인자로 받는 walk-forward, 공유 폴드 경계, 최종 모델 적합 |
-| `src/swing_it/validate/layer_verdict.py` | 층 하나의 종합 판정 — 진단 4종 + 하방 회피 + 선별도 |
-| `src/swing_it/validate/compare.py` | 동일조건 층 비교 · 페어드 부트스트랩 · LLM 정당화 판정 |
-| `src/swing_it/validate/pead.py` | 겹침 보정 Sharpe·t 계산과 PEAD 대비 판정 |
-| `src/swing_it/report/__init__.py` | 리포트 계층 선언 |
-| `src/swing_it/report/cards.py` | 피처 기여도 · 유사 과거 사례 · 근거 카드 마크다운 |
-| `src/swing_it/report/layers_md.py` | 층 비교 결과 마크다운 리포트 |
-| `src/swing_it/report/forward_log.py` | 전진 기록 append · 사후 채점 |
-| `src/swing_it/cli_layers.py` | `swing-layers` — 층별 비교 판정 |
-| `src/swing_it/cli_today.py` | `swing-today` — 오늘 후보 카드 + 전진 기록 |
+| `src/scalp_it/features/news.py` | `daily_news` → 규칙 기반 뉴스 피처 (순수 함수) |
+| `src/scalp_it/adapters/news_db.py` | **수정** — `load_article_cards` 추가 (뉴스 읽기 SQL 은 이 어댑터에만 둔다) |
+| `src/scalp_it/layers.py` | 층 정의 + 세 층 피처를 모두 붙인 단일 데이터셋 조립 |
+| `src/scalp_it/model/layered.py` | 피처 목록을 인자로 받는 walk-forward, 공유 폴드 경계, 최종 모델 적합 |
+| `src/scalp_it/validate/layer_verdict.py` | 층 하나의 종합 판정 — 진단 4종 + 하방 회피 + 선별도 |
+| `src/scalp_it/validate/compare.py` | 동일조건 층 비교 · 페어드 부트스트랩 · LLM 정당화 판정 |
+| `src/scalp_it/validate/pead.py` | 겹침 보정 Sharpe·t 계산과 PEAD 대비 판정 |
+| `src/scalp_it/report/__init__.py` | 리포트 계층 선언 |
+| `src/scalp_it/report/cards.py` | 피처 기여도 · 유사 과거 사례 · 근거 카드 마크다운 |
+| `src/scalp_it/report/layers_md.py` | 층 비교 결과 마크다운 리포트 |
+| `src/scalp_it/report/forward_log.py` | 전진 기록 append · 사후 채점 |
+| `src/scalp_it/cli_layers.py` | `scalp-layers` — 층별 비교 판정 |
+| `src/scalp_it/cli_today.py` | `scalp-today` — 오늘 후보 카드 + 전진 기록 |
 | `pyproject.toml` | **수정** — `[project.scripts]` 두 줄 추가 |
 | `tests/` | 위 각 모듈 대응 테스트 |
 
@@ -175,9 +175,9 @@
 
 계획 4 는 계획 2 가 **구현까지** 끝난 뒤에 착수한다. 계획 3 은 이미 구현·머지됐다 — `features/llm.py`·`score/`·`adapters/news_db.py` 가 레포에 있다.
 
-계획 2 의 미구현 잔여는 Task 1(schema)·2(bigkinds)·4(mapping)·7(store + `swing-news` CLI) 네 개다. 그중 **Task 7 이 `news/store.py` 와 `load_daily_news` 를 만든다** — 계획 4 Task 1 의 선행 조건이다. (계획 2 Task 3 은 `adapters/db.py` 의 `load_stock_master` 이고 이미 커밋돼 있다. Task 1 에서 store 를 Task 3 이라고 읽지 마라.) Task 7 실행에는 `swing-news` 가 한 번 돌아 `data/news.db` 가 존재해야 한다.
+계획 2 의 미구현 잔여는 Task 1(schema)·2(bigkinds)·4(mapping)·7(store + `scalp-news` CLI) 네 개다. 그중 **Task 7 이 `news/store.py` 와 `load_daily_news` 를 만든다** — 계획 4 Task 1 의 선행 조건이다. (계획 2 Task 3 은 `adapters/db.py` 의 `load_stock_master` 이고 이미 커밋돼 있다. Task 1 에서 store 를 Task 3 이라고 읽지 마라.) Task 7 실행에는 `scalp-news` 가 한 번 돌아 `data/news.db` 가 존재해야 한다.
 
-`pyproject.toml` 의 `[project.scripts]` 에는 이미 `swing-baseline`·`swing-news`·`swing-score` 세 줄이 있다. Task 7 은 거기에 두 줄을 **더한다**(기존 줄은 그대로 둔다).
+`pyproject.toml` 의 `[project.scripts]` 에는 이미 `scalp-baseline`·`scalp-news`·`scalp-score` 세 줄이 있다. Task 7 은 거기에 두 줄을 **더한다**(기존 줄은 그대로 둔다).
 
 ## 사전등록 상수 (스펙 §6 — 그리드 돌리기 전에 확정)
 
@@ -202,21 +202,21 @@ COMPARABLE_RATIO = 0.75     (PEAD Sharpe 의 75% 이상이면 '비등')
 ### Task 1: 규칙 기반 뉴스 피처와 기사 카드 로더
 
 **Files:**
-- Create: `src/swing_it/features/news.py`
-- Modify: `src/swing_it/adapters/news_db.py` — `load_article_cards` 함수 추가 (파일 끝에 덧붙인다. 기존 `connect_news`·`load_articles` 는 건드리지 않는다)
+- Create: `src/scalp_it/features/news.py`
+- Modify: `src/scalp_it/adapters/news_db.py` — `load_article_cards` 함수 추가 (파일 끝에 덧붙인다. 기존 `connect_news`·`load_articles` 는 건드리지 않는다)
 - Create: `tests/conftest.py` — `news_db` sqlite fixture (두 테스트 파일이 공유한다)
 - Test: `tests/test_features_news.py`
 - Test: `tests/test_news_db_cards.py`
 
 **Interfaces:**
 - Consumes:
-  - `swing_it.news.store.load_daily_news(conn, start, end, *, ops_only=False) -> pd.DataFrame` — 컬럼 `[date, code, n_articles, n_outlets, article_ratio, adv, tv_ratio, hotness, rank, in_ops, primary_news_id]` (계획 2)
+  - `scalp_it.news.store.load_daily_news(conn, start, end, *, ops_only=False) -> pd.DataFrame` — 컬럼 `[date, code, n_articles, n_outlets, article_ratio, adv, tv_ratio, hotness, rank, in_ops, primary_news_id]` (계획 2)
   - `data/news.db` 의 `articles` · `daily_news` 테이블 (계획 2)
 - Produces:
-  - `swing_it.features.news.NEWS_FEATURE_COLUMNS: list[str]` — `["article_count", "outlet_count", "article_ratio", "hotness", "hotness_rank"]`
-  - `swing_it.features.news.news_features(daily_news: pd.DataFrame) -> pd.DataFrame` — 컬럼 `[code, date, *NEWS_FEATURE_COLUMNS]`, 값은 전부 `float`
-  - `swing_it.features.news.load_news_features(path: str = "data/news.db", *, start: str = "1900-01-01", end: str = "2999-12-31") -> pd.DataFrame` — sqlite 를 읽기 전용으로 열어 `load_daily_news` → `news_features` 로 넘긴다
-  - `swing_it.adapters.news_db.load_article_cards(conn: sqlite3.Connection, start: str, end: str, *, ops_only: bool = False) -> pd.DataFrame` — 컬럼 `[date, code, hotness_rank, hotness, article_id, press, title, body200, url]`
+  - `scalp_it.features.news.NEWS_FEATURE_COLUMNS: list[str]` — `["article_count", "outlet_count", "article_ratio", "hotness", "hotness_rank"]`
+  - `scalp_it.features.news.news_features(daily_news: pd.DataFrame) -> pd.DataFrame` — 컬럼 `[code, date, *NEWS_FEATURE_COLUMNS]`, 값은 전부 `float`
+  - `scalp_it.features.news.load_news_features(path: str = "data/news.db", *, start: str = "1900-01-01", end: str = "2999-12-31") -> pd.DataFrame` — sqlite 를 읽기 전용으로 열어 `load_daily_news` → `news_features` 로 넘긴다
+  - `scalp_it.adapters.news_db.load_article_cards(conn: sqlite3.Connection, start: str, end: str, *, ops_only: bool = False) -> pd.DataFrame` — 컬럼 `[date, code, hotness_rank, hotness, article_id, press, title, body200, url]`
 
 **컬럼 리네임 (계획 2 `daily_news` → 피처 이름):** `n_articles → article_count`, `n_outlets → outlet_count`, `rank → hotness_rank`. `article_ratio`·`hotness` 는 그대로.
 
@@ -256,7 +256,7 @@ COMPARABLE_RATIO = 0.75     (PEAD Sharpe 의 75% 이상이면 '비등')
 import pandas as pd
 import pytest
 
-from swing_it.features.news import NEWS_FEATURE_COLUMNS, news_features
+from scalp_it.features.news import NEWS_FEATURE_COLUMNS, news_features
 
 
 def _daily_news(n: int = 3) -> pd.DataFrame:
@@ -340,7 +340,7 @@ def test_empty_input_returns_empty_frame_with_columns():
 
 
 def test_load_news_features_reads_sqlite(news_db):
-    from swing_it.features.news import load_news_features
+    from scalp_it.features.news import load_news_features
 
     out = load_news_features(news_db, start="2026-08-14", end="2026-08-14")
     assert list(out.columns) == ["code", "date", *NEWS_FEATURE_COLUMNS]
@@ -349,7 +349,7 @@ def test_load_news_features_reads_sqlite(news_db):
 
 
 def test_load_news_features_fails_when_the_db_is_missing(tmp_path):
-    from swing_it.features.news import load_news_features
+    from scalp_it.features.news import load_news_features
 
     with pytest.raises(FileNotFoundError, match="뉴스 DB 가 없다"):
         load_news_features(str(tmp_path / "nope.db"), start="2026-01-01", end="2026-12-31")
@@ -403,11 +403,11 @@ def news_db(tmp_path):
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_features_news.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.features.news'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.features.news'`
 
 - [ ] **Step 3: 뉴스 피처 구현**
 
-`src/swing_it/features/news.py`:
+`src/scalp_it/features/news.py`:
 
 ```python
 """규칙 기반 뉴스 피처 — LLM 없이 기사에서 뽑는 것 (스펙 §3 ②층).
@@ -507,7 +507,7 @@ Expected: 12 passed
 import pandas as pd
 import pytest
 
-from swing_it.adapters.news_db import connect_news, load_article_cards
+from scalp_it.adapters.news_db import connect_news, load_article_cards
 
 
 def test_columns_and_order(news_db):
@@ -520,7 +520,7 @@ def test_columns_and_order(news_db):
 
 def test_column_names_match_the_sibling_loader(news_db):
     """같은 어댑터의 load_articles 와 같은 이름을 쓴다 — 호출부가 헷갈리지 않게."""
-    from swing_it.adapters.news_db import NEWS_COLUMNS
+    from scalp_it.adapters.news_db import NEWS_COLUMNS
 
     df = load_article_cards(connect_news(news_db), "2026-08-14", "2026-08-14")
     for shared in ("article_id", "date", "code", "press", "title", "body200"):
@@ -586,7 +586,7 @@ def test_connect_news_fails_loudly_on_a_missing_db(tmp_path):
 - [ ] **Step 6: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_news_db_cards.py -v`
-Expected: FAIL — `ImportError: cannot import name 'load_article_cards' from 'swing_it.adapters.news_db'`
+Expected: FAIL — `ImportError: cannot import name 'load_article_cards' from 'scalp_it.adapters.news_db'`
 
 - [ ] **Step 7: `load_article_cards` 를 `news_db.py` 끝에 추가**
 
@@ -667,8 +667,8 @@ Expected: 계획 2·3 테스트 전부 통과 (`load_article_cards` 는 추가�
 - [ ] **Step 10: 커밋**
 
 ```bash
-git add src/swing_it/features/news.py \
-  src/swing_it/adapters/news_db.py tests/conftest.py \
+git add src/scalp_it/features/news.py \
+  src/scalp_it/adapters/news_db.py tests/conftest.py \
   tests/test_features_news.py tests/test_news_db_cards.py
 git commit -m "feat(features): 규칙 기반 뉴스 피처 + 근거 카드용 기사 조인 로더"
 ```
@@ -678,14 +678,14 @@ git commit -m "feat(features): 규칙 기반 뉴스 피처 + 근거 카드용 �
 ### Task 2: 층 정의와 층별 단일 데이터셋
 
 **Files:**
-- Create: `src/swing_it/layers.py`
+- Create: `src/scalp_it/layers.py`
 - Test: `tests/test_layers.py`
 
 **Interfaces:**
 - Consumes:
-  - `swing_it.dataset.FEATURE_COLUMNS: list[str]`
-  - `swing_it.dataset.build_dataset(prices, supply_demand, *, adv_floor=5000.0, tv_multiple=3.0, entry_offset=1, hold_start=20, hold_end=40) -> pd.DataFrame` — 컬럼 `[code, date, *FEATURE_COLUMNS, fwd_return, excess_return]`
-  - `swing_it.features.news.NEWS_FEATURE_COLUMNS`, `news_features(daily_news) -> pd.DataFrame` (Task 1)
+  - `scalp_it.dataset.FEATURE_COLUMNS: list[str]`
+  - `scalp_it.dataset.build_dataset(prices, supply_demand, *, adv_floor=5000.0, tv_multiple=3.0, entry_offset=1, hold_start=20, hold_end=40) -> pd.DataFrame` — 컬럼 `[code, date, *FEATURE_COLUMNS, fwd_return, excess_return]`
+  - `scalp_it.features.news.NEWS_FEATURE_COLUMNS`, `news_features(daily_news) -> pd.DataFrame` (Task 1)
   - 계획 3 의 `llm` 프레임 `[code, date, *LLM_FEATURE_COLUMNS]`
 - Produces:
   - `LAYER_NAMES: list[str]` — `["supply", "supply_news", "supply_news_llm"]` (고정 순서 = 누적 순서)
@@ -703,8 +703,8 @@ git commit -m "feat(features): 규칙 기반 뉴스 피처 + 근거 카드용 �
 import numpy as np
 import pandas as pd
 
-from swing_it.dataset import FEATURE_COLUMNS
-from swing_it.layers import (
+from scalp_it.dataset import FEATURE_COLUMNS
+from scalp_it.layers import (
     LAYER_LABELS,
     LAYER_NAMES,
     build_layered_dataset,
@@ -874,11 +874,11 @@ def test_rows_are_sorted_by_date_then_code():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_layers.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.layers'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.layers'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/layers.py`:
+`src/scalp_it/layers.py`:
 
 ```python
 """층 정의와 층별 단일 데이터셋 조립 (스펙 §3).
@@ -1063,7 +1063,7 @@ Expected: 전부 통과 (계획 1 의 시그니처를 건드리지 않았음을 
 - [ ] **Step 6: 커밋**
 
 ```bash
-git add src/swing_it/layers.py tests/test_layers.py
+git add src/scalp_it/layers.py tests/test_layers.py
 git commit -m "feat(layers): 세 층이 동일 표본을 쓰는 단일 데이터셋 조립"
 ```
 
@@ -1071,13 +1071,13 @@ git commit -m "feat(layers): 세 층이 동일 표본을 쓰는 단일 데이터
 ### Task 3: 피처 목록을 받는 walk-forward 와 공유 폴드
 
 **Files:**
-- Create: `src/swing_it/model/layered.py`
+- Create: `src/scalp_it/model/layered.py`
 - Test: `tests/test_model_layered.py`
 
 **Interfaces:**
 - Consumes:
-  - `swing_it.dataset.FEATURE_COLUMNS`
-  - `swing_it.model.baseline.walk_forward_predict(ds, *, n_folds=4, min_train=200, seed=0) -> pd.DataFrame` — 동등성 검증용
+  - `scalp_it.dataset.FEATURE_COLUMNS`
+  - `scalp_it.model.baseline.walk_forward_predict(ds, *, n_folds=4, min_train=200, seed=0) -> pd.DataFrame` — 동등성 검증용
 - Produces:
   - `fold_dates(ds: pd.DataFrame, *, n_folds: int = 4, min_train: int = 200) -> list[np.ndarray]` — 폴드별 검증 날짜 배열. **한 번 계산해 모든 층에 넘긴다.**
   - `walk_forward_predict_features(ds: pd.DataFrame, feature_columns: Sequence[str], *, folds: list[np.ndarray] | None = None, n_folds: int = 4, min_train: int = 200, seed: int = 0) -> pd.DataFrame` — 컬럼 `[code, date, excess_return, prediction, fold]`
@@ -1098,9 +1098,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from swing_it.dataset import FEATURE_COLUMNS
-from swing_it.model.baseline import walk_forward_predict
-from swing_it.model.layered import (
+from scalp_it.dataset import FEATURE_COLUMNS
+from scalp_it.model.baseline import walk_forward_predict
+from scalp_it.model.layered import (
     fit_final_model,
     fold_dates,
     walk_forward_predict_features,
@@ -1191,11 +1191,11 @@ def test_model_stays_shallow():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_model_layered.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.model.layered'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.model.layered'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/model/layered.py`:
+`src/scalp_it/model/layered.py`:
 
 ```python
 """피처 목록을 인자로 받는 walk-forward — 층 비교의 실행부.
@@ -1310,7 +1310,7 @@ Expected: 9 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/model/layered.py tests/test_model_layered.py
+git add src/scalp_it/model/layered.py tests/test_model_layered.py
 git commit -m "feat(model): 피처 지정 walk-forward + 층 간 공유 폴드 경계"
 ```
 
@@ -1319,15 +1319,15 @@ git commit -m "feat(model): 피처 지정 walk-forward + 층 간 공유 폴드 �
 ### Task 4: 층 하나의 종합 판정 — 진단 4종 · 하방 회피 · 선별도
 
 **Files:**
-- Create: `src/swing_it/validate/layer_verdict.py`
+- Create: `src/scalp_it/validate/layer_verdict.py`
 - Test: `tests/test_layer_verdict.py`
 
 **Interfaces:**
 - Consumes:
-  - `swing_it.validate.gate.gate_report(pred, *, top_n=15, n_trials=200, cost_one_way=0.0023, seed=0) -> dict`
-  - `swing_it.validate.diagnostics.fold_null_table(pred, *, top_n=15, n_trials=200, seed=0) -> pd.DataFrame`
-  - `swing_it.validate.diagnostics.untouched_window(pred, *, fraction=0.25, top_n=15, n_trials=200, cost_one_way=0.0023, seed=0) -> dict`
-  - `swing_it.validate.diagnostics.placebo_shuffle(pred, *, seed=0) -> pd.DataFrame`
+  - `scalp_it.validate.gate.gate_report(pred, *, top_n=15, n_trials=200, cost_one_way=0.0023, seed=0) -> dict`
+  - `scalp_it.validate.diagnostics.fold_null_table(pred, *, top_n=15, n_trials=200, seed=0) -> pd.DataFrame`
+  - `scalp_it.validate.diagnostics.untouched_window(pred, *, fraction=0.25, top_n=15, n_trials=200, cost_one_way=0.0023, seed=0) -> dict`
+  - `scalp_it.validate.diagnostics.placebo_shuffle(pred, *, seed=0) -> pd.DataFrame`
 - Produces:
   - `CHECK_NAMES: tuple[str, ...]` — `("전체_널_대비", "모든_폴드_널_대비", "손_안_댄_최종창", "플라시보_FAIL")`
   - `selectivity(pred: pd.DataFrame, *, top_n: int = 15) -> dict` — 키 `mean_pool_per_date, median_pool_per_date, min_pool_per_date, selection_ratio, low_selectivity`
@@ -1362,7 +1362,7 @@ git commit -m "feat(model): 피처 지정 walk-forward + 층 간 공유 폴드 �
 import numpy as np
 import pandas as pd
 
-from swing_it.validate.layer_verdict import (
+from scalp_it.validate.layer_verdict import (
     CHECK_NAMES,
     downside_stats,
     layer_verdict,
@@ -1493,11 +1493,11 @@ def test_report_carries_every_section():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_layer_verdict.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.validate.layer_verdict'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.validate.layer_verdict'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/validate/layer_verdict.py`:
+`src/scalp_it/validate/layer_verdict.py`:
 
 ```python
 """층 하나에 대한 종합 판정.
@@ -1664,7 +1664,7 @@ Expected: 전부 통과 (계획 1 의 진단 모듈을 읽기만 했음을 확�
 - [ ] **Step 6: 커밋**
 
 ```bash
-git add src/swing_it/validate/layer_verdict.py tests/test_layer_verdict.py
+git add src/scalp_it/validate/layer_verdict.py tests/test_layer_verdict.py
 git commit -m "feat(validate): 층 종합 판정 — 진단 4종 + 하방 회피 + 선별도"
 ```
 
@@ -1672,17 +1672,17 @@ git commit -m "feat(validate): 층 종합 판정 — 진단 4종 + 하방 회피
 ### Task 5: 동일조건 층 비교 하네스와 PEAD 벤치마크
 
 **Files:**
-- Create: `src/swing_it/validate/pead.py`
-- Create: `src/swing_it/validate/compare.py`
+- Create: `src/scalp_it/validate/pead.py`
+- Create: `src/scalp_it/validate/compare.py`
 - Test: `tests/test_validate_pead.py`
 - Test: `tests/test_validate_compare.py`
 
 **Interfaces:**
 - Consumes:
-  - `swing_it.layers.LAYER_LABELS`
-  - `swing_it.model.layered.fold_dates`, `walk_forward_predict_features`
-  - `swing_it.model.baseline.portfolio_returns(pred, *, top_n=15) -> pd.DataFrame`
-  - `swing_it.validate.layer_verdict.layer_verdict(pred, *, top_n=15, n_trials=200, cost_one_way=0.0023, fraction=0.25, seed=0) -> dict`
+  - `scalp_it.layers.LAYER_LABELS`
+  - `scalp_it.model.layered.fold_dates`, `walk_forward_predict_features`
+  - `scalp_it.model.baseline.portfolio_returns(pred, *, top_n=15) -> pd.DataFrame`
+  - `scalp_it.validate.layer_verdict.layer_verdict(pred, *, top_n=15, n_trials=200, cost_one_way=0.0023, fraction=0.25, seed=0) -> dict`
 - Produces:
   - `pead.PEAD_SHARPE: float` = `0.80`, `pead.PEAD_T: float` = `2.20`, `pead.COMPARABLE_RATIO: float` = `0.75`
   - `pead.overlap_stats(curve: pd.DataFrame, *, hold_days: int = 40) -> dict` — 키 `mean, sd, n_obs, n_effective, sharpe_annual, t_stat`
@@ -1721,7 +1721,7 @@ git commit -m "feat(validate): 층 종합 판정 — 진단 4종 + 하방 회피
 import numpy as np
 import pandas as pd
 
-from swing_it.validate.pead import (
+from scalp_it.validate.pead import (
     COMPARABLE_RATIO,
     PEAD_SHARPE,
     PEAD_T,
@@ -1816,11 +1816,11 @@ def test_benchmark_all_layers_tags_each_row():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_validate_pead.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.validate.pead'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.validate.pead'`
 
 - [ ] **Step 3: PEAD 모듈 구현**
 
-`src/swing_it/validate/pead.py`:
+`src/scalp_it/validate/pead.py`:
 
 ```python
 """PEAD 대비 벤치마크 (스펙 §7).
@@ -1915,8 +1915,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from swing_it.dataset import FEATURE_COLUMNS
-from swing_it.validate.compare import compare_layers, llm_verdict, paired_bootstrap
+from scalp_it.dataset import FEATURE_COLUMNS
+from scalp_it.validate.compare import compare_layers, llm_verdict, paired_bootstrap
 
 NEWS = ["article_count"]
 LLM = ["llm_specificity"]
@@ -2091,11 +2091,11 @@ def test_compare_layers_rejects_a_spec_whose_layers_are_not_nested():
 - [ ] **Step 6: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_validate_compare.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.validate.compare'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.validate.compare'`
 
 - [ ] **Step 7: 비교 하네스 구현**
 
-`src/swing_it/validate/compare.py`:
+`src/scalp_it/validate/compare.py`:
 
 ```python
 """층 비교 하네스 — 세 층을 동일 조건에서 재는 유일한 경로 (스펙 §3).
@@ -2289,7 +2289,7 @@ Expected: 16 passed
 - [ ] **Step 9: 커밋**
 
 ```bash
-git add src/swing_it/validate/pead.py src/swing_it/validate/compare.py \
+git add src/scalp_it/validate/pead.py src/scalp_it/validate/compare.py \
   tests/test_validate_pead.py tests/test_validate_compare.py
 git commit -m "feat(validate): PEAD 겹침보정 벤치마크 + 동일조건 층 비교 하네스"
 ```
@@ -2298,17 +2298,17 @@ git commit -m "feat(validate): PEAD 겹침보정 벤치마크 + 동일조건 층
 ### Task 6: 근거 카드와 전진 기록
 
 **Files:**
-- Create: `src/swing_it/report/__init__.py`
-- Create: `src/swing_it/report/cards.py`
-- Create: `src/swing_it/report/forward_log.py`
+- Create: `src/scalp_it/report/__init__.py`
+- Create: `src/scalp_it/report/cards.py`
+- Create: `src/scalp_it/report/forward_log.py`
 - Test: `tests/test_report_cards.py`
 - Test: `tests/test_forward_log.py`
 
 **Interfaces:**
 - Consumes:
-  - `swing_it.model.layered.fit_final_model(ds, feature_columns, *, seed=0) -> tuple[GradientBoostingRegressor, pd.Series]`
-  - `swing_it.adapters.news_db.connect_news(path=None)`, `load_article_cards(conn, start, end, *, ops_only=False) -> pd.DataFrame` — 컬럼 `[date, code, hotness_rank, hotness, article_id, press, title, body200, url]` (Task 1)
-  - `swing_it.adapters.db.load_stock_master(conn) -> pd.DataFrame` — `[code, name, market, sector, last_trade_date, is_delisted]`
+  - `scalp_it.model.layered.fit_final_model(ds, feature_columns, *, seed=0) -> tuple[GradientBoostingRegressor, pd.Series]`
+  - `scalp_it.adapters.news_db.connect_news(path=None)`, `load_article_cards(conn, start, end, *, ops_only=False) -> pd.DataFrame` — 컬럼 `[date, code, hotness_rank, hotness, article_id, press, title, body200, url]` (Task 1)
+  - `scalp_it.adapters.db.load_stock_master(conn) -> pd.DataFrame` — `[code, name, market, sector, last_trade_date, is_delisted]`
 - Produces (`report.cards`):
   - `DISCLAIMER: str`
   - `feature_contributions(model, row: pd.Series, baseline: pd.Series, feature_columns: Sequence[str]) -> pd.Series` — 내림차순
@@ -2344,8 +2344,8 @@ git commit -m "feat(validate): PEAD 겹침보정 벤치마크 + 동일조건 층
 import numpy as np
 import pandas as pd
 
-from swing_it.model.layered import fit_final_model
-from swing_it.report.cards import feature_contributions, find_analogs, render_card
+from scalp_it.model.layered import fit_final_model
+from scalp_it.report.cards import feature_contributions, find_analogs, render_card
 
 COLS = ["tv_ratio", "article_count", "outlet_count", "article_ratio", "llm_specificity"]
 
@@ -2554,11 +2554,11 @@ def test_card_falls_back_to_bare_code_without_a_name_map():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_report_cards.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.report'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.report'`
 
 - [ ] **Step 3: 카드 구현**
 
-`src/swing_it/report/__init__.py`:
+`src/scalp_it/report/__init__.py`:
 
 ```python
 """리포트 계층 — 사람이 읽는 출력.
@@ -2570,7 +2570,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.report'`
 """
 ```
 
-`src/swing_it/report/cards.py`:
+`src/scalp_it/report/cards.py`:
 
 ```python
 """근거 카드 — 왜 걸렸는지, 얼마나 들 건지, 과거에 비슷한 게 어땠는지.
@@ -2872,7 +2872,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from swing_it.report.forward_log import (
+from scalp_it.report.forward_log import (
     append_forward_log,
     build_records,
     read_forward_log,
@@ -2996,11 +2996,11 @@ def test_score_on_an_empty_log_is_a_noop():
 - [ ] **Step 7: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_forward_log.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.report.forward_log'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.report.forward_log'`
 
 - [ ] **Step 8: 전진 기록 구현**
 
-`src/swing_it/report/forward_log.py`:
+`src/scalp_it/report/forward_log.py`:
 
 ```python
 """전진 기록 — 오늘의 후보와 그때의 피처를 영구 저장한다 (스펙 §9).
@@ -3133,7 +3133,7 @@ Expected: 세 패턴이 모두 나온다. 하나라도 없으면 추가하고 �
 - [ ] **Step 11: 커밋**
 
 ```bash
-git add src/swing_it/report tests/test_report_cards.py tests/test_forward_log.py
+git add src/scalp_it/report tests/test_report_cards.py tests/test_forward_log.py
 git commit -m "feat(report): 근거 카드 + append-only 전진 기록"
 ```
 
@@ -3141,36 +3141,36 @@ git commit -m "feat(report): 근거 카드 + append-only 전진 기록"
 ### Task 7: 층 비교 리포트와 CLI 2종
 
 **Files:**
-- Create: `src/swing_it/report/layers_md.py`
-- Create: `src/swing_it/cli_layers.py`
-- Create: `src/swing_it/cli_today.py`
+- Create: `src/scalp_it/report/layers_md.py`
+- Create: `src/scalp_it/cli_layers.py`
+- Create: `src/scalp_it/cli_today.py`
 - Modify: `pyproject.toml` — `[project.scripts]` 에 두 줄 추가
 - Test: `tests/test_report_layers_md.py`
 
 **Interfaces:**
 - Consumes:
-  - `swing_it.validate.compare.compare_layers(ds, spec, *, top_n=15, n_folds=4, min_train=200, n_trials=200, n_boot=2000, cost_one_way=0.0023, hold_days=40, seed=0) -> dict` — 키 `rows, deltas, llm, pead, sample`
-  - `swing_it.adapters.db.connect(dsn=None)`, `load_prices(conn, start, end)`, `load_supply_demand(conn, start, end)`, `load_stock_master(conn)`
-  - `swing_it.adapters.news_db.connect_news(path=None)`, `load_article_cards(conn, start, end, *, ops_only=False)`
-  - `swing_it.features.news.NEWS_FEATURE_COLUMNS`, `load_news_features(path, *, start, end)`
-  - `swing_it.features.llm.LLM_FEATURE_COLUMNS`, `load_llm_features(cache_path, *, news_path, model, prompt_version)`, `available_models(conn)` (계획 3 Task 8)
-  - `swing_it.layers.build_layered_dataset(...)`, `layer_features(...)`, `LAYER_LABELS`
-  - `swing_it.model.layered.fit_final_model(...)`
-  - `swing_it.report.cards.render_candidates(...)`
-  - `swing_it.report.forward_log.build_records(...)`, `append_forward_log(...)`
+  - `scalp_it.validate.compare.compare_layers(ds, spec, *, top_n=15, n_folds=4, min_train=200, n_trials=200, n_boot=2000, cost_one_way=0.0023, hold_days=40, seed=0) -> dict` — 키 `rows, deltas, llm, pead, sample`
+  - `scalp_it.adapters.db.connect(dsn=None)`, `load_prices(conn, start, end)`, `load_supply_demand(conn, start, end)`, `load_stock_master(conn)`
+  - `scalp_it.adapters.news_db.connect_news(path=None)`, `load_article_cards(conn, start, end, *, ops_only=False)`
+  - `scalp_it.features.news.NEWS_FEATURE_COLUMNS`, `load_news_features(path, *, start, end)`
+  - `scalp_it.features.llm.LLM_FEATURE_COLUMNS`, `load_llm_features(cache_path, *, news_path, model, prompt_version)`, `available_models(conn)` (계획 3 Task 8)
+  - `scalp_it.layers.build_layered_dataset(...)`, `layer_features(...)`, `LAYER_LABELS`
+  - `scalp_it.model.layered.fit_final_model(...)`
+  - `scalp_it.report.cards.render_candidates(...)`
+  - `scalp_it.report.forward_log.build_records(...)`, `append_forward_log(...)`
 - Produces:
   - `render_layer_report(comparison: dict, *, baseline_reference: dict | None = None, preregistration: dict | None = None) -> str`
-  - `swing_it.cli_layers.main(argv: list[str] | None = None) -> int`
-  - `swing_it.cli_today.main(argv: list[str] | None = None) -> int`
+  - `scalp_it.cli_layers.main(argv: list[str] | None = None) -> int`
+  - `scalp_it.cli_today.main(argv: list[str] | None = None) -> int`
 
-`swing-layers` 는 **판정 결과와 무관하게 종료 코드 0** 을 낸다. FAIL 은 오류가 아니라 결과다(스펙 §10). 종료 코드로 FAIL 을 표현하면 CI 나 래퍼가 "실패했으니 다시 돌리자"는 유혹에 빠진다. 0 이 아닌 코드는 **실행 자체가 불가능할 때만** 낸다(DB 없음, 표본 없음).
+`scalp-layers` 는 **판정 결과와 무관하게 종료 코드 0** 을 낸다. FAIL 은 오류가 아니라 결과다(스펙 §10). 종료 코드로 FAIL 을 표현하면 CI 나 래퍼가 "실패했으니 다시 돌리자"는 유혹에 빠진다. 0 이 아닌 코드는 **실행 자체가 불가능할 때만** 낸다(DB 없음, 표본 없음).
 
 - [ ] **Step 1: 실패하는 리포트 테스트 작성**
 
 `tests/test_report_layers_md.py`:
 
 ```python
-from swing_it.report.layers_md import render_layer_report
+from scalp_it.report.layers_md import render_layer_report
 
 CHECKS_PASS = {
     "전체_널_대비": True, "모든_폴드_널_대비": True,
@@ -3333,11 +3333,11 @@ def test_report_does_not_soften_a_justified_verdict():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_report_layers_md.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.report.layers_md'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.report.layers_md'`
 
 - [ ] **Step 3: 리포트 렌더러 구현**
 
-`src/swing_it/report/layers_md.py`:
+`src/scalp_it/report/layers_md.py`:
 
 ```python
 """층 비교 결과 마크다운 리포트.
@@ -3566,12 +3566,12 @@ def render_layer_report(
 Run: `uv run pytest tests/test_report_layers_md.py -v`
 Expected: 14 passed
 
-- [ ] **Step 5: `swing-layers` CLI 구현**
+- [ ] **Step 5: `scalp-layers` CLI 구현**
 
-`src/swing_it/cli_layers.py`:
+`src/scalp_it/cli_layers.py`:
 
 ```python
-"""`swing-layers` — 세 층을 동일 조건에서 비교하고 판정을 출력한다.
+"""`scalp-layers` — 세 층을 동일 조건에서 비교하고 판정을 출력한다.
 
 **FAIL 이어도 종료 코드는 0 이다.** FAIL 은 오류가 아니라 결과다(스펙 §10).
 종료 코드로 FAIL 을 표현하면 래퍼나 CI 가 "실패했으니 파라미터 바꿔 재시도"
@@ -3605,7 +3605,7 @@ def _load_llm(args) -> pd.DataFrame:
 
     ``n_articles`` 는 ②층의 ``article_count`` 와 같은 축이라 중복이고,
     ``material_type`` 은 원-핫 9개가 스펙 §6 상한을 혼자 먹으므로 모델에
-    넣지 않는다. ``material_type`` 은 ``swing-today`` 가 카드 표시용으로만 쓴다.
+    넣지 않는다. ``material_type`` 은 ``scalp-today`` 가 카드 표시용으로만 쓴다.
     """
     frame = load_llm_features(
         args.llm_cache,
@@ -3762,14 +3762,14 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 6: `swing-today` CLI 구현**
+- [ ] **Step 6: `scalp-today` CLI 구현**
 
-`src/swing_it/cli_today.py`:
+`src/scalp_it/cli_today.py`:
 
 ```python
-"""`swing-today` — 오늘 후보의 근거 카드를 내고 전진 기록에 남긴다 (스펙 §1·§9).
+"""`scalp-today` — 오늘 후보의 근거 카드를 내고 전진 기록에 남긴다 (스펙 §1·§9).
 
-층은 ``--layer`` 로 고른다. 기본은 ③이지만, `swing-layers` 판정이
+층은 ``--layer`` 로 고른다. 기본은 ③이지만, `scalp-layers` 판정이
 ``LLM_NOT_JUSTIFIED`` 였다면 ②를 쓰는 것이 옳다. 그 선택은 사람이 한다 —
 판정에 따라 자동으로 층을 바꾸면 리포트를 안 읽게 된다.
 """
@@ -3877,7 +3877,7 @@ def main(argv: list[str] | None = None) -> int:
             if row["layer"] == args.layer:
                 verdict = row["overall_verdict"]
     else:
-        print("results/layers.json 이 없다. 먼저 swing-layers 를 돌려라.", file=sys.stderr)
+        print("results/layers.json 이 없다. 먼저 scalp-layers 를 돌려라.", file=sys.stderr)
 
     # 진입은 기준일 다음 거래일 시가, 목표 청산은 그로부터 hold_end 거래일 뒤.
     calendar = prices["date"].drop_duplicates().sort_values().reset_index(drop=True)
@@ -3947,11 +3947,11 @@ if __name__ == "__main__":
 
 ```toml
 [project.scripts]
-swing-baseline = "swing_it.cli:main"
-swing-news = "swing_it.cli_news:main"
-swing-score = "swing_it.score.cli:main"
-swing-layers = "swing_it.cli_layers:main"
-swing-today = "swing_it.cli_today:main"
+scalp-baseline = "scalp_it.cli:main"
+scalp-news = "scalp_it.cli_news:main"
+scalp-score = "scalp_it.score.cli:main"
+scalp-layers = "scalp_it.cli_layers:main"
+scalp-today = "scalp_it.cli_today:main"
 ```
 
 - [ ] **Step 8: 전체 테스트와 린트**
@@ -3971,7 +3971,7 @@ ruff `All checks passed!`
 Run:
 ```bash
 export $(grep -v '^#' ../kr-quant/.env | xargs)
-uv run swing-layers --dry-run
+uv run scalp-layers --dry-run
 ```
 
 출력된 **하루 평균 풀 크기**만 보고 `tv_multiple` 을 고른다. 성과 숫자는 아직 존재하지 않으므로 이 선택은 결과를 보고 하는 것이 아니다.
@@ -4000,7 +4000,7 @@ JSON
 
 Run:
 ```bash
-uv run swing-layers --tv-multiple "$(python -c 'import json;print(json.load(open("results/preregistration.json"))["tv_multiple"])')"
+uv run scalp-layers --tv-multiple "$(python -c 'import json;print(json.load(open("results/preregistration.json"))["tv_multiple"])')"
 ```
 
 Expected: `results/layers.md` 가 생성되고 맨 위에 `## 판정: LLM_JUSTIFIED` 또는 `## 판정: LLM_NOT_JUSTIFIED` 가 찍힌다. 종료 코드 0.
@@ -4014,7 +4014,7 @@ Step 9 에서 확정됐다.
 
 Run:
 ```bash
-uv run swing-today --layer supply_news_llm
+uv run scalp-today --layer supply_news_llm
 ```
 Expected: `results/today/<날짜>.md` 생성, `data/forward_log.jsonl` 에 15건 추가.
 같은 명령을 한 번 더 돌리면 `전진 기록 0 건 추가` 가 나와야 한다(append-only 확인).
@@ -4033,10 +4033,10 @@ Expected: `results/today/<날짜>.md` 생성, `data/forward_log.jsonl` 에 15건
 - [ ] **Step 13: 커밋**
 
 ```bash
-git add src/swing_it/report/layers_md.py src/swing_it/cli_layers.py \
-  src/swing_it/cli_today.py tests/test_report_layers_md.py pyproject.toml \
+git add src/scalp_it/report/layers_md.py src/scalp_it/cli_layers.py \
+  src/scalp_it/cli_today.py tests/test_report_layers_md.py pyproject.toml \
   docs/research/2026-08-17-layers-verdict.md
-git commit -m "feat(report): 층 비교 리포트 + swing-layers·swing-today CLI"
+git commit -m "feat(report): 층 비교 리포트 + scalp-layers·scalp-today CLI"
 ```
 
 ---
@@ -4047,7 +4047,7 @@ git commit -m "feat(report): 층 비교 리포트 + swing-layers·swing-today CL
 
 | 스펙 요구 | 태스크 |
 |---|---|
-| §1 후보 리스트 + 근거 카드 | Task 6, Task 7 (`swing-today`) |
+| §1 후보 리스트 + 근거 카드 | Task 6, Task 7 (`scalp-today`) |
 | §1 진입·목표 보유기간 표시 | Task 6 — 카드 표의 진입/목표 청산 행 |
 | §1 유사 과거 사례 | Task 6 `find_analogs` |
 | §2 top_n 하한 15 | Task 5 기본값, Task 7 CLI 가 15 미만 거부 |
@@ -4103,7 +4103,7 @@ git commit -m "feat(report): 층 비교 리포트 + swing-layers·swing-today CL
 
 ## 후속
 
-- **`LLM_NOT_JUSTIFIED` 면:** 계획 3 을 운영 경로에서 내리고 ②층으로 `swing-today` 를 돌린다. 스펙 §10 의 성공 기준 1·5 에 대한 답으로 기록한다. LLM 비용 지출을 멈춘다.
+- **`LLM_NOT_JUSTIFIED` 면:** 계획 3 을 운영 경로에서 내리고 ②층으로 `scalp-today` 를 돌린다. 스펙 §10 의 성공 기준 1·5 에 대한 답으로 기록한다. LLM 비용 지출을 멈춘다.
 - **세 층 모두 종합 FAIL 이면:** "뉴스 재료 강도는 한국 시장 2~8주 지평에서 재현되는 엣지가 아니다"가 결론이다. 기록하고 끝낸다(스펙 §10). 전진 기록은 계속 쌓되 운영에는 올리지 않는다. 계획 1 에 이은 두 번째 부정 결과이며, 그것도 결과다.
 - **커버리지가 계획 1 의 62%에서 안 내려갔으면:** 뉴스 축이 후보 풀을 좁히는 데 실패했다는 뜻이다. 층 성과와 별개로 이것 자체가 기록할 발견이다.
 - **6개월 뒤(2027-02 이후):** `score_forward_log` 로 전진 기록을 채점한다. 이것이 손 안 댄 유일한 창이다.

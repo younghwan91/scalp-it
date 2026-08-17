@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python ≥3.10, uv, pandas ≥2.0, scikit-learn, psycopg2-binary, pytest, ruff
 
-**Spec:** `docs/superpowers/specs/2026-08-17-swing-it-design.md`
+**Spec:** `docs/superpowers/specs/2026-08-17-scalp-it-design.md`
 
 ## Global Constraints
 
@@ -18,7 +18,7 @@
 - **드리프트를 자르지 않는다.** 라벨은 D+21 ~ D+41 구간 보유. 중간 손절·이익실현 없음. 스펙 §2.
 - **음성대조 없이 승격 없음.** 모든 성과 주장은 랜덤 진입 널 대비로 보고한다. 스펙 §2.
 - **데이터 커밋 금지.** 결과물은 `data/`·`results/` 아래 두며 `.gitignore` 로 차단돼 있다.
-- **DB 는 읽기 전용.** swing-it 은 어떤 테이블에도 쓰지 않는다.
+- **DB 는 읽기 전용.** scalp-it 은 어떤 테이블에도 쓰지 않는다.
 - `trade_value` 단위는 **백만원**. `supply_demand` 순매수 컬럼 단위는 **주식 수**(확인 필요 → Task 2 에서 검증).
 
 ## 데이터 실측 (2026-08-17 확인)
@@ -42,14 +42,14 @@
 | 파일 | 책임 |
 |---|---|
 | `pyproject.toml` | 패키징·의존성·ruff·pytest 설정 |
-| `src/swing_it/adapters/db.py` | DB 접속과 읽기 쿼리. **여기서만 SQL 을 쓴다** |
-| `src/swing_it/events.py` | 유니버스 필터 + 거래대금 급증 이벤트 추출 (순수 함수) |
-| `src/swing_it/labels.py` | D+1 진입 → D+21~41 초과수익 라벨 (순수 함수) |
-| `src/swing_it/features/supply.py` | 수급 피처 (순수 함수) |
-| `src/swing_it/dataset.py` | 이벤트 + 피처 + 라벨 조립 |
-| `src/swing_it/model/baseline.py` | walk-forward 학습·예측 |
-| `src/swing_it/validate/gate.py` | 음성대조 널 + 판정 리포트 |
-| `src/swing_it/cli.py` | `swing-baseline` 엔트리포인트 |
+| `src/scalp_it/adapters/db.py` | DB 접속과 읽기 쿼리. **여기서만 SQL 을 쓴다** |
+| `src/scalp_it/events.py` | 유니버스 필터 + 거래대금 급증 이벤트 추출 (순수 함수) |
+| `src/scalp_it/labels.py` | D+1 진입 → D+21~41 초과수익 라벨 (순수 함수) |
+| `src/scalp_it/features/supply.py` | 수급 피처 (순수 함수) |
+| `src/scalp_it/dataset.py` | 이벤트 + 피처 + 라벨 조립 |
+| `src/scalp_it/model/baseline.py` | walk-forward 학습·예측 |
+| `src/scalp_it/validate/gate.py` | 음성대조 널 + 판정 리포트 |
+| `src/scalp_it/cli.py` | `scalp-baseline` 엔트리포인트 |
 | `tests/` | 위 각 모듈 대응 테스트 |
 
 ---
@@ -58,9 +58,9 @@
 
 **Files:**
 - Create: `pyproject.toml`
-- Create: `src/swing_it/__init__.py`
-- Create: `src/swing_it/adapters/__init__.py`
-- Create: `src/swing_it/adapters/db.py`
+- Create: `src/scalp_it/__init__.py`
+- Create: `src/scalp_it/adapters/__init__.py`
+- Create: `src/scalp_it/adapters/db.py`
 - Test: `tests/test_db_adapter.py`
 
 **Interfaces:**
@@ -78,7 +78,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "swing-it"
+name = "scalp-it"
 version = "0.1.0"
 description = "한국 주식 2~8주 스윙 후보 리서치 툴 — 뉴스 재료 강도 + 수급 확증"
 readme = "README.md"
@@ -96,10 +96,10 @@ pg = ["psycopg2-binary>=2.9"]
 dev = ["pytest>=8.0", "ruff==0.16.2", "psycopg2-binary>=2.9"]
 
 [project.scripts]
-swing-baseline = "swing_it.cli:main"
+scalp-baseline = "scalp_it.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/swing_it"]
+packages = ["src/scalp_it"]
 
 [tool.ruff]
 line-length = 100
@@ -119,7 +119,7 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from swing_it.adapters.db import connect, load_prices, load_supply_demand
+from scalp_it.adapters.db import connect, load_prices, load_supply_demand
 
 
 @pytest.fixture()
@@ -184,19 +184,19 @@ def test_load_supply_demand_returns_investor_columns(fake_db):
 - [ ] **Step 3: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_db_adapter.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it'`
 
 - [ ] **Step 4: 어댑터 구현**
 
-`src/swing_it/__init__.py`:
+`src/scalp_it/__init__.py`:
 
 ```python
-"""swing-it — 한국 주식 2~8주 스윙 후보 리서치 툴."""
+"""scalp-it — 한국 주식 2~8주 스윙 후보 리서치 툴."""
 
 __version__ = "0.1.0"
 ```
 
-`src/swing_it/adapters/__init__.py`:
+`src/scalp_it/adapters/__init__.py`:
 
 ```python
 """외부 시스템 접근을 격리하는 계층.
@@ -206,12 +206,12 @@ kr-quant / kiwoom / krx-news / DB 에 손을 뻗는 코드는 전부 여기에�
 """
 ```
 
-`src/swing_it/adapters/db.py`:
+`src/scalp_it/adapters/db.py`:
 
 ```python
 """DB 읽기 어댑터 — SQL 은 이 파일에만 존재한다.
 
-읽기 전용이다. swing-it 은 어떤 테이블에도 쓰지 않는다.
+읽기 전용이다. scalp-it 은 어떤 테이블에도 쓰지 않는다.
 가격은 반드시 ``daily_bars_adjusted`` 에서 읽는다. ``daily_bars`` 는 분할 미반영이다.
 """
 
@@ -297,7 +297,7 @@ Expected: 0 이 아닌 수. (파이썬에서 직접 붙는 경로는 Task 7 CLI 
 - [ ] **Step 7: 커밋**
 
 ```bash
-git add pyproject.toml src/swing_it tests/test_db_adapter.py
+git add pyproject.toml src/scalp_it tests/test_db_adapter.py
 git commit -m "feat(adapters): 읽기 전용 DB 어댑터 — 수정주가·수급 로더"
 ```
 
@@ -306,7 +306,7 @@ git commit -m "feat(adapters): 읽기 전용 DB 어댑터 — 수정주가·수�
 ### Task 2: 유니버스 필터와 거래대금 급증 이벤트
 
 **Files:**
-- Create: `src/swing_it/events.py`
+- Create: `src/scalp_it/events.py`
 - Test: `tests/test_events.py`
 
 **Interfaces:**
@@ -325,7 +325,7 @@ git commit -m "feat(adapters): 읽기 전용 DB 어댑터 — 수정주가·수�
 import numpy as np
 import pandas as pd
 
-from swing_it.events import add_liquidity_stats, extract_events
+from scalp_it.events import add_liquidity_stats, extract_events
 
 
 def _prices(code: str, trade_values: list[float]) -> pd.DataFrame:
@@ -384,11 +384,11 @@ def test_extract_events_rejects_illiquid_even_when_spiking():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_events.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.events'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.events'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/events.py`:
+`src/scalp_it/events.py`:
 
 ```python
 """유니버스 필터와 이벤트 정의 — 순수 함수, DB 를 모른다.
@@ -445,7 +445,7 @@ Expected: 5 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/events.py tests/test_events.py
+git add src/scalp_it/events.py tests/test_events.py
 git commit -m "feat(events): 거래대금 급증 이벤트 추출 + point-in-time 유동성 하한"
 ```
 
@@ -454,7 +454,7 @@ git commit -m "feat(events): 거래대금 급증 이벤트 추출 + point-in-tim
 ### Task 3: D+20~40 초과수익 라벨
 
 **Files:**
-- Create: `src/swing_it/labels.py`
+- Create: `src/scalp_it/labels.py`
 - Test: `tests/test_labels.py`
 
 **Interfaces:**
@@ -473,7 +473,7 @@ git commit -m "feat(events): 거래대금 급증 이벤트 추출 + point-in-tim
 import numpy as np
 import pandas as pd
 
-from swing_it.labels import excess_return, forward_return
+from scalp_it.labels import excess_return, forward_return
 
 
 def _series(code: str, opens: list[float], closes: list[float]) -> pd.DataFrame:
@@ -540,11 +540,11 @@ def test_excess_return_ignores_nan_rows_in_mean():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_labels.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.labels'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.labels'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/labels.py`:
+`src/scalp_it/labels.py`:
 
 ```python
 """라벨 생성 — 순수 함수.
@@ -605,7 +605,7 @@ Expected: 4 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/labels.py tests/test_labels.py
+git add src/scalp_it/labels.py tests/test_labels.py
 git commit -m "feat(labels): D+1 진입 → D+40 청산 초과수익 라벨"
 ```
 
@@ -614,8 +614,8 @@ git commit -m "feat(labels): D+1 진입 → D+40 청산 초과수익 라벨"
 ### Task 4: 수급 피처
 
 **Files:**
-- Create: `src/swing_it/features/__init__.py`
-- Create: `src/swing_it/features/supply.py`
+- Create: `src/scalp_it/features/__init__.py`
+- Create: `src/scalp_it/features/supply.py`
 - Test: `tests/test_features_supply.py`
 
 **Interfaces:**
@@ -636,7 +636,7 @@ git commit -m "feat(labels): D+1 진입 → D+40 청산 초과수익 라벨"
 import numpy as np
 import pandas as pd
 
-from swing_it.features.supply import supply_features
+from scalp_it.features.supply import supply_features
 
 
 def _sd(code: str, foreign: list[int], inst: list[int], indiv: list[int], vol: list[int]):
@@ -696,17 +696,17 @@ def test_features_are_per_code():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_features_supply.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.features'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.features'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/features/__init__.py`:
+`src/scalp_it/features/__init__.py`:
 
 ```python
 """피처 계산 — 전부 순수 함수. DataFrame in → DataFrame out."""
 ```
 
-`src/swing_it/features/supply.py`:
+`src/scalp_it/features/supply.py`:
 
 ```python
 """수급 피처 — 텍스트와 독립된 두 번째 증거 (스펙 §3).
@@ -760,7 +760,7 @@ Expected: 5 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/features tests/test_features_supply.py
+git add src/scalp_it/features tests/test_features_supply.py
 git commit -m "feat(features): 수급 피처 — 투자자별 순매수·거래량 대비 비율"
 ```
 
@@ -769,7 +769,7 @@ git commit -m "feat(features): 수급 피처 — 투자자별 순매수·거래�
 ### Task 5: 데이터셋 조립
 
 **Files:**
-- Create: `src/swing_it/dataset.py`
+- Create: `src/scalp_it/dataset.py`
 - Test: `tests/test_dataset.py`
 
 **Interfaces:**
@@ -790,7 +790,7 @@ git commit -m "feat(features): 수급 피처 — 투자자별 순매수·거래�
 import numpy as np
 import pandas as pd
 
-from swing_it.dataset import FEATURE_COLUMNS, build_dataset
+from scalp_it.dataset import FEATURE_COLUMNS, build_dataset
 
 
 def _prices(codes: list[str], n: int, spike_at: int) -> pd.DataFrame:
@@ -865,11 +865,11 @@ def test_log_adv_is_log10_of_adv():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_dataset.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.dataset'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.dataset'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/dataset.py`:
+`src/scalp_it/dataset.py`:
 
 ```python
 """이벤트 · 피처 · 라벨을 하나의 학습 테이블로 조립한다."""
@@ -952,7 +952,7 @@ Expected: 4 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/dataset.py tests/test_dataset.py
+git add src/scalp_it/dataset.py tests/test_dataset.py
 git commit -m "feat(dataset): 이벤트·피처·라벨 조립"
 ```
 
@@ -961,8 +961,8 @@ git commit -m "feat(dataset): 이벤트·피처·라벨 조립"
 ### Task 6: walk-forward 베이스라인 모델
 
 **Files:**
-- Create: `src/swing_it/model/__init__.py`
-- Create: `src/swing_it/model/baseline.py`
+- Create: `src/scalp_it/model/__init__.py`
+- Create: `src/scalp_it/model/baseline.py`
 - Test: `tests/test_model_baseline.py`
 
 **Interfaces:**
@@ -983,8 +983,8 @@ git commit -m "feat(dataset): 이벤트·피처·라벨 조립"
 import numpy as np
 import pandas as pd
 
-from swing_it.dataset import FEATURE_COLUMNS
-from swing_it.model.baseline import portfolio_returns, walk_forward_predict
+from scalp_it.dataset import FEATURE_COLUMNS
+from scalp_it.model.baseline import portfolio_returns, walk_forward_predict
 
 
 def _dataset(n: int, seed: int = 0) -> pd.DataFrame:
@@ -1039,11 +1039,11 @@ def test_portfolio_returns_picks_top_n_per_date():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_model_baseline.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.model'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.model'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/model/__init__.py`:
+`src/scalp_it/model/__init__.py`:
 
 ```python
 """학습·예측 계층.
@@ -1053,7 +1053,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.model'`
 """
 ```
 
-`src/swing_it/model/baseline.py`:
+`src/scalp_it/model/baseline.py`:
 
 ```python
 """walk-forward 베이스라인 — 수급 피처만으로 초과수익을 예측한다 (스펙 §3 ①층)."""
@@ -1135,7 +1135,7 @@ Expected: 4 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/model tests/test_model_baseline.py
+git add src/scalp_it/model tests/test_model_baseline.py
 git commit -m "feat(model): walk-forward 베이스라인 (수급 단독)"
 ```
 
@@ -1144,9 +1144,9 @@ git commit -m "feat(model): walk-forward 베이스라인 (수급 단독)"
 ### Task 7: 음성대조 게이트와 CLI
 
 **Files:**
-- Create: `src/swing_it/validate/__init__.py`
-- Create: `src/swing_it/validate/gate.py`
-- Create: `src/swing_it/cli.py`
+- Create: `src/scalp_it/validate/__init__.py`
+- Create: `src/scalp_it/validate/gate.py`
+- Create: `src/scalp_it/cli.py`
 - Test: `tests/test_validate_gate.py`
 
 **Interfaces:**
@@ -1166,7 +1166,7 @@ git commit -m "feat(model): walk-forward 베이스라인 (수급 단독)"
 import numpy as np
 import pandas as pd
 
-from swing_it.validate.gate import gate_report, random_null
+from scalp_it.validate.gate import gate_report, random_null
 
 
 def _pred(n_dates: int, n_per_date: int, signal: bool, seed: int = 0) -> pd.DataFrame:
@@ -1221,16 +1221,16 @@ def test_gate_report_has_all_keys():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_validate_gate.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.validate'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.validate'`
 
 - [ ] **Step 3: 게이트 구현**
 
-`src/swing_it/validate/__init__.py`:
+`src/scalp_it/validate/__init__.py`:
 
 ```python
 """판정 계층.
 
-스펙 §8: swing-it 은 자기 검증을 하지 않는다. 이 모듈은 kr-quant 가 확립한
+스펙 §8: scalp-it 은 자기 검증을 하지 않는다. 이 모듈은 kr-quant 가 확립한
 판정 기준(음성대조·비용스윕)을 같은 형태로 적용할 뿐이며, 여기서 통과한 것만
 운영에 등록한다.
 
@@ -1238,7 +1238,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.validate'`
 """
 ```
 
-`src/swing_it/validate/gate.py`:
+`src/scalp_it/validate/gate.py`:
 
 ```python
 """음성대조 게이트 — 랜덤 진입 널을 이기지 못하면 아무것도 승격하지 않는다."""
@@ -1303,10 +1303,10 @@ Expected: 5 passed
 
 - [ ] **Step 5: CLI 구현**
 
-`src/swing_it/cli.py`:
+`src/scalp_it/cli.py`:
 
 ```python
-"""`swing-baseline` — 베이스라인 파이프라인 전체를 실 DB 로 한 번 돌린다."""
+"""`scalp-baseline` — 베이스라인 파이프라인 전체를 실 DB 로 한 번 돌린다."""
 
 from __future__ import annotations
 
@@ -1385,7 +1385,7 @@ Expected: 27 passed
 Run:
 ```bash
 export $(grep -v '^#' ../kr-quant/.env | xargs)
-uv run swing-baseline --out results/baseline.json
+uv run scalp-baseline --out results/baseline.json
 ```
 Expected: `results/baseline.json` 생성, `verdict` 가 `PASS` 또는 `FAIL` 로 출력됨.
 
@@ -1394,8 +1394,8 @@ Expected: `results/baseline.json` 생성, `verdict` 가 `PASS` 또는 `FAIL` 로
 - [ ] **Step 8: 커밋**
 
 ```bash
-git add src/swing_it/validate src/swing_it/cli.py tests/test_validate_gate.py
-git commit -m "feat(validate): 음성대조 게이트 + swing-baseline CLI"
+git add src/scalp_it/validate src/scalp_it/cli.py tests/test_validate_gate.py
+git commit -m "feat(validate): 음성대조 게이트 + scalp-baseline CLI"
 ```
 
 ---

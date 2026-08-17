@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.features.supply import supply_features
+from scalp_it.features.supply import supply_features
 
 
 def _sd(code: str, foreign: list[int], inst: list[int], indiv: list[int], vol: list[int]):

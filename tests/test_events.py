@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from swing_it.events import add_liquidity_stats, extract_events
+from scalp_it.events import add_liquidity_stats, extract_events
 
 
 def _prices(code: str, trade_values: list[float]) -> pd.DataFrame:

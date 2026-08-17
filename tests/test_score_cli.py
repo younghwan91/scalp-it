@@ -4,7 +4,7 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from swing_it.score.cli import main
+from scalp_it.score.cli import main
 
 
 @pytest.fixture()
@@ -139,7 +139,7 @@ def test_price_lookback_start_precedes_start_by_more_than_the_window():
     모든 기사가 ``no_volume_event`` 로 조용히 탈락한다. 실 DB 스모크에서
     31배 급증일(001210 / 2026-08-14)이 탈락하며 발견됐다.
     """
-    from swing_it.score.cli import price_lookback_start
+    from scalp_it.score.cli import price_lookback_start
 
     start = pd.Timestamp("2026-08-01")
     got = pd.Timestamp(price_lookback_start("2026-08-01", 20))

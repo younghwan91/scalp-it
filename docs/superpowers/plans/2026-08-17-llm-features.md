@@ -8,9 +8,9 @@
 
 **Tech Stack:** Python ≥3.10, uv, httpx, pandas ≥2.0, sqlite3(표준 라이브러리), pytest, ruff
 
-**Spec:** `docs/superpowers/specs/2026-08-17-swing-it-design.md`
+**Spec:** `docs/superpowers/specs/2026-08-17-scalp-it-design.md`
 
-**선행 계획:** 계획 1(`docs/superpowers/plans/2026-08-17-baseline-skeleton.md`) — `swing_it.events.extract_events`, `pyproject.toml` 을 쓴다. 계획 2(뉴스 인제스트) — `data/news.db` 를 만든다.
+**선행 계획:** 계획 1(`docs/superpowers/plans/2026-08-17-baseline-skeleton.md`) — `scalp_it.events.extract_events`, `pyproject.toml` 을 쓴다. 계획 2(뉴스 인제스트) — `data/news.db` 를 만든다.
 
 ## Global Constraints
 
@@ -61,17 +61,17 @@
 
 | 파일 | 책임 |
 |---|---|
-| `src/swing_it/score/__init__.py` | 모듈 설명 + 공개 심볼 |
-| `src/swing_it/score/schema.py` | 고정 스키마 정의·파싱·검증·수치 인코딩. **순수** |
-| `src/swing_it/score/prompt.py` | 프롬프트 실제 문안과 `PROMPT_VERSION`. **순수** |
-| `src/swing_it/score/provider.py` | `LLMProvider` 프로토콜, `FakeProvider`, httpx 기반 3종, env 팩토리 |
-| `src/swing_it/score/prefilter.py` | 규칙 기반 사전 필터 (LLM 에 태울 건수 축소). **순수** |
-| `src/swing_it/score/cache.py` | `data/llm_features.db` — 결과 캐시, 모델·프롬프트 버전 기록 |
-| `src/swing_it/score/batch.py` | 배치 러너 — 캐시 스킵·재시도·부분 실패 집계 |
-| `src/swing_it/score/compare.py` | 두 모델 산출물 대조 (일치율·MAE·순위상관). **순수** |
-| `src/swing_it/score/cli.py` | `swing-score`, `swing-score-compare` 엔트리포인트 |
-| `src/swing_it/adapters/news_db.py` | `news.db` 읽기. **뉴스 SQL 은 여기에만** |
-| `src/swing_it/features/llm.py` | 기사 단위 피처를 `(code, date)` 격자로 접는다. **계획 4 의 유일한 접점** |
+| `src/scalp_it/score/__init__.py` | 모듈 설명 + 공개 심볼 |
+| `src/scalp_it/score/schema.py` | 고정 스키마 정의·파싱·검증·수치 인코딩. **순수** |
+| `src/scalp_it/score/prompt.py` | 프롬프트 실제 문안과 `PROMPT_VERSION`. **순수** |
+| `src/scalp_it/score/provider.py` | `LLMProvider` 프로토콜, `FakeProvider`, httpx 기반 3종, env 팩토리 |
+| `src/scalp_it/score/prefilter.py` | 규칙 기반 사전 필터 (LLM 에 태울 건수 축소). **순수** |
+| `src/scalp_it/score/cache.py` | `data/llm_features.db` — 결과 캐시, 모델·프롬프트 버전 기록 |
+| `src/scalp_it/score/batch.py` | 배치 러너 — 캐시 스킵·재시도·부분 실패 집계 |
+| `src/scalp_it/score/compare.py` | 두 모델 산출물 대조 (일치율·MAE·순위상관). **순수** |
+| `src/scalp_it/score/cli.py` | `scalp-score`, `scalp-score-compare` 엔트리포인트 |
+| `src/scalp_it/adapters/news_db.py` | `news.db` 읽기. **뉴스 SQL 은 여기에만** |
+| `src/scalp_it/features/llm.py` | 기사 단위 피처를 `(code, date)` 격자로 접는다. **계획 4 의 유일한 접점** |
 | `tests/` | 위 각 모듈 대응 테스트 |
 
 ---
@@ -79,9 +79,9 @@
 ### Task 1: 고정 스키마와 프롬프트
 
 **Files:**
-- Create: `src/swing_it/score/__init__.py`
-- Create: `src/swing_it/score/schema.py`
-- Create: `src/swing_it/score/prompt.py`
+- Create: `src/scalp_it/score/__init__.py`
+- Create: `src/scalp_it/score/schema.py`
+- Create: `src/scalp_it/score/prompt.py`
 - Test: `tests/test_score_schema.py`
 - Test: `tests/test_score_prompt.py`
 
@@ -105,7 +105,7 @@
 ```python
 import pytest
 
-from swing_it.score.schema import (
+from scalp_it.score.schema import (
     LLM_FEATURE_COLUMNS,
     ArticleFeatures,
     SchemaError,
@@ -211,8 +211,8 @@ def test_sentiment_is_direction_times_strength():
 `tests/test_score_prompt.py`:
 
 ```python
-from swing_it.score.prompt import FORBIDDEN_PROMPT_TERMS, PROMPT_VERSION, build_prompt
-from swing_it.score.schema import MATERIAL_TYPES
+from scalp_it.score.prompt import FORBIDDEN_PROMPT_TERMS, PROMPT_VERSION, build_prompt
+from scalp_it.score.schema import MATERIAL_TYPES
 
 _ARTICLE = {
     "code": "005930",
@@ -263,11 +263,11 @@ def test_prompt_version_is_recorded():
 - [ ] **Step 3: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_score_schema.py tests/test_score_prompt.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.score'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.score'`
 
 - [ ] **Step 4: 스키마 구현**
 
-`src/swing_it/score/__init__.py`:
+`src/scalp_it/score/__init__.py`:
 
 ```python
 """LLM 구조화 피처 추출 (스펙 §3).
@@ -282,7 +282,7 @@ LLM 은 판정기가 아니라 추출기다. 기사 하나당 고정 스키마 7
 """
 ```
 
-`src/swing_it/score/schema.py`:
+`src/scalp_it/score/schema.py`:
 
 ```python
 """고정 스키마 정의와 파싱 — 순수 모듈.
@@ -419,7 +419,7 @@ def encode_features(features: ArticleFeatures) -> dict[str, float]:
 
 - [ ] **Step 5: 프롬프트 구현**
 
-`src/swing_it/score/prompt.py`:
+`src/scalp_it/score/prompt.py`:
 
 ```python
 """프롬프트 실제 문안과 버전.
@@ -503,8 +503,8 @@ Expected: 16 passed
 - [ ] **Step 7: 커밋**
 
 ```bash
-git add src/swing_it/score/__init__.py src/swing_it/score/schema.py \
-        src/swing_it/score/prompt.py \
+git add src/scalp_it/score/__init__.py src/scalp_it/score/schema.py \
+        src/scalp_it/score/prompt.py \
         tests/test_score_schema.py tests/test_score_prompt.py
 git commit -m "feat(score): 고정 스키마 7필드 + 프롬프트 v1 (판정 문항 금지 테스트 포함)"
 ```
@@ -515,7 +515,7 @@ git commit -m "feat(score): 고정 스키마 7필드 + 프롬프트 v1 (판정 �
 
 **Files:**
 - Modify: `pyproject.toml` — `dependencies` 에 httpx 추가
-- Create: `src/swing_it/score/provider.py`
+- Create: `src/scalp_it/score/provider.py`
 - Test: `tests/test_score_provider.py`
 
 **Interfaces:**
@@ -564,7 +564,7 @@ dependencies = [
 import httpx
 import pytest
 
-from swing_it.score.provider import (
+from scalp_it.score.provider import (
     DEFAULT_MODELS,
     FakeProvider,
     HttpProvider,
@@ -722,11 +722,11 @@ def test_env_factory_never_returns_the_key_in_repr():
 - [ ] **Step 3: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_score_provider.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.score.provider'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.score.provider'`
 
 - [ ] **Step 4: 구현**
 
-`src/swing_it/score/provider.py`:
+`src/scalp_it/score/provider.py`:
 
 ```python
 """LLM provider 추상화 — Gemini / OpenAI / Anthropic 을 환경변수로 교체한다 (스펙 §8).
@@ -967,7 +967,7 @@ Expected: 16 passed
 - [ ] **Step 6: 커밋**
 
 ```bash
-git add pyproject.toml src/swing_it/score/provider.py tests/test_score_provider.py
+git add pyproject.toml src/scalp_it/score/provider.py tests/test_score_provider.py
 git commit -m "feat(score): provider 추상화 — httpx 직접 호출 3종 + FakeProvider"
 ```
 
@@ -976,7 +976,7 @@ git commit -m "feat(score): provider 추상화 — httpx 직접 호출 3종 + Fa
 ### Task 3: 규칙 기반 사전 필터
 
 **Files:**
-- Create: `src/swing_it/score/prefilter.py`
+- Create: `src/scalp_it/score/prefilter.py`
 - Test: `tests/test_score_prefilter.py`
 
 **Interfaces:**
@@ -1001,7 +1001,7 @@ git commit -m "feat(score): provider 추상화 — httpx 직접 호출 3종 + Fa
 ```python
 import pandas as pd
 
-from swing_it.score.prefilter import normalize_title, prefilter_articles, prefilter_summary
+from scalp_it.score.prefilter import normalize_title, prefilter_articles, prefilter_summary
 
 _BODY = "삼성전자가 미국 A사와 3년간 2조원 규모의 HBM 공급 계약을 체결했다고 공시했다."
 
@@ -1130,11 +1130,11 @@ def test_input_row_order_is_preserved():
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_score_prefilter.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.score.prefilter'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.score.prefilter'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/score/prefilter.py`:
+`src/scalp_it/score/prefilter.py`:
 
 ```python
 """LLM 에 태울 기사를 줄이는 규칙 기반 사전 필터 — 순수 함수.
@@ -1245,7 +1245,7 @@ Expected: 10 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/score/prefilter.py tests/test_score_prefilter.py
+git add src/scalp_it/score/prefilter.py tests/test_score_prefilter.py
 git commit -m "feat(score): 규칙 기반 사전 필터 — 매핑실패·짧은글·거래대금 미동반·중복 제거"
 ```
 
@@ -1254,7 +1254,7 @@ git commit -m "feat(score): 규칙 기반 사전 필터 — 매핑실패·짧은
 ### Task 4: 결과 캐시
 
 **Files:**
-- Create: `src/swing_it/score/cache.py`
+- Create: `src/scalp_it/score/cache.py`
 - Test: `tests/test_score_cache.py`
 
 **Interfaces:**
@@ -1279,8 +1279,8 @@ API 를 다시 태우지 않고 재파싱할 수 있다. 이 파일은 `data/` �
 ```python
 import pandas as pd
 
-from swing_it.score.cache import get_cached, load_features_frame, open_cache, put_result
-from swing_it.score.schema import LLM_FEATURE_COLUMNS, ArticleFeatures
+from scalp_it.score.cache import get_cached, load_features_frame, open_cache, put_result
+from scalp_it.score.schema import LLM_FEATURE_COLUMNS, ArticleFeatures
 
 _F = ArticleFeatures(
     material_type="수주",
@@ -1374,11 +1374,11 @@ def test_load_features_frame_is_empty_when_nothing_matches(tmp_path):
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_score_cache.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.score.cache'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.score.cache'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/score/cache.py`:
+`src/scalp_it/score/cache.py`:
 
 ```python
 """LLM 결과 캐시 — 같은 기사를 두 번 태우지 않는다.
@@ -1536,7 +1536,7 @@ Expected: 8 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/score/cache.py tests/test_score_cache.py
+git add src/scalp_it/score/cache.py tests/test_score_cache.py
 git commit -m "feat(score): 결과 캐시 — (article_id, model, prompt_version) 키, 실패도 기록"
 ```
 
@@ -1545,7 +1545,7 @@ git commit -m "feat(score): 결과 캐시 — (article_id, model, prompt_version
 ### Task 5: 배치 러너 — 재시도와 부분 실패
 
 **Files:**
-- Create: `src/swing_it/score/batch.py`
+- Create: `src/scalp_it/score/batch.py`
 - Test: `tests/test_score_batch.py`
 
 **Interfaces:**
@@ -1572,10 +1572,10 @@ git commit -m "feat(score): 결과 캐시 — (article_id, model, prompt_version
 import pandas as pd
 import pytest
 
-from swing_it.score.batch import BatchAborted, score_articles
-from swing_it.score.cache import get_cached, open_cache
-from swing_it.score.prompt import PROMPT_VERSION
-from swing_it.score.provider import FakeProvider, ProviderError
+from scalp_it.score.batch import BatchAborted, score_articles
+from scalp_it.score.cache import get_cached, open_cache
+from scalp_it.score.prompt import PROMPT_VERSION
+from scalp_it.score.provider import FakeProvider, ProviderError
 
 _OK = (
     '{"material_type":"수주","persistence":"multi_quarter","specificity":3,'
@@ -1703,11 +1703,11 @@ def test_empty_input_is_a_no_op(tmp_path):
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_score_batch.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.score.batch'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.score.batch'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/score/batch.py`:
+`src/scalp_it/score/batch.py`:
 
 ```python
 """배치 러너 — 캐시 스킵 · 재시도 · 부분 실패 집계.
@@ -1854,18 +1854,18 @@ Expected: 10 passed
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add src/swing_it/score/batch.py tests/test_score_batch.py
+git add src/scalp_it/score/batch.py tests/test_score_batch.py
 git commit -m "feat(score): 배치 러너 — 캐시 스킵·지수 백오프 재시도·부분 실패 집계"
 ```
 
 ---
 
-### Task 6: 뉴스 어댑터와 `swing-score` CLI
+### Task 6: 뉴스 어댑터와 `scalp-score` CLI
 
 **Files:**
-- Modify: `pyproject.toml` — `[project.scripts]` 에 `swing-score` 추가
-- Create: `src/swing_it/adapters/news_db.py`
-- Create: `src/swing_it/score/cli.py`
+- Modify: `pyproject.toml` — `[project.scripts]` 에 `scalp-score` 추가
+- Create: `src/scalp_it/adapters/news_db.py`
+- Create: `src/scalp_it/score/cli.py`
 - Test: `tests/test_news_db_adapter.py`
 - Test: `tests/test_score_cli.py`
 
@@ -1875,7 +1875,7 @@ git commit -m "feat(score): 배치 러너 — 캐시 스킵·지수 백오프 �
   - `NEWS_COLUMNS: list[str]` = `["article_id", "date", "code", "press", "title", "body200", "keywords"]`
   - `connect_news(path: str | None = None) -> sqlite3.Connection` — 생략 시 `SWING_NEWS_DB`, 그것도 없으면 `data/news.db`
   - `load_articles(conn, start: str, end: str) -> pd.DataFrame` — 컬럼 `NEWS_COLUMNS`, `date` 는 `datetime64[ns]`
-  - `main(argv: list[str] | None = None) -> int` — `swing-score` 진입점
+  - `main(argv: list[str] | None = None) -> int` — `scalp-score` 진입점
 
 **CLI 인자:**
 
@@ -1898,8 +1898,8 @@ git commit -m "feat(score): 배치 러너 — 캐시 스킵·지수 백오프 �
 
 ```toml
 [project.scripts]
-swing-baseline = "swing_it.cli:main"
-swing-score = "swing_it.score.cli:main"
+scalp-baseline = "scalp_it.cli:main"
+scalp-score = "scalp_it.score.cli:main"
 ```
 
 - [ ] **Step 2: 실패하는 어댑터 테스트 작성**
@@ -1912,7 +1912,7 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from swing_it.adapters.news_db import NEWS_COLUMNS, connect_news, load_articles
+from scalp_it.adapters.news_db import NEWS_COLUMNS, connect_news, load_articles
 
 
 @pytest.fixture()
@@ -1984,7 +1984,7 @@ import sqlite3
 
 import pytest
 
-from swing_it.score.cli import main
+from scalp_it.score.cli import main
 
 
 @pytest.fixture()
@@ -2096,11 +2096,11 @@ def test_report_contains_no_article_text(workspace):
 - [ ] **Step 4: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_news_db_adapter.py tests/test_score_cli.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.adapters.news_db'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.adapters.news_db'`
 
 - [ ] **Step 5: 뉴스 어댑터 구현**
 
-`src/swing_it/adapters/news_db.py`:
+`src/scalp_it/adapters/news_db.py`:
 
 ```python
 """뉴스 DB 읽기 어댑터 — 뉴스 SQL 은 이 파일에만 존재한다.
@@ -2114,7 +2114,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.adapters.news
 ``body``→``body200``(계획 2 가 이미 200자로 잘라 넣는다), ``article_codes.code``→``code``.
 같은 기사가 두 종목에 걸리면 종목마다 한 행이 된다 — 스코어링 단위가 (기사, 종목) 이므로 의도된 동작이다.
 
-읽기 전용이다. swing-it 의 score 계층은 news.db 에 쓰지 않는다.
+읽기 전용이다. scalp-it 의 score 계층은 news.db 에 쓰지 않는다.
 """
 
 from __future__ import annotations
@@ -2168,10 +2168,10 @@ def load_articles(conn: sqlite3.Connection, start: str, end: str) -> pd.DataFram
 
 - [ ] **Step 6: CLI 구현**
 
-`src/swing_it/score/cli.py`:
+`src/scalp_it/score/cli.py`:
 
 ```python
-"""`swing-score` — 뉴스 테이블을 사전 필터에 걸고 LLM 배치로 태운다.
+"""`scalp-score` — 뉴스 테이블을 사전 필터에 걸고 LLM 배치로 태운다.
 
 ``--provider fake`` 로 두면 네트워크 없이 배선 전체를 확인할 수 있다.
 첫 실 호출은 반드시 ``--limit`` 을 작게 잡고 시작한다.
@@ -2293,7 +2293,7 @@ Expected: 전부 통과 (계획 1 의 27건 + Task 1~6 의 68건 = 95건)
 Run:
 ```bash
 export $(grep -v '^#' ../kr-quant/.env | xargs)
-uv run swing-score --provider fake --out results/score_smoke.json
+uv run scalp-score --provider fake --out results/score_smoke.json
 ```
 Expected: 네트워크 호출 0 회. `prefilter` 카운트가 나온다.
 
@@ -2304,9 +2304,9 @@ Expected: 네트워크 호출 0 회. `prefilter` 카운트가 나온다.
 - [ ] **Step 10: 커밋**
 
 ```bash
-git add pyproject.toml src/swing_it/adapters/news_db.py src/swing_it/score/cli.py \
+git add pyproject.toml src/scalp_it/adapters/news_db.py src/scalp_it/score/cli.py \
         tests/test_news_db_adapter.py tests/test_score_cli.py
-git commit -m "feat(score): 뉴스 어댑터 + swing-score CLI (fake provider 로 오프라인 스모크)"
+git commit -m "feat(score): 뉴스 어댑터 + scalp-score CLI (fake provider 로 오프라인 스모크)"
 ```
 
 ---
@@ -2314,8 +2314,8 @@ git commit -m "feat(score): 뉴스 어댑터 + swing-score CLI (fake provider �
 ### Task 7: 모델 대조 — 상위 모델과 저가 모델의 피처 품질 비교
 
 **Files:**
-- Modify: `pyproject.toml` — `[project.scripts]` 에 `swing-score-compare` 추가
-- Create: `src/swing_it/score/compare.py`
+- Modify: `pyproject.toml` — `[project.scripts]` 에 `scalp-score-compare` 추가
+- Create: `src/scalp_it/score/compare.py`
 - Test: `tests/test_score_compare.py`
 
 **Interfaces:**
@@ -2324,7 +2324,7 @@ git commit -m "feat(score): 뉴스 어댑터 + swing-score CLI (fake provider �
   - `CATEGORICAL_FIELDS: list[str]` = `["material_type", "persistence", "freshness", "scale_vs_size"]`
   - `ORDINAL_FIELDS: list[str]` = `["specificity", "sentiment_direction", "sentiment_strength"]`
   - `compare_frames(baseline: pd.DataFrame, challenger: pd.DataFrame) -> dict` — 키 `n_common`, `agreement`(범주형 필드별 일치율), `ordinal`(필드별 `{"mae": float, "spearman": float}`), `disagreement_examples`(article_id 최대 10개)
-  - `main(argv: list[str] | None = None) -> int` — `swing-score-compare` 진입점
+  - `main(argv: list[str] | None = None) -> int` — `scalp-score-compare` 진입점
 
 **왜 자동 PASS/FAIL 을 두지 않는가.** 이 비교는 "싼 모델로 확정해도 되는가"를
 사람이 판단하기 위한 재료다. 진짜 판정은 계획 4 의 층별 비교(②규칙뉴스 vs ③LLM)와
@@ -2362,7 +2362,7 @@ kr-quant 게이트에서 난다. 여기서 임의의 임계선을 세우면 그 
 import numpy as np
 import pandas as pd
 
-from swing_it.score.compare import CATEGORICAL_FIELDS, ORDINAL_FIELDS, compare_frames
+from scalp_it.score.compare import CATEGORICAL_FIELDS, ORDINAL_FIELDS, compare_frames
 
 
 def _frame(article_ids, materials=None, specificities=None, sentiments=None):
@@ -2446,11 +2446,11 @@ def test_no_common_ids_returns_zero_without_crashing():
 - [ ] **Step 3: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_score_compare.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.score.compare'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.score.compare'`
 
 - [ ] **Step 4: 비교 로직 구현**
 
-`src/swing_it/score/compare.py` (파일 앞부분 — 순수 비교 함수):
+`src/scalp_it/score/compare.py` (파일 앞부분 — 순수 비교 함수):
 
 ```python
 """저가 모델과 상위 모델의 피처 품질 대조 (스펙 §8).
@@ -2527,7 +2527,7 @@ def compare_frames(baseline: pd.DataFrame, challenger: pd.DataFrame) -> dict:
     }
 ```
 
-`src/swing_it/score/compare.py` (파일 뒷부분 — CLI):
+`src/scalp_it/score/compare.py` (파일 뒷부분 — CLI):
 
 ```python
 def _sample_articles(kept: pd.DataFrame, size: int, seed: int) -> pd.DataFrame:
@@ -2620,9 +2620,9 @@ if __name__ == "__main__":
 
 ```toml
 [project.scripts]
-swing-baseline = "swing_it.cli:main"
-swing-score = "swing_it.score.cli:main"
-swing-score-compare = "swing_it.score.compare:main"
+scalp-baseline = "scalp_it.cli:main"
+scalp-score = "scalp_it.score.cli:main"
+scalp-score-compare = "scalp_it.score.compare:main"
 ```
 
 - [ ] **Step 6: 테스트 통과 확인**
@@ -2641,7 +2641,7 @@ Expected: 전부 통과
 
 ```bash
 export $(grep -v '^#' .env | xargs)   # GEMINI_API_KEY 등
-uv run swing-score --limit 30 --out results/score_pilot.json
+uv run scalp-score --limit 30 --out results/score_pilot.json
 ```
 
 Expected: `n_ok` 가 25 이상. 실패가 절반을 넘으면 멈추고 원인을 본다 —
@@ -2654,7 +2654,7 @@ Expected: `n_ok` 가 25 이상. 실패가 절반을 넘으면 멈추고 원인�
 - [ ] **Step 9: 저가 모델 vs 상위 모델 대조 300건**
 
 ```bash
-uv run swing-score-compare \
+uv run scalp-score-compare \
   --baseline-provider gemini \
   --challenger-provider anthropic \
   --challenger-model "$SWING_COMPARE_MODEL" \
@@ -2682,7 +2682,7 @@ Step 1 과 Step 9 의 결과를 이 문서 맨 아래 "확인 로그" 절에 날
 - [ ] **Step 11: 커밋**
 
 ```bash
-git add pyproject.toml src/swing_it/score/compare.py tests/test_score_compare.py \
+git add pyproject.toml src/scalp_it/score/compare.py tests/test_score_compare.py \
         docs/superpowers/plans/2026-08-17-llm-features.md
 git commit -m "feat(score): 모델 대조 스크립트 + 단가·모델 ID 확인 로그"
 ```
@@ -2692,7 +2692,7 @@ git commit -m "feat(score): 모델 대조 스크립트 + 단가·모델 ID 확�
 ### Task 8: `(code, date)` 격자 어댑터 — 계획 4 인계 지점
 
 **Files:**
-- Create: `src/swing_it/features/llm.py`
+- Create: `src/scalp_it/features/llm.py`
 - Test: `tests/test_features_llm.py`
 
 **Interfaces:**
@@ -2736,15 +2736,15 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from swing_it.features.llm import (
+from scalp_it.features.llm import (
     LLM_FEATURE_COLUMNS,
     LLM_FRAME_COLUMNS,
     available_models,
     fold_to_code_date,
     load_llm_features,
 )
-from swing_it.score.cache import open_cache, put_result
-from swing_it.score.schema import ArticleFeatures
+from scalp_it.score.cache import open_cache, put_result
+from scalp_it.score.schema import ArticleFeatures
 
 
 def _scores(rows: list[dict]) -> pd.DataFrame:
@@ -2951,11 +2951,11 @@ def test_empty_cache_raises_a_useful_message(tmp_path):
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `uv run pytest tests/test_features_llm.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.features.llm'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scalp_it.features.llm'`
 
 - [ ] **Step 3: 구현**
 
-`src/swing_it/features/llm.py`:
+`src/scalp_it/features/llm.py`:
 
 ```python
 """LLM 피처를 ``(code, date)`` 격자로 접는 어댑터.
@@ -3040,7 +3040,7 @@ def _resolve_version(
         return model, prompt_version or PROMPT_VERSION
     combos = available_models(conn)
     if not combos:
-        raise ValueError("LLM 피처 캐시가 비어 있다. swing-score 를 먼저 돌려라.")
+        raise ValueError("LLM 피처 캐시가 비어 있다. scalp-score 를 먼저 돌려라.")
     if prompt_version is not None:
         combos = [c for c in combos if c[1] == prompt_version]
     if len(combos) > 1:
@@ -3105,7 +3105,7 @@ Expected: 전부 통과 (계획 1 의 27건 + 이 계획의 92건 = 119건)
 - [ ] **Step 6: 커밋**
 
 ```bash
-git add src/swing_it/features/llm.py tests/test_features_llm.py
+git add src/scalp_it/features/llm.py tests/test_features_llm.py
 git commit -m "feat(features): LLM 피처를 (code, date) 격자로 접는 계획 4 인계 어댑터"
 ```
 
@@ -3139,7 +3139,7 @@ git commit -m "feat(features): LLM 피처를 (code, date) 격자로 접는 계�
 import 한다. 다른 접점은 없다.
 
 ```python
-from swing_it.features.llm import LLM_FEATURE_COLUMNS, load_llm_features
+from scalp_it.features.llm import LLM_FEATURE_COLUMNS, load_llm_features
 ```
 
 - `LLM_FEATURE_COLUMNS` 5개 — 전부 수치형. 계획 4 는 GBM 에 그대로 넣는다

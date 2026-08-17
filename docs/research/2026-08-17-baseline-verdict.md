@@ -2,7 +2,7 @@
 
 **날짜:** 2026-08-17
 **계획:** `docs/superpowers/plans/2026-08-17-baseline-skeleton.md`
-**재현:** `swing-baseline --out results/baseline.json`
+**재현:** `scalp-baseline --out results/baseline.json`
 
 ## 판정: FAIL (단, 아래 정정을 반드시 함께 읽어라)
 
@@ -183,7 +183,7 @@ overall_verdict     FAIL
 
 ## 재측정 — `top_n = 2` (사전등록 후 1회)
 
-`top_n` 외의 모든 조건은 위와 동일하다. 재현: `swing-baseline --top-n 2`.
+`top_n` 외의 모든 조건은 위와 동일하다. 재현: `scalp-baseline --top-n 2`.
 
 ```
 전체   strategy +2.22%   null +0.04%   percentile 100.0   net +1.76%   PASS

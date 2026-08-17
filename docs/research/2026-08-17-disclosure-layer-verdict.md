@@ -1,7 +1,7 @@
 # ②층 공시 판정 — 이벤트 정의는 옳았고, 공시 피처는 값을 못 했다
 
 **날짜:** 2026-08-17
-**재현:** `swing-dart-layers --dart-db data/dart_2024.db --start 2024-01-01 --end 2026-08-14 --top-n 2`
+**재현:** `scalp-dart-layers --dart-db data/dart_2024.db --start 2024-01-01 --end 2026-08-14 --top-n 2`
 **결과:** `results/dart_layers_2024.json`
 **표본:** 이벤트 48,928 · 종목 1,734 · 2024-01-30 ~ 2026-06-18 · 공시 335,179건
 
@@ -89,7 +89,7 @@
 
 ## 재현 정보
 
-- 공시 수집: `swing-dart --start 20240101 --end 20260814 --db data/dart_2024.db`
+- 공시 수집: `scalp-dart --start 20240101 --end 20260814 --db data/dart_2024.db`
   → 335,179건, 2024-01-02 ~ 2026-08-14
 - 판정: 위 명령. 파라미터는 사전등록값 그대로 (`top_n=2`, `adv_floor=5000`,
   `hold_end=40`, `folds=4`, `target_concurrent=20`)

@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from swing_it.score.provider import (
+from scalp_it.score.provider import (
     DEFAULT_MODELS,
     FakeProvider,
     HttpProvider,
