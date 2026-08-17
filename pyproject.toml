@@ -28,6 +28,7 @@ swing-news = "swing_it.cli_news:main"
 swing-score = "swing_it.score.cli:main"
 swing-layers = "swing_it.cli_layers:main"
 swing-today = "swing_it.cli_today:main"
+swing-dart = "swing_it.cli_dart:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/swing_it"]
