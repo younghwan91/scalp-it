@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .adapters.db import connect, load_prices, load_supply_demand
 from .dart.dataset import build_dart_dataset
+from .dart.events import build_disclosure_events
 from .dart.store import init_dart_db, load_disclosures
 from .dataset import FEATURE_COLUMNS
 from .features.disclosure import DISC_FEATURE_COLUMNS
@@ -56,11 +57,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"가격 {len(prices):,} · 수급 {len(supply):,} · 공시 {len(disc):,}", file=sys.stderr)
 
+    # 라벨이 붙기 전 이벤트 수를 따로 센다. 둘을 구분하지 않으면 "라벨 구간이
+    # 데이터 끝을 넘어갔다"를 "공시가 없다"로 오진한다.
+    events = build_disclosure_events(disc, prices, adv_floor=args.adv_floor)
     ds = build_dart_dataset(prices, supply, disc,
                             adv_floor=args.adv_floor, hold_end=args.hold_end)
-    print(f"이벤트 {len(ds):,} · 종목 {ds['code'].nunique():,}", file=sys.stderr)
+    print(f"이벤트 {len(events):,} → 라벨 완비 {len(ds):,}", file=sys.stderr)
+
     if ds.empty:
-        print("이벤트가 없다. 공시 수집 범위를 확인하라.", file=sys.stderr)
+        if events.empty:
+            print("\n공시 이벤트가 하나도 없다. 수집 범위나 유동성 하한을 확인하라.",
+                  file=sys.stderr)
+        else:
+            last_event = events["date"].max().date()
+            last_price = prices["date"].max().date()
+            print(
+                f"\n이벤트는 {len(events):,} 건 있으나 라벨이 하나도 안 만들어졌다.\n"
+                f"  마지막 이벤트 {last_event} · 마지막 가격 {last_price}\n"
+                f"  D+{args.hold_end} 청산 시점이 가격 데이터 끝을 넘어간다.\n"
+                f"  → 공시 수집 시작일을 앞당기거나(`swing-dart --start`), "
+                f"--end 를 최소 {args.hold_end} 거래일 이전으로 당겨라.",
+                file=sys.stderr,
+            )
         return 1
 
     folds = fold_dates(ds, n_folds=args.folds)
