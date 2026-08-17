@@ -5,13 +5,18 @@ import httpx
 from swing_it.cli_dart import main, quarter_ranges
 
 
-def test_quarter_ranges_never_exceed_ninety_days():
-    ranges = quarter_ranges("20240101", "20261231")
+def test_quarter_ranges_spans_are_positive_and_bounded():
+    """구간은 뒤집히지 않고 달력 3개월을 넘지 않는다.
+
+    처음에는 '90일 이하'로 고정했는데 그것이 버그였다 — DART 는 달력 3개월로
+    센다. 90일이 3개월보다 짧은 달 조합에서는 통과하지만, 긴 달 조합에서는
+    3개월을 넘겨 죽는다. 아래 달력 기준 테스트가 진짜 계약이다.
+    """
     import pandas as pd
 
-    for bgn, end in ranges:
+    for bgn, end in quarter_ranges("20240101", "20261231"):
         span = (pd.Timestamp(end) - pd.Timestamp(bgn)).days
-        assert 0 <= span <= 90
+        assert 0 <= span <= 92
 
 
 def test_quarter_ranges_cover_the_whole_span_without_gaps():
@@ -70,3 +75,27 @@ def test_cli_without_key_fails_clearly(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     rc = main(["--start", "20260801", "--end", "20260814", "--db", str(tmp_path / "d.db")])
     assert rc == 1
+
+
+def test_quarter_ranges_never_exceed_three_calendar_months():
+    """DART 제한은 '3개월'이지 90일이 아니다.
+
+    회귀 방지: 90일 고정 분할은 짧은 달(2월)을 낀 구간에서 달력 3개월을 넘어
+    `100 corp_code가 없는 경우 검색기간은 3개월만 가능합니다` 로 죽는다.
+    10년 수집이 21/80 구간에서 이 오류로 중단됐다.
+    """
+    import pandas as pd
+
+    for bgn, end in quarter_ranges("20160901", "20260814"):
+        start = pd.Timestamp(bgn)
+        stop = pd.Timestamp(end)
+        assert stop <= start + pd.DateOffset(months=3) - pd.Timedelta(days=1)
+
+
+def test_quarter_ranges_handles_february_boundaries():
+    """2월을 낀 구간이 특히 위험하다."""
+    import pandas as pd
+
+    for bgn, end in quarter_ranges("20231201", "20240601"):
+        start, stop = pd.Timestamp(bgn), pd.Timestamp(end)
+        assert stop <= start + pd.DateOffset(months=3) - pd.Timedelta(days=1)
