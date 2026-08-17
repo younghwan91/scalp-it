@@ -90,15 +90,24 @@ def _table(candidates: pd.DataFrame, names: dict[str, str], threshold: float) ->
 
 
 def _plan_dates(prices: pd.DataFrame, asof: pd.Timestamp, hold_end: int):
-    """진입(다음 거래일 시가)과 목표 청산(그로부터 hold_end 거래일) 날짜."""
+    """진입(**다음** 거래일 시가)과 목표 청산(그로부터 hold_end 거래일) 날짜.
+
+    운영에서 ``asof`` 는 보통 달력의 마지막 날이다 — 오늘 이벤트를 보고 있으니까.
+    그때 진입일은 달력에 아직 없으므로 영업일로 근사한다. ``min(idx+1, last)`` 로
+    잘라내면 **진입일이 이벤트일과 같아져** D+1 진입이라는 설계가 표시상 무너진다.
+    """
     calendar = prices["date"].drop_duplicates().sort_values().reset_index(drop=True)
     matched = calendar[calendar == asof]
     idx = int(matched.index[0]) if len(matched) else len(calendar) - 1
-    entry = calendar.iloc[min(idx + 1, len(calendar) - 1)]
+
+    if idx + 1 < len(calendar):
+        entry = calendar.iloc[idx + 1]
+    else:
+        entry = calendar.iloc[idx] + pd.tseries.offsets.BDay(1)
+
     exit_idx = idx + 1 + hold_end
     if exit_idx < len(calendar):
         return entry, calendar.iloc[exit_idx]
-    # 달력에 아직 없는 미래는 영업일 근사로 표시한다
     return entry, entry + pd.tseries.offsets.BDay(hold_end)
 
 
@@ -147,16 +156,13 @@ def _score(train: pd.DataFrame, log_path: str, layer: str) -> int:
 def _dart_pool(prices, supply, disc, args) -> pd.DataFrame:
     """오늘자 공시 이벤트 풀 — 라벨 없이 피처만.
 
-    ``build_dart_dataset`` 은 라벨 결측을 떨구므로 오늘자는 통째로 사라진다.
-    라벨 컬럼만 비운 채 같은 피처를 만들기 위해, 먼 과거의 ``hold_end`` 를 0 으로
-    두는 대신 이벤트·피처 경로를 그대로 쓰고 라벨 요구만 우회한다.
+    오늘 이벤트는 D+``hold_end`` 가 아직 오지 않아 라벨이 있을 수 없다.
+    ``require_label=False`` 로 라벨 결측을 남긴다.
     """
-    from .dart.dataset import DISC_DATASET_COLUMNS
-
-    full = build_dart_dataset(
-        prices, supply, disc, adv_floor=args.adv_floor, hold_end=0, hold_start=0
+    return build_dart_dataset(
+        prices, supply, disc,
+        adv_floor=args.adv_floor, hold_end=args.hold_end, require_label=False,
     )
-    return full[[c for c in DISC_DATASET_COLUMNS if c in full.columns]]
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="①층(수급) 전진 기록 — 오늘 후보 기록·채점")

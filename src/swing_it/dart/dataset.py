@@ -33,8 +33,15 @@ def build_dart_dataset(
     entry_offset: int = 1,
     hold_start: int = 20,
     hold_end: int = 40,
+    require_label: bool = True,
 ) -> pd.DataFrame:
-    """공시 이벤트 행에 피처와 라벨을 붙인다."""
+    """공시 이벤트 행에 피처와 라벨을 붙인다.
+
+    Args:
+        require_label: ``True`` 면 라벨 결측 행을 떨군다(학습·검증용).
+            ``False`` 면 남긴다 — **오늘자 후보에는 라벨이 있을 수 없다.**
+            그날 이벤트는 D+``hold_end`` 가 아직 오지 않았기 때문이다.
+    """
     events = build_disclosure_events(
         disc, prices, adv_floor=adv_floor, adv_window=adv_window
     )
@@ -52,13 +59,19 @@ def build_dart_dataset(
     df = events.merge(supply, on=["code", "date"], how="left")
     df = df.merge(disc_feats, on=["code", "date"], how="left")
     df = df.merge(labels, on=["code", "date"], how="left")
+    df = df.merge(prices[["code", "date", "close"]], on=["code", "date"], how="left")
 
-    shares_capacity = (df["adv"] * 1e6) / df["entry_price"]
+    # 분모는 **이벤트일 종가**다. 진입가(D+1 시가)는 후보를 고르는 시점(D 종가)에
+    # 모르는 값이다. 계획 1 `dataset.py` 와 같은 이유로 같은 선택을 한다.
+    # 게다가 오늘자 후보는 진입가 자체가 존재하지 않아 전부 결측이 된다.
+    shares_capacity = (df["adv"] * 1e6) / df["close"]
     for scaled, raw in _SCALED.items():
         df[scaled] = df[raw] / shares_capacity
     df["log_adv"] = np.log10(df["adv"])
 
     out = df[DISC_DATASET_COLUMNS].replace([np.inf, -np.inf], np.nan)
-    numeric = [*FEATURE_COLUMNS, *DISC_FEATURE_COLUMNS, "excess_return"]
+    numeric = [*FEATURE_COLUMNS, *DISC_FEATURE_COLUMNS]
+    if require_label:
+        numeric = [*numeric, "excess_return"]
     out = out.dropna(subset=numeric)
     return out.sort_values(["date", "code"]).reset_index(drop=True)

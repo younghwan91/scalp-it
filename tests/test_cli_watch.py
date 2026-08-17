@@ -237,3 +237,34 @@ def test_disclosure_mode_without_dart_db_fails_clearly(tmp_path, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert "공시 DB" in err and "swing-dart" in err
+
+
+def test_entry_date_is_after_the_event_even_at_calendar_end():
+    """운영에서 asof 는 보통 달력 마지막 날이다. 그때도 진입은 D+1 이어야 한다.
+
+    회귀 방지: min(idx+1, last) 로 자르면 진입일이 이벤트일과 같아져
+    'D+1 시가 진입'이라는 설계가 표시상 무너진다.
+    """
+    import pandas as pd
+    from swing_it.cli_watch import _plan_dates
+
+    prices = pd.DataFrame({
+        "code": ["A"] * 3,
+        "date": pd.to_datetime(["2026-08-12", "2026-08-13", "2026-08-14"]),
+    })
+    asof = pd.Timestamp("2026-08-14")          # 달력의 마지막 날
+    entry, exit_date = _plan_dates(prices, asof, hold_end=40)
+    assert entry > asof
+    assert exit_date > entry
+
+
+def test_entry_date_uses_the_calendar_when_available():
+    import pandas as pd
+    from swing_it.cli_watch import _plan_dates
+
+    prices = pd.DataFrame({
+        "code": ["A"] * 4,
+        "date": pd.to_datetime(["2026-08-12", "2026-08-13", "2026-08-14", "2026-08-17"]),
+    })
+    entry, _ = _plan_dates(prices, pd.Timestamp("2026-08-14"), hold_end=1)
+    assert entry == pd.Timestamp("2026-08-17")
