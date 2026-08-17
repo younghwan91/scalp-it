@@ -1,0 +1,291 @@
+"""키움 REST 어댑터 — 키움 HTTP 호출은 이 파일에만 존재한다.
+
+일중 단타로 넘어가면서 분봉이 모든 후속 작업의 전제가 됐다. 분봉은
+``ka10080`` (주식분봉차트조회) 하나로 받는다.
+
+실제 응답에서 확인한 사실만 코드에 반영한다.
+
+* 토큰 응답의 키는 ``token`` 이다. ``access_token`` 이 아니다.
+* 한 콜에 900행(≈2.5 거래일)이 오고, 최신 봉이 맨 앞이다(내림차순).
+* 다음 페이지 여부는 **응답 헤더** ``cont-yn`` / ``next-key`` 로 온다.
+* 가격 필드에는 ``+`` / ``-`` 부호가 붙어 있다. 부호를 떼고 정수로 읽는다.
+  이 부호는 전일 대비 방향 표시일 뿐 값의 음양이 아니다 — ``-258000`` 은
+  마이너스 25만 원이 아니라 '전일 대비 하락한 258,000원'이다.
+* ``ka10080`` 응답에 거래대금 필드는 **없다**. 실측 필드는
+  ``cntr_tm, cur_prc, open_pric, high_pric, low_pric, trde_qty,
+  acc_trde_qty, pred_pre, pred_pre_sig`` 뿐이다.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from collections.abc import Callable
+from datetime import datetime
+from typing import Any
+
+import httpx
+import pandas as pd
+
+KIWOOM_BASE = "https://api.kiwoom.com"
+TOKEN_PATH = "/oauth2/token"
+CHART_PATH = "/api/dostk/chart"
+MINUTE_API_ID = "ka10080"
+
+#: 분봉 행이 담겨 오는 키.
+CHART_ROWS_KEY = "stk_min_pole_chart_qry"
+
+_JSON_CT = "application/json;charset=UTF-8"
+_KEY_ENV = "KIWOOM_APP_KEY"
+_SECRET_ENV = "KIWOOM_APP_SECRET"
+_RETRY_STATUS = (429, 500, 502, 503, 504)
+
+
+class KiwoomError(Exception):
+    """키움이 오류를 돌려주었거나 인증 정보가 없다."""
+
+
+def api_credentials(env: dict | None = None) -> tuple[str, str]:
+    """``KIWOOM_APP_KEY`` / ``KIWOOM_APP_SECRET`` 를 읽는다."""
+    source = os.environ if env is None else env
+    appkey = str(source.get(_KEY_ENV) or "").strip()
+    secret = str(source.get(_SECRET_ENV) or "").strip()
+    if not appkey or not secret:
+        raise KiwoomError(
+            "키움 인증 정보가 없다. KIWOOM_APP_KEY 와 KIWOOM_APP_SECRET 을 설정하라 "
+            "(quant-airflow/.env 에 이미 있다면 export 해서 쓰면 된다)."
+        )
+    return appkey, secret
+
+
+def strip_sign(value: Any) -> int:
+    """``+274500`` / ``-258000`` 같은 부호 붙은 값을 정수로 만든다.
+
+    부호는 전일 대비 방향 표시라 값의 음양이 아니다. 그래서 떼고 읽는다.
+    빈 값은 0 이다 — 거래 없는 분봉이 실제로 온다.
+    """
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return 0
+    text = text.lstrip("+-")
+    if not text:
+        return 0
+    try:
+        return int(float(text))
+    except ValueError as exc:
+        raise KiwoomError(f"숫자로 읽을 수 없는 값이다: {value!r}") from exc
+
+
+def parse_cntr_tm(value: Any) -> datetime:
+    """``YYYYMMDDHHMMSS`` 체결시각을 ``datetime`` 으로 읽는다.
+
+    한국 거래소 시각이라 tz 없는 naive 로 둔다. DB 의 ``timestamp`` 컬럼도
+    tz 없는 KST 로 통일돼 있다.
+    """
+    text = str(value if value is not None else "").strip()
+    # 길이를 먼저 본다. 잘린 값은 예외가 아니라 **엉뚱한 시각**이 되기 때문이다 —
+    # ``2026081415`` 는 %Y%m%d%H%M%S 로 2026-08-01 04:01:05 로 조용히 읽힌다.
+    if len(text) != 14 or not text.isdigit():
+        raise KiwoomError(f"체결시각을 읽을 수 없다: {value!r}")
+    try:
+        return pd.to_datetime(text, format="%Y%m%d%H%M%S").to_pydatetime()
+    except ValueError as exc:
+        raise KiwoomError(f"체결시각을 읽을 수 없다: {value!r}") from exc
+
+
+def normalize_row(code: str, row: dict) -> dict[str, Any]:
+    """응답 한 행을 저장 계약(``minute_bars``)에 맞춘다.
+
+    ``trade_value`` 는 응답에 없어서 ``close × volume`` 으로 **근사**한다.
+    분 안의 체결가 분포를 모르므로 정확한 거래대금이 아니다.
+    """
+    close = strip_sign(row.get("cur_prc"))
+    volume = strip_sign(row.get("trde_qty"))
+    return {
+        "code": code,
+        "ts": parse_cntr_tm(row.get("cntr_tm")),
+        "open": strip_sign(row.get("open_pric")),
+        "high": strip_sign(row.get("high_pric")),
+        "low": strip_sign(row.get("low_pric")),
+        "close": close,
+        "volume": volume,
+        "trade_value": float(close) * float(volume),
+    }
+
+
+def since_to_datetime(since: str | None) -> datetime | None:
+    """``--since`` 인자(YYYYMMDD)를 하한 시각으로 바꾼다."""
+    if not since:
+        return None
+    text = str(since).strip().replace("-", "")
+    if len(text) != 8 or not text.isdigit():
+        raise KiwoomError(f"--since 는 YYYYMMDD 여야 한다: {since!r}")
+    try:
+        return pd.to_datetime(text, format="%Y%m%d").to_pydatetime()
+    except ValueError as exc:
+        raise KiwoomError(f"--since 는 YYYYMMDD 여야 한다: {since!r}") from exc
+
+
+def _raise_on_return_code(payload: Any, what: str) -> None:
+    """``return_code`` 가 0 이 아니면 메시지를 붙여 던진다."""
+    if not isinstance(payload, dict):
+        raise KiwoomError(f"{what}: 응답이 JSON 객체가 아니다.")
+    code = payload.get("return_code")
+    if code is None:
+        return
+    try:
+        ok = int(code) == 0
+    except (TypeError, ValueError):
+        ok = False
+    if not ok:
+        raise KiwoomError(f"{what} 실패: return_code={code} {payload.get('return_msg')}")
+
+
+class KiwoomClient:
+    """토큰 발급·갱신과 ``ka10080`` 페이지네이션을 담당한다."""
+
+    def __init__(
+        self,
+        appkey: str,
+        secretkey: str,
+        *,
+        client: httpx.Client | None = None,
+        sleep: float = 0.12,
+        max_retries: int = 3,
+        sleeper: Callable[[float], None] | None = None,
+        base_url: str = KIWOOM_BASE,
+    ) -> None:
+        if not appkey or not secretkey:
+            raise KiwoomError("인증 정보가 비어 있다.")
+        self._appkey = appkey
+        self._secretkey = secretkey
+        self._client = client or httpx.Client(timeout=30.0)
+        self._sleep = sleep
+        self._max_retries = max(1, int(max_retries))
+        self._sleeper = sleeper or time.sleep
+        self._base = base_url.rstrip("/")
+        self._token: str | None = None
+
+    # ------------------------------------------------------------------ 토큰
+
+    def issue_token(self) -> str:
+        """접근 토큰을 새로 받는다. 응답 키는 ``token`` 이다."""
+        response = self._client.post(
+            f"{self._base}{TOKEN_PATH}",
+            headers={"Content-Type": _JSON_CT},
+            json={
+                "grant_type": "client_credentials",
+                "appkey": self._appkey,
+                "secretkey": self._secretkey,
+            },
+        )
+        payload = response.json()
+        _raise_on_return_code(payload, "토큰 발급")
+        token = str(payload.get("token") or "").strip()
+        if not token:
+            raise KiwoomError(f"토큰 응답에 token 이 없다: {sorted(payload)}")
+        self._token = token
+        return token
+
+    @property
+    def token(self) -> str:
+        """없으면 발급하고 있으면 재사용한다."""
+        if not self._token:
+            return self.issue_token()
+        return self._token
+
+    def refresh_token(self) -> str:
+        """토큰을 버리고 다시 받는다 (401 대응)."""
+        self._token = None
+        return self.issue_token()
+
+    # ------------------------------------------------------------------ 조회
+
+    def _post_chart(
+        self, code: str, tic_scope: str, cont_yn: str | None, next_key: str | None
+    ) -> httpx.Response:
+        headers = {
+            "Content-Type": _JSON_CT,
+            "authorization": f"Bearer {self.token}",
+            "api-id": MINUTE_API_ID,
+        }
+        if cont_yn:
+            headers["cont-yn"] = cont_yn
+        if next_key:
+            headers["next-key"] = next_key
+        body = {"stk_cd": code, "tic_scope": str(tic_scope), "upd_stkpc_tp": "1"}
+        return self._client.post(f"{self._base}{CHART_PATH}", headers=headers, json=body)
+
+    def fetch_page(
+        self,
+        code: str,
+        *,
+        tic_scope: str = "1",
+        cont_yn: str | None = None,
+        next_key: str | None = None,
+    ) -> tuple[list[dict], str | None, str | None]:
+        """분봉 한 페이지. ``(행, cont-yn, next-key)`` 를 돌려준다."""
+        last_error = ""
+        for attempt in range(self._max_retries):
+            # 레이트리밋. 호출 **직전**에 재우므로 재시도에도 간격이 보장된다.
+            if self._sleep:
+                self._sleeper(self._sleep)
+            response = self._post_chart(code, tic_scope, cont_yn, next_key)
+            if response.status_code == 401 and attempt + 1 < self._max_retries:
+                # 토큰 만료. 한 번 다시 받고 재시도한다.
+                self.refresh_token()
+                last_error = "401 토큰 만료"
+                continue
+            if response.status_code in _RETRY_STATUS and attempt + 1 < self._max_retries:
+                last_error = f"HTTP {response.status_code}"
+                self._sleeper(self._sleep * (attempt + 1) + 1.0)
+                continue
+            if response.status_code >= 400:
+                raise KiwoomError(f"키움 HTTP {response.status_code}: {response.text[:200]}")
+            payload = response.json()
+            _raise_on_return_code(payload, f"{code} 분봉")
+            rows = payload.get(CHART_ROWS_KEY) or []
+            # 빈 응답은 오류가 아니다. 신규 상장·거래정지 종목이 실제로 그렇다.
+            return list(rows), response.headers.get("cont-yn"), response.headers.get("next-key")
+        raise KiwoomError(f"{code} 분봉 재시도 소진: {last_error}")
+
+    def minute_chart(
+        self,
+        code: str,
+        *,
+        tic_scope: str = "1",
+        pages: int = 40,
+        since: str | None = None,
+        stop_at: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """분봉을 페이지네이션으로 모아 정규화된 행 리스트로 돌려준다.
+
+        최신 봉이 먼저 오므로 아래로 내려갈수록 과거다. ``since`` (YYYYMMDD)
+        이전 봉이 나오면 그 종목을 거기서 멈춘다. ``stop_at`` 은 이어받기용으로,
+        이미 저장된 최신 ``ts`` 이하가 나오면 멈춘다 — 같은 명령을 다시 돌려도
+        이미 받은 구간을 다시 받지 않는다.
+        """
+        floor = since_to_datetime(since)
+        collected: list[dict[str, Any]] = []
+        cont_yn: str | None = None
+        next_key: str | None = None
+
+        for _ in range(max(0, int(pages))):
+            rows, cont_yn, next_key = self.fetch_page(
+                code, tic_scope=tic_scope, cont_yn=cont_yn, next_key=next_key
+            )
+            if not rows:
+                break
+            stop = False
+            for row in rows:
+                item = normalize_row(code, row)
+                if floor is not None and item["ts"] < floor:
+                    stop = True
+                    break
+                if stop_at is not None and item["ts"] <= stop_at:
+                    stop = True
+                    break
+                collected.append(item)
+            if stop or str(cont_yn or "").upper() != "Y" or not next_key:
+                break
+        return collected

@@ -105,3 +105,24 @@ def load_stock_master(conn: Any) -> pd.DataFrame:
     # 상장 행이 먼저 오므로 keep="first" 가 곧 '상장 우선'이다.
     df = df[df["code"] != ""].drop_duplicates(subset="code", keep="first")
     return df.sort_values("code").reset_index(drop=True)
+
+
+_OHLCV_COLUMNS = [
+    "code", "date", "open", "high", "low", "close", "volume", "trade_value",
+]
+
+
+def load_ohlcv(conn: Any, start: str, end: str) -> pd.DataFrame:
+    """``daily_bars_adjusted`` 에서 OHLCV 전체를 읽는다 (종가베팅용).
+
+    :func:`load_prices` 는 ``open``·``close``·``trade_value`` 만 준다. 종가베팅
+    피처는 종가가 고가 근처인지(``close_pos``)를 봐야 해서 ``high``·``low`` 가,
+    거래량 급증을 보려면 ``volume`` 이 필요하다.
+    """
+    ph = _placeholder(conn)
+    sql = (
+        "select code, date, open, high, low, close, volume, trade_value "
+        f"from daily_bars_adjusted where date >= {ph} and date <= {ph} "
+        "order by code, date"
+    )
+    return _query(conn, sql, (start, end), _OHLCV_COLUMNS)
