@@ -206,8 +206,8 @@ def score(log: pd.DataFrame, ohlcv: pd.DataFrame, log_path: str) -> str:
         "|---|---:|---:|---:|",
         f"| 평균 | {mean:+.2%} | {EXPECTED['mean']:+.2%} | {mean - EXPECTED['mean']:+.2%} |",
         f"| 34bp 차감 후 | {net:+.2%} | {EXPECTED['net34']:+.2%} | {net - EXPECTED['net34']:+.2%} |",
-        f"| 승률 | {win:.1%} | {EXPECTED['win_rate']:.1%} | "
-        f"{(win - EXPECTED['win_rate']) * 100:+.1f}p |",
+        (f"| 승률 | {win:.1%} | {EXPECTED['win_rate']:.1%} | "
+         f"{(win - EXPECTED['win_rate']) * 100:+.1f}p |"),
         "",
         f"표본 {len(done)}건. 이 수가 수백 건이 되기 전에는 차이를 해석하지 마라.",
         "",
