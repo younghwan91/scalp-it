@@ -43,8 +43,7 @@ uv run scalp-intraday --codes 005930 --pages 5             # 분봉 수집
 |---|---|
 | [`docs/STATUS.md`](docs/STATUS.md) | **여기부터** — 현재 상태·판정 현황·다음 할 일 |
 | `docs/research/manju/` | 만쥬·스승 리서치, 사전등록, 판정 결과 |
-| `docs/research/2026-08-17-*` | v1·v2 스윙 시기 기록 (역사) |
-| `docs/superpowers/` | v1·v2 시기 스펙·계획 (역사) |
+|  `docs/archive/` | v1·v2 시기 기록 + **반드시 기억할 실패 5가지** |
 
 ## 관련 레포
 
