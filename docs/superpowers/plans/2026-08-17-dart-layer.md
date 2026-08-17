@@ -2,9 +2,12 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** DART 전자공시를 무료·완전·point-in-time 으로 수집해 ②층(수급 + 공시) 피처를 만들고, 계획 4 의 층 비교 하네스로 ①층 대비 기여를 판정한다.
+**Goal:** DART 전자공시를 무료·완전·point-in-time 으로 수집해 **공시를 이벤트로 삼는** 데이터셋을 만들고, ①수급 대비 ②공시 층의 기여를 판정한다. 절대 임계와 십분위 단조성까지 붙여 "확실한 것만" 이 성립하는지 함께 본다.
 
-**Architecture:** `adapters/dart.py` 가 OpenDART REST 를 감싸고, `dart/` 가 순수 함수로 유형 분류·구조화 파싱·피처를 만든다. 저장은 로컬 sqlite(`data/dart.db`). 계획 4 의 `build_layered_dataset` 에 `news=` 대신 `disc=` 프레임을 넘겨 층을 구성한다.
+**Architecture:** `adapters/dart.py` 가 OpenDART REST 를 감싸고, `dart/` 가 순수 함수로 유형 분류·이벤트 구성·피처를 만든다. 저장은 로컬 sqlite(`data/dart.db`). 계획 1 의 `events.extract_events`(거래대금 급증)를 **대체하는 새 이벤트 빌더**를 두고, 거래대금 급증은 피처로 내려간다.
+
+> **스펙 rev2 기준이다.** 이벤트가 "거래대금 급증"에서 "공시 접수"로 뒤집혔다.
+> 이 계획의 첫 판(rev1 기준)은 공시를 *피처*로만 붙였는데, 그 설계는 폐기됐다.
 
 **Tech Stack:** Python ≥3.10, httpx(이미 의존성), pandas, sqlite3, pytest
 
@@ -87,10 +90,14 @@ ZIP 바이트를 돌려준다. 안에 XML 파일 하나. 앞부분에 `<STYLE>` 
 | `src/swing_it/adapters/dart.py` | OpenDART HTTP. **DART 호출은 이 파일에만** |
 | `src/swing_it/dart/__init__.py` | 패키지 |
 | `src/swing_it/dart/classify.py` | `report_nm` → 재료 유형 (순수 함수) |
-| `src/swing_it/dart/contract.py` | 공급계약 원문 → 구조화 필드 (순수 함수) |
+| `src/swing_it/dart/events.py` | **공시 → 이벤트** (계획 1 거래대금 급증을 대체) |
 | `src/swing_it/dart/store.py` | `data/dart.db` 스키마·적재·조회 |
 | `src/swing_it/features/disclosure.py` | ②층 피처 (순수 함수) |
+| `src/swing_it/dart/dataset.py` | 이벤트 + 피처 + 라벨 조립 |
+| `src/swing_it/validate/monotonic.py` | 십분위 단조성 |
+| `src/swing_it/report/threshold.py` | 절대 임계 (동시 보유 역산) |
 | `src/swing_it/cli_dart.py` | `swing-dart` — 수집 CLI |
+| `src/swing_it/cli_dart_layers.py` | `swing-dart-layers` — 판정 CLI |
 | `tests/` | 각 모듈 대응 |
 
 ---
@@ -392,20 +399,40 @@ git commit -m "feat(adapters): OpenDART 공시검색 어댑터 — 키 로테이
 
 **분류 규칙 (사전등록).** 성과를 보고 바꾸지 않는다. 규칙은 위에서 아래로 처음 맞는 것을 쓴다.
 
+실측(2026-05~07, 상장종목 공시 하루 462건)으로 커버리지를 확인하고 정한 목록이다.
+초안 규칙에서는 '기타'가 66% 였고, 그 안에 **임원·주요주주 소유상황보고서(하루 60건,
+전체 최다)**, 연결재무제표기준 영업(잠정)실적, 배당·주식소각, 투자판단관련주요경영사항이
+들어 있었다. 아래 규칙은 그것들을 끌어올린 판이다.
+
 | 유형 | 매칭 키워드 |
 |---|---|
-| `악재` | 감사의견, 의견거절, 자본잠식, 상장폐지, 거래정지, 회생절차, 파산, 부도, 횡령, 배임, 소송, 손실발생 |
+| `악재` | 감사의견, 의견거절, 부적정, 자본잠식, 상장폐지, 거래정지, 회생절차, 파산, 부도, 횡령, 배임, 소송, 손실발생, 실질심사, 미달사실발생, 영업정지 |
+| `내부자` | 임원ㆍ주요주주, 임원·주요주주, 특정증권등소유상황, 특정증권등거래계획 |
 | `공급계약` | 공급계약, 수주, 판매계약 |
 | `시설투자` | 신규시설투자, 유형자산, 공장, 증설 |
-| `지분변동` | 유상증자, 무상증자, 전환사채, 신주인수권, 교환사채, 대량보유, 최대주주 |
-| `자사주` | 자기주식 |
-| `실적변동` | 매출액또는손익구조, 영업실적, 매출액미달 |
+| `주주환원` | 자기주식, 주식소각, 배당 |
+| `자본조달` | 유상증자, 무상증자, 전환사채, 신주인수권, 교환사채, 전환가액, 증권신고서, 일괄신고 |
+| `지분변동` | 대량보유, 최대주주, 주식매수선택권 |
+| `실적` | 매출액또는손익구조, 영업(잠정)실적, 연결재무제표기준영업, 결산실적, 매출액미달 |
 | `기술_인허가` | 특허, 임상, 품목허가, 승인, 인증 |
-| `구조조정` | 합병, 분할, 양수, 양도, 영업정지 |
-| `정기보고` | 사업보고서, 반기보고서, 분기보고서, 감사보고서, 검토 |
+| `구조조정` | 합병, 분할, 양수, 양도, 채무보증 |
+| `재량공시` | 투자판단관련주요경영사항, 기업설명회, 기타시장안내 |
+| `정기보고` | 사업보고서, 반기보고서, 분기보고서, 감사보고서, 검토, 투자설명서 |
+| `행정` | 주주총회, 주주명부, 의결권대리행사, 기준일, 증권발행실적, 증권발행결과 |
 | `기타` | 나머지 |
 
-`악재` 를 맨 위에 두는 이유: "소송 등의 판결"처럼 다른 키워드와 겹치는 제목이 있는데, 악재 여부가 방향을 결정하므로 우선한다.
+**순서가 의미를 가진다:**
+
+- `악재` 가 맨 위인 이유는 방향을 결정하기 때문이다. "소송등의판결"은 구조조정 키워드와
+  겹치지만 악재로 봐야 한다.
+- `내부자` 가 그다음인 이유는 "임원ㆍ주요주주특정증권등소유상황보고서"가 `지분변동` 의
+  '최대주주'와 겹칠 수 있어서다. 내부자 거래는 별도 축으로 봐야 할 만큼 건수가 많다.
+- `주주환원` 이 `자본조달` 보다 위인 이유는 "자기주식취득 신탁계약"류가 증권 관련
+  키워드와 겹칠 수 있어서다.
+
+**`악재` 는 이벤트에서 배제된다** (스펙 §5, 롱온리). 나머지 유형은 전부 피처로 남는다.
+`정기보고`·`행정` 도 배제하지 않는다 — "행정 공시는 무의미하다"는 검증되지 않은 가정이고,
+유형을 피처로 넣으면 모델이 가려낸다.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -426,26 +453,69 @@ from swing_it.dart.classify import (
 @pytest.mark.parametrize(
     ("report_nm", "expected"),
     [
+        # 실측 상위 유형 — 2026-05~07 표본에서 실제로 나온 제목들이다
+        ("임원ㆍ주요주주특정증권등소유상황보고서", "내부자"),
+        ("임원ㆍ주요주주특정증권등거래계획보고서", "내부자"),
         ("단일판매ㆍ공급계약체결", "공급계약"),
         ("신규시설투자등", "시설투자"),
-        ("유상증자결정", "지분변동"),
-        ("무상증자결정", "지분변동"),
+        ("자기주식취득결정", "주주환원"),
+        ("자기주식처분결정", "주주환원"),
+        ("주식소각결정", "주주환원"),
+        ("현금ㆍ현물배당결정", "주주환원"),
+        ("유상증자결정", "자본조달"),
+        ("무상증자결정", "자본조달"),
+        ("전환가액의조정", "자본조달"),
+        ("증권신고서", "자본조달"),
         ("주식등의대량보유상황보고서", "지분변동"),
-        ("자기주식취득결정", "자사주"),
-        ("자기주식처분결정", "자사주"),
-        ("매출액또는손익구조30%이상변동", "실적변동"),
+        ("주식매수선택권부여에관한신고", "지분변동"),
+        ("매출액또는손익구조30%이상변동", "실적"),
+        ("연결재무제표기준영업(잠정)실적", "실적"),
+        ("결산실적공시예고", "실적"),
         ("특허권취득", "기술_인허가"),
-        ("반기보고서", "정기보고"),
-        ("사업보고서", "정기보고"),
         ("회사합병결정", "구조조정"),
         ("타법인주식및출자증권양수결정", "구조조정"),
+        ("타인에대한채무보증결정", "구조조정"),
+        ("투자판단관련주요경영사항", "재량공시"),
+        ("기업설명회", "재량공시"),
+        ("기타시장안내", "재량공시"),
+        ("반기보고서", "정기보고"),
+        ("사업보고서", "정기보고"),
+        ("투자설명서", "정기보고"),
+        ("주주총회소집결의", "행정"),
+        ("주주명부폐쇄기간또는기준일설정", "행정"),
+        ("의결권대리행사권유참고서류", "행정"),
+        ("증권발행실적보고서", "행정"),
         ("반기검토의견부적정,의견거절또는완전자본잠식사실발생", "악재"),
         ("주권매매거래정지", "악재"),
-        ("기업설명회", "기타"),
+        ("파생상품거래손실발생", "악재"),
     ],
 )
 def test_classify_report(report_nm, expected):
     assert classify_report(report_nm) == expected
+
+
+def test_insider_wins_over_major_shareholder_keyword():
+    """'임원ㆍ주요주주…'는 지분변동의 '최대주주'와 겹칠 수 있다. 내부자가 우선한다."""
+    assert classify_report("임원ㆍ주요주주특정증권등소유상황보고서") == "내부자"
+
+
+def test_coverage_on_real_titles_is_high():
+    """실측 상위 제목 중 '기타'로 빠지는 비율이 낮아야 한다.
+
+    초안 규칙에서는 '기타'가 66% 였다. 유형이 피처인 설계에서 3분의 2가
+    한 값에 몰리면 그 피처는 정보를 거의 담지 못한다.
+    """
+    titles = [
+        "임원ㆍ주요주주특정증권등소유상황보고서", "연결재무제표기준영업(잠정)실적",
+        "투자설명서", "기업설명회", "증권발행실적보고서", "일괄신고추가서류",
+        "주주총회소집결의", "결산실적공시예고", "주주명부폐쇄기간또는기준일설정",
+        "임시주주총회결과", "주주총회소집공고", "현금ㆍ현물배당결정", "주식소각결정",
+        "투자판단관련주요경영사항", "타인에대한채무보증결정", "증권발행결과",
+        "증권신고서", "주식매수선택권부여에관한신고", "타법인주식및출자증권취득결정",
+        "전환가액의조정", "기타시장안내", "단일판매ㆍ공급계약체결", "반기보고서",
+    ]
+    etc = sum(1 for t in titles if classify_report(t) == "기타")
+    assert etc / len(titles) < 0.15
 
 
 def test_every_result_is_a_declared_type():
@@ -521,25 +591,40 @@ from __future__ import annotations
 import pandas as pd
 
 MATERIAL_TYPES: list[str] = [
-    "공급계약", "시설투자", "지분변동", "자사주", "실적변동",
-    "기술_인허가", "구조조정", "악재", "정기보고", "기타",
+    "악재", "내부자", "공급계약", "시설투자", "주주환원", "자본조달",
+    "지분변동", "실적", "기술_인허가", "구조조정", "재량공시", "정기보고",
+    "행정", "기타",
 ]
 
-# 위에서 아래로 처음 맞는 것을 쓴다. '악재'가 맨 위인 이유는 방향을 결정하기
-# 때문이다 — "소송등의판결"은 구조조정 키워드와 겹치지만 악재로 봐야 한다.
+#: 이벤트에서 배제하는 유형. 롱온리라 공매도로 못 먹는다 (스펙 §5).
+EXCLUDED_TYPES: frozenset[str] = frozenset({"악재"})
+
+# 위에서 아래로 처음 맞는 것을 쓴다. 순서에 의미가 있다:
+#  - '악재'가 맨 위 — 방향을 결정한다. "소송등의판결"은 구조조정과 겹치지만 악재다.
+#  - '내부자'가 그다음 — "임원ㆍ주요주주…"가 지분변동의 '최대주주'와 겹친다.
+#    실측 하루 60건으로 전체 최다라 별도 축으로 봐야 한다.
+#  - '주주환원'이 '자본조달'보다 위 — "자기주식취득 신탁계약"류가 증권 키워드와 겹친다.
 _RULES: list[tuple[str, tuple[str, ...]]] = [
     ("악재", ("감사의견", "의견거절", "부적정", "자본잠식", "상장폐지", "거래정지",
               "회생절차", "파산", "부도", "횡령", "배임", "소송", "손실발생",
-              "실질심사", "미달사실발생")),
+              "실질심사", "미달사실발생", "영업정지")),
+    ("내부자", ("임원ㆍ주요주주", "임원·주요주주", "특정증권등소유상황",
+                "특정증권등거래계획")),
     ("공급계약", ("공급계약", "수주", "판매계약")),
     ("시설투자", ("신규시설투자", "유형자산", "공장", "증설")),
-    ("지분변동", ("유상증자", "무상증자", "전환사채", "신주인수권", "교환사채",
-                 "대량보유", "최대주주")),
-    ("자사주", ("자기주식",)),
-    ("실적변동", ("매출액또는손익구조", "영업실적", "매출액미달")),
+    ("주주환원", ("자기주식", "주식소각", "배당")),
+    ("자본조달", ("유상증자", "무상증자", "전환사채", "신주인수권", "교환사채",
+                 "전환가액", "증권신고서", "일괄신고")),
+    ("지분변동", ("대량보유", "최대주주", "주식매수선택권")),
+    ("실적", ("매출액또는손익구조", "영업(잠정)실적", "연결재무제표기준영업",
+              "결산실적", "매출액미달")),
     ("기술_인허가", ("특허", "임상", "품목허가", "승인", "인증")),
-    ("구조조정", ("합병", "분할", "양수", "양도", "영업정지")),
-    ("정기보고", ("사업보고서", "반기보고서", "분기보고서", "감사보고서", "검토")),
+    ("구조조정", ("합병", "분할", "양수", "양도", "채무보증")),
+    ("재량공시", ("투자판단관련주요경영사항", "기업설명회", "기타시장안내")),
+    ("정기보고", ("사업보고서", "반기보고서", "분기보고서", "감사보고서", "검토",
+                 "투자설명서")),
+    ("행정", ("주주총회", "주주명부", "의결권대리행사", "기준일",
+              "증권발행실적", "증권발행결과")),
 ]
 
 _CORRECTION_MARKERS = ("[기재정정]", "[첨부정정]", "[첨부추가]", "[정정]")
@@ -830,279 +915,7 @@ git commit -m "feat(dart): 공시 로컬 저장소 — 상장 종목만, rcept_n
 
 ---
 
-### Task 4: ②층 공시 피처
-
-**Files:**
-- Create: `src/swing_it/features/disclosure.py`
-- Test: `tests/test_features_disclosure.py`
-
-**Interfaces:**
-- Consumes: `load_disclosures` 결과, 계획 1 `events.add_liquidity_stats` 의 `[code, date, adv, tv_ratio]`, 계획 2 `news.calendar.align_to_trading_days`
-- Produces:
-  - `DISC_FEATURE_COLUMNS: list[str]` = `["disc_count", "disc_ratio", "disc_is_bad", "disc_is_contract", "disc_is_capex", "disc_is_equity", "disc_correction_ratio", "days_since_disc"]`
-  - `daily_disclosures(disc: pd.DataFrame, calendar: pd.Series) -> pd.DataFrame` — 거래일 이월 후 `(code, date)` 로 집계. 컬럼 `[code, date, disc_count, n_bad, n_contract, n_capex, n_equity, n_correction, top_material_type]`
-  - `disclosure_features(daily: pd.DataFrame, calendar: pd.Series, *, baseline_window: int = 60, min_periods: int = 20, baseline_floor: float = 0.2) -> pd.DataFrame` — 컬럼 `[code, date, *DISC_FEATURE_COLUMNS, top_material_type]`
-
-정의:
-
-| 피처 | 정의 |
-|---|---|
-| `disc_count` | 그날 그 종목 공시 수 |
-| `disc_ratio` | `disc_count / baseline` — baseline 은 직전 `baseline_window` 거래일 평균(**shift(1)**), 하한 `baseline_floor` |
-| `disc_is_bad` | 그날 악재 공시 비율 |
-| `disc_is_contract` | 공급계약 비율 |
-| `disc_is_capex` | 시설투자 비율 |
-| `disc_is_equity` | 지분변동 비율 |
-| `disc_correction_ratio` | 정정 공시 비율 — 재탕은 신선도가 낮다 |
-| `days_since_disc` | 직전 공시일로부터 경과 거래일. 첫 공시는 `baseline_window` 로 채운다 |
-
-`top_material_type` 은 모델에 넣지 않는다 — 근거 카드 표시용이다 (스펙 §6 의 피처 상한).
-
-- [ ] **Step 1: 실패하는 테스트 작성**
-
-`tests/test_features_disclosure.py`:
-
-```python
-import numpy as np
-import pandas as pd
-
-from swing_it.features.disclosure import (
-    DISC_FEATURE_COLUMNS,
-    daily_disclosures,
-    disclosure_features,
-)
-
-
-def _calendar(days: list[str]) -> pd.Series:
-    return pd.Series(pd.to_datetime(days))
-
-
-def _disc(rows: list[tuple[str, str, str]]) -> pd.DataFrame:
-    """(rcept_dt, code, material_type) 목록."""
-    return pd.DataFrame(
-        {
-            "rcept_no": [f"r{i}" for i in range(len(rows))],
-            "rcept_dt": pd.to_datetime([r[0] for r in rows]),
-            "code": [r[1] for r in rows],
-            "corp_name": ["회사"] * len(rows),
-            "corp_cls": ["K"] * len(rows),
-            "report_nm": [r[2] for r in rows],
-            "material_type": [r[2] for r in rows],
-            "is_correction": [False] * len(rows),
-        }
-    )
-
-
-CAL = _calendar(["2026-08-13", "2026-08-14", "2026-08-17", "2026-08-18"])
-
-
-def test_daily_counts_group_by_code_and_date():
-    disc = _disc([("2026-08-14", "A", "공급계약"), ("2026-08-14", "A", "시설투자"),
-                  ("2026-08-14", "B", "정기보고")])
-    out = daily_disclosures(disc, CAL).set_index(["code", "date"])
-    assert out.loc[("A", pd.Timestamp("2026-08-14")), "disc_count"] == 2
-    assert out.loc[("B", pd.Timestamp("2026-08-14")), "disc_count"] == 1
-
-
-def test_holiday_disclosure_moves_to_next_trading_day():
-    """토요일 접수 공시가 사라지면 안 된다 (계획 2 에서 뉴스로 같은 버그를 겪었다)."""
-    disc = _disc([("2026-08-15", "A", "공급계약")])
-    out = daily_disclosures(disc, CAL)
-    assert len(out) == 1
-    assert out.iloc[0]["date"] == pd.Timestamp("2026-08-17")
-
-
-def test_type_ratios_sum_correctly():
-    disc = _disc([("2026-08-14", "A", "공급계약"), ("2026-08-14", "A", "악재")])
-    daily = daily_disclosures(disc, CAL)
-    feats = disclosure_features(daily, CAL, min_periods=1).set_index("code")
-    assert feats.loc["A", "disc_is_contract"] == 0.5
-    assert feats.loc["A", "disc_is_bad"] == 0.5
-
-
-def test_baseline_uses_only_the_past():
-    """오늘 공시가 자기 baseline 에 들어가면 lookahead 다."""
-    disc = _disc([("2026-08-13", "A", "정기보고"), ("2026-08-14", "A", "정기보고"),
-                  ("2026-08-17", "A", "공급계약"), ("2026-08-17", "A", "공급계약"),
-                  ("2026-08-17", "A", "공급계약")])
-    daily = daily_disclosures(disc, CAL)
-    feats = disclosure_features(daily, CAL, baseline_window=2, min_periods=2)
-    row = feats[feats["date"] == pd.Timestamp("2026-08-17")].iloc[0]
-    # 직전 2거래일 평균은 (1+1)/2 = 1.0 → 배수 3.0
-    assert np.isclose(row["disc_ratio"], 3.0)
-
-
-def test_days_since_disc_counts_trading_days():
-    disc = _disc([("2026-08-13", "A", "정기보고"), ("2026-08-18", "A", "공급계약")])
-    daily = daily_disclosures(disc, CAL)
-    feats = disclosure_features(daily, CAL, min_periods=1).set_index("date")
-    # 8/13 → 8/18 사이 거래일: 8/14, 8/17, 8/18 → 3 거래일 뒤
-    assert feats.loc[pd.Timestamp("2026-08-18"), "days_since_disc"] == 3
-
-
-def test_first_disclosure_gets_window_as_days_since():
-    disc = _disc([("2026-08-14", "A", "공급계약")])
-    daily = daily_disclosures(disc, CAL)
-    feats = disclosure_features(daily, CAL, baseline_window=60, min_periods=1)
-    assert feats.iloc[0]["days_since_disc"] == 60
-
-
-def test_feature_columns_contract():
-    disc = _disc([("2026-08-14", "A", "공급계약")])
-    feats = disclosure_features(daily_disclosures(disc, CAL), CAL, min_periods=1)
-    assert list(feats.columns) == ["code", "date", *DISC_FEATURE_COLUMNS, "top_material_type"]
-
-
-def test_top_material_type_is_the_most_common():
-    disc = _disc([("2026-08-14", "A", "공급계약"), ("2026-08-14", "A", "공급계약"),
-                  ("2026-08-14", "A", "정기보고")])
-    feats = disclosure_features(daily_disclosures(disc, CAL), CAL, min_periods=1)
-    assert feats.iloc[0]["top_material_type"] == "공급계약"
-
-
-def test_empty_input_returns_empty_with_columns():
-    empty = _disc([])
-    feats = disclosure_features(daily_disclosures(empty, CAL), CAL)
-    assert feats.empty
-    assert list(feats.columns) == ["code", "date", *DISC_FEATURE_COLUMNS, "top_material_type"]
-```
-
-- [ ] **Step 2: 테스트 실패 확인**
-
-Run: `uv run --extra dev pytest tests/test_features_disclosure.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.features.disclosure'`
-
-- [ ] **Step 3: 구현**
-
-`src/swing_it/features/disclosure.py`:
-
-```python
-"""②층 공시 피처 — 무료·규칙 기반, LLM 불필요.
-
-핵심 가설: 재료가 강하면 공시로 남는다. 뉴스와 달리 공시는 유형이 규격화돼
-있어 텍스트 이해 없이도 재료 유형을 얻는다.
-
-거래일 이월은 계획 2 의 ``news.calendar.align_to_trading_days`` 를 재사용한다.
-휴장일 접수 공시가 사라지는 버그를 뉴스에서 이미 겪었고, 같은 문제를 두 번
-풀 이유가 없다.
-"""
-
-from __future__ import annotations
-
-import pandas as pd
-
-from ..news.calendar import align_to_trading_days
-
-DISC_FEATURE_COLUMNS: list[str] = [
-    "disc_count",
-    "disc_ratio",
-    "disc_is_bad",
-    "disc_is_contract",
-    "disc_is_capex",
-    "disc_is_equity",
-    "disc_correction_ratio",
-    "days_since_disc",
-]
-
-_DAILY_COLUMNS = [
-    "code", "date", "disc_count", "n_bad", "n_contract", "n_capex",
-    "n_equity", "n_correction", "top_material_type",
-]
-_OUT_COLUMNS = ["code", "date", *DISC_FEATURE_COLUMNS, "top_material_type"]
-
-
-def daily_disclosures(disc: pd.DataFrame, calendar: pd.Series) -> pd.DataFrame:
-    """공시를 거래일로 이월한 뒤 ``(code, date)`` 로 집계한다."""
-    if disc.empty:
-        return pd.DataFrame(columns=_DAILY_COLUMNS)
-
-    frame = disc.rename(columns={"rcept_dt": "date"}).copy()
-    frame = align_to_trading_days(frame, calendar)
-    if frame.empty:
-        return pd.DataFrame(columns=_DAILY_COLUMNS)
-
-    frame["is_correction"] = frame["is_correction"].astype(bool)
-    grouped = frame.groupby(["code", "date"], sort=False)
-    out = grouped.agg(
-        disc_count=("rcept_no", "size"),
-        n_bad=("material_type", lambda s: (s == "악재").sum()),
-        n_contract=("material_type", lambda s: (s == "공급계약").sum()),
-        n_capex=("material_type", lambda s: (s == "시설투자").sum()),
-        n_equity=("material_type", lambda s: (s == "지분변동").sum()),
-        n_correction=("is_correction", "sum"),
-        top_material_type=("material_type", lambda s: s.value_counts().index[0]),
-    ).reset_index()
-    return out[_DAILY_COLUMNS].sort_values(["code", "date"]).reset_index(drop=True)
-
-
-def disclosure_features(
-    daily: pd.DataFrame,
-    calendar: pd.Series,
-    *,
-    baseline_window: int = 60,
-    min_periods: int = 20,
-    baseline_floor: float = 0.2,
-) -> pd.DataFrame:
-    """공시 건수 급증 배수·유형 비율·신선도를 만든다.
-
-    baseline 은 반드시 ``shift(1)`` 이후 계산한다. 오늘 공시를 자기 평균에
-    포함하면 lookahead 이고, 배수가 구조적으로 축소된다.
-    """
-    if daily.empty:
-        return pd.DataFrame(columns=_OUT_COLUMNS)
-
-    trading = pd.Index(pd.to_datetime(pd.Series(calendar)).unique()).sort_values()
-    codes = pd.Index(sorted(daily["code"].unique()), name="code")
-    grid = pd.MultiIndex.from_product([codes, trading], names=["code", "date"]).to_frame(
-        index=False
-    )
-    dense = grid.merge(daily[["code", "date", "disc_count"]], on=["code", "date"], how="left")
-    dense["disc_count"] = dense["disc_count"].fillna(0.0)
-    dense = dense.sort_values(["code", "date"])
-
-    grouped = dense.groupby("code", sort=False)
-    dense["baseline"] = grouped["disc_count"].transform(
-        lambda s: s.shift(1).rolling(baseline_window, min_periods=min_periods).mean()
-    )
-    dense["baseline"] = dense["baseline"].fillna(baseline_floor).clip(lower=baseline_floor)
-
-    # 직전 공시로부터 경과 거래일. 공시가 없던 날은 이전 값을 물고 내려간다.
-    dense["_had"] = dense["disc_count"] > 0
-    dense["_ordinal"] = grouped.cumcount()
-    dense["_last"] = dense["_ordinal"].where(dense["_had"])
-    dense["_prev"] = grouped["_last"].transform(lambda s: s.shift(1).ffill())
-    dense["days_since_disc"] = (dense["_ordinal"] - dense["_prev"]).fillna(baseline_window)
-
-    out = daily.merge(
-        dense[["code", "date", "baseline", "days_since_disc"]], on=["code", "date"], how="left"
-    )
-    count = out["disc_count"].astype(float)
-    out["disc_ratio"] = count / out["baseline"]
-    out["disc_is_bad"] = out["n_bad"] / count
-    out["disc_is_contract"] = out["n_contract"] / count
-    out["disc_is_capex"] = out["n_capex"] / count
-    out["disc_is_equity"] = out["n_equity"] / count
-    out["disc_correction_ratio"] = out["n_correction"] / count
-    out["days_since_disc"] = out["days_since_disc"].fillna(baseline_window)
-
-    return out[_OUT_COLUMNS].sort_values(["date", "code"]).reset_index(drop=True)
-```
-
-- [ ] **Step 4: 테스트 통과 확인**
-
-Run: `uv run --extra dev pytest tests/test_features_disclosure.py -q`
-Expected: 9 passed
-
-- [ ] **Step 5: 커밋**
-
-```bash
-git add src/swing_it/features/disclosure.py tests/test_features_disclosure.py
-git commit -m "feat(features): ②층 공시 피처 — 건수 급증·유형 비율·신선도"
-```
-
----
-
-### Task 5: 수집 CLI
+### Task 4: 수집 CLI
 
 **Files:**
 - Create: `src/swing_it/cli_dart.py`
@@ -1334,43 +1147,371 @@ git commit -m "feat(cli): swing-dart — 3개월 구간 분할 공시 수집"
 
 ---
 
-### Task 6: ②층 통합과 판정
+### Task 5: 이벤트 빌더 — 공시가 이벤트다
 
 **Files:**
-- Modify: `src/swing_it/layers.py` — 공시 층을 층 정의에 추가
-- Create: `src/swing_it/cli_dart_layers.py`
-- Test: `tests/test_layers_disclosure.py`
+- Create: `src/swing_it/dart/events.py`
+- Test: `tests/test_dart_events.py`
 
 **Interfaces:**
-- Consumes: `build_layered_dataset`(계획 4), `disclosure_features`, `compare_layers`(계획 4)
+- Consumes: `load_disclosures`(Task 3), 계획 1 `events.add_liquidity_stats`, 계획 2 `news.calendar.align_to_trading_days`, `classify.EXCLUDED_TYPES`
 - Produces:
-  - `layers.LAYER_NAMES` 에 `"supply_disc"` 추가 — 순서는 `["supply", "supply_disc", "supply_disc_news", "supply_disc_news_llm"]` 이 아니라, **이번 계획 범위에서는 `["supply", "supply_disc"]` 두 층만** 쓴다. 뉴스·LLM 층은 계획 4 가 이미 정의했고 데이터가 없으므로 건드리지 않는다
-  - `build_disclosure_dataset(prices, supply_demand, disc_features, **kwargs) -> pd.DataFrame` — 계획 4 `build_layered_dataset` 에 `news=disc_features, news_columns=DISC_FEATURE_COLUMNS` 로 위임한다. **계획 4 의 함수를 고치지 않는다** — 뉴스 자리에 공시를 넣는 얇은 래퍼다
-  - `main(argv) -> int` — `swing-dart-layers`
+  - `EVENT_COLUMNS: list[str]` = `["code", "date", "adv", "tv_ratio"]`
+  - `build_disclosure_events(disc: pd.DataFrame, prices: pd.DataFrame, *, adv_floor: float = 5000.0, adv_window: int = 20) -> pd.DataFrame`
 
-**왜 래퍼인가.** 계획 4 의 `build_layered_dataset(news=, news_columns=)` 은 이미 "이벤트 행에 (code,date) 프레임을 붙이고 결측 행을 떨어뜨린다"는 일반 동작이다. 공시도 같은 모양이라 새 경로를 만들 이유가 없다. 이름만 뉴스일 뿐이고, 그 사실을 래퍼 독스트링에 적는다.
+**이 함수가 계획 1 의 `extract_events`(거래대금 급증)를 대체한다.** 거래대금 급증은
+폐기되지 않고 `tv_ratio` 로 남아 피처가 된다 (스펙 rev2 §3).
+
+처리 순서 — 순서가 결과를 바꾸므로 고정한다:
+
+1. **악재 배제** — `material_type in EXCLUDED_TYPES` 인 행을 버린다. 롱온리라 못 먹는다.
+2. **거래일 이월** — 휴장일 접수 공시를 다음 거래일로. 앞으로만 (뒤로 당기면 lookahead).
+   달력은 `prices["date"]` 에서 가져온다.
+3. **`(code, date)` 중복 제거** — 같은 종목에 하루 여러 건이 나도 이벤트는 하나다.
+   건수는 피처(Task 6)에서 센다.
+4. **유동성 하한** — `adv >= adv_floor`. `adv` 는 직전 `adv_window` 거래일 평균이며
+   **`shift(1)` 이후** 계산된다(계획 1 `add_liquidity_stats` 재사용).
+5. **가격 없는 (code, date) 제거** — 거래정지·상장 전이면 진입할 수 없다.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
-`tests/test_layers_disclosure.py`:
+`tests/test_dart_events.py`:
+
+```python
+import pandas as pd
+import pytest
+
+from swing_it.dart.events import EVENT_COLUMNS, build_disclosure_events
+
+
+def _prices(codes, n, adv=9000.0, spike_at=None):
+    rows = []
+    for code in codes:
+        for i in range(n):
+            tv = adv * (5.0 if i == spike_at else 1.0)
+            rows.append({
+                "code": code,
+                "date": pd.Timestamp("2026-01-01") + pd.Timedelta(days=i),
+                "open": 100.0, "close": 100.0, "trade_value": tv,
+            })
+    return pd.DataFrame(rows)
+
+
+def _disc(rows):
+    """(rcept_dt, code, material_type)."""
+    return pd.DataFrame({
+        "rcept_no": [f"r{i}" for i in range(len(rows))],
+        "rcept_dt": pd.to_datetime([r[0] for r in rows]),
+        "code": [r[1] for r in rows],
+        "corp_name": ["회사"] * len(rows),
+        "corp_cls": ["K"] * len(rows),
+        "report_nm": [r[2] for r in rows],
+        "material_type": [r[2] for r in rows],
+        "is_correction": [False] * len(rows),
+    })
+
+
+def test_event_columns_contract():
+    prices = _prices(["A"], 40)
+    disc = _disc([("2026-01-30", "A", "공급계약")])
+    out = build_disclosure_events(disc, prices)
+    assert list(out.columns) == EVENT_COLUMNS
+
+
+def test_disclosure_becomes_an_event():
+    prices = _prices(["A"], 40)
+    disc = _disc([("2026-01-30", "A", "공급계약")])
+    out = build_disclosure_events(disc, prices)
+    assert len(out) == 1
+    assert out.iloc[0]["code"] == "A"
+    assert out.iloc[0]["date"] == pd.Timestamp("2026-01-30")
+
+
+def test_bad_news_is_excluded():
+    """롱온리라 악재는 후보가 될 수 없다."""
+    prices = _prices(["A"], 40)
+    disc = _disc([("2026-01-30", "A", "악재")])
+    assert build_disclosure_events(disc, prices).empty
+
+
+def test_same_code_same_day_collapses_to_one_event():
+    prices = _prices(["A"], 40)
+    disc = _disc([("2026-01-30", "A", "공급계약"), ("2026-01-30", "A", "시설투자")])
+    assert len(build_disclosure_events(disc, prices)) == 1
+
+
+def test_illiquid_stock_is_dropped():
+    """PEAD 검증에서 유동성 하한 없이는 소형주 꼬리가 시그널을 음수로 뒤집었다."""
+    prices = _prices(["A"], 40, adv=100.0)
+    disc = _disc([("2026-01-30", "A", "공급계약")])
+    assert build_disclosure_events(disc, prices, adv_floor=5000.0).empty
+
+
+def test_date_without_price_row_is_dropped():
+    """거래정지·상장 전이면 진입할 수 없다."""
+    prices = _prices(["A"], 40)
+    disc = _disc([("2026-01-30", "B", "공급계약")])  # B 는 가격이 없다
+    assert build_disclosure_events(disc, prices).empty
+
+
+def test_tv_ratio_is_carried_as_a_feature_not_a_filter():
+    """거래대금 급증은 rev2 에서 이벤트가 아니라 피처다. 급증이 없어도 이벤트다."""
+    prices = _prices(["A"], 40)  # 급증 없음
+    disc = _disc([("2026-01-30", "A", "공급계약")])
+    out = build_disclosure_events(disc, prices)
+    assert len(out) == 1
+    assert out.iloc[0]["tv_ratio"] == pytest.approx(1.0)
+
+
+def test_spike_is_reflected_in_tv_ratio():
+    prices = _prices(["A"], 40, spike_at=35)
+    spike_date = pd.Timestamp("2026-01-01") + pd.Timedelta(days=35)
+    disc = _disc([(str(spike_date.date()), "A", "공급계약")])
+    out = build_disclosure_events(disc, prices)
+    assert out.iloc[0]["tv_ratio"] > 4.0
+
+
+def test_holiday_disclosure_moves_to_next_trading_day():
+    """가격 달력에 없는 날 접수된 공시가 사라지면 안 된다."""
+    prices = pd.DataFrame({
+        "code": ["A"] * 3,
+        "date": pd.to_datetime(["2026-08-13", "2026-08-14", "2026-08-17"]),
+        "open": [100.0] * 3, "close": [100.0] * 3, "trade_value": [9000.0] * 3,
+    })
+    disc = _disc([("2026-08-15", "A", "공급계약")])   # 토요일
+    out = build_disclosure_events(disc, prices, adv_window=1, adv_floor=0.0)
+    assert len(out) == 1
+    assert out.iloc[0]["date"] == pd.Timestamp("2026-08-17")
+
+
+def test_empty_disclosures_returns_empty_with_columns():
+    out = build_disclosure_events(_disc([]), _prices(["A"], 40))
+    assert out.empty
+    assert list(out.columns) == EVENT_COLUMNS
+```
+
+- [ ] **Step 2: 테스트 실패 확인**
+
+Run: `uv run --extra dev pytest tests/test_dart_events.py -q`
+Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.dart.events'`
+
+- [ ] **Step 3: 구현**
+
+`src/swing_it/dart/events.py`:
+
+```python
+"""이벤트 정의 — 공시가 난 (종목, 날짜) 다 (스펙 rev2 §3).
+
+계획 1 의 ``events.extract_events``(거래대금 급증)를 대체한다. 거래대금 급증은
+폐기되지 않고 ``tv_ratio`` 로 남아 "시장이 이 재료에 반응했는가"를 재는 피처가 된다.
+
+왜 뒤집었나 (스펙 §0):
+  - 검증된 PEAD 가 이미 '재료 → 드리프트' 구조다.
+  - 공시 접수일자는 정확한 정보 공개 시점이라 자연 실험이 깨끗하다.
+  - 급증 종목의 재료를 찾는 것은 이미 오른 걸 보고 이유를 붙이는 역인과다.
+"""
+
+from __future__ import annotations
+
+import pandas as pd
+
+from ..events import add_liquidity_stats
+from ..news.calendar import align_to_trading_days
+from .classify import EXCLUDED_TYPES
+
+EVENT_COLUMNS: list[str] = ["code", "date", "adv", "tv_ratio"]
+
+
+def build_disclosure_events(
+    disc: pd.DataFrame,
+    prices: pd.DataFrame,
+    *,
+    adv_floor: float = 5000.0,
+    adv_window: int = 20,
+) -> pd.DataFrame:
+    """공시를 이벤트로 바꾼다.
+
+    순서가 결과를 바꾸므로 고정한다: 악재 배제 → 거래일 이월 → (code,date) 중복
+    제거 → 유동성 하한 → 가격 없는 행 제거.
+
+    Args:
+        adv_floor: 직전 ``adv_window`` 거래일 평균 거래대금 하한. 단위 백만원.
+            기본 5000 = 50억. PEAD 검증에서 이 조건 없이는 소형주 꼬리가
+            시그널을 음수로 뒤집었다.
+    """
+    if disc.empty or prices.empty:
+        return pd.DataFrame(columns=EVENT_COLUMNS)
+
+    kept = disc[~disc["material_type"].isin(EXCLUDED_TYPES)].copy()
+    if kept.empty:
+        return pd.DataFrame(columns=EVENT_COLUMNS)
+
+    kept = kept.rename(columns={"rcept_dt": "date"})
+    kept = align_to_trading_days(kept, prices["date"])
+    if kept.empty:
+        return pd.DataFrame(columns=EVENT_COLUMNS)
+
+    pairs = kept[["code", "date"]].drop_duplicates()
+
+    stats = add_liquidity_stats(prices, window=adv_window)
+    events = pairs.merge(
+        stats[["code", "date", "adv", "tv_ratio"]], on=["code", "date"], how="inner"
+    )
+    events = events[events["adv"] >= adv_floor]
+    return events[EVENT_COLUMNS].sort_values(["date", "code"]).reset_index(drop=True)
+```
+
+- [ ] **Step 4: 테스트 통과 확인**
+
+Run: `uv run --extra dev pytest tests/test_dart_events.py -q`
+Expected: 10 passed
+
+- [ ] **Step 5: 커밋**
+
+```bash
+git add src/swing_it/dart/events.py tests/test_dart_events.py
+git commit -m "feat(dart): 이벤트 정의를 공시로 뒤집는다 (스펙 rev2)"
+```
+
+---
+
+### Task 6: 공시 피처와 데이터셋
+
+**Files:**
+- Create: `src/swing_it/features/disclosure.py`
+- Create: `src/swing_it/dart/dataset.py`
+- Test: `tests/test_features_disclosure.py`
+- Test: `tests/test_dart_dataset.py`
+
+**Interfaces:**
+- Consumes: `load_disclosures`, `build_disclosure_events`, 계획 1 `labels.forward_return`·`excess_return`·`features.supply.supply_features`·`dataset.FEATURE_COLUMNS`
+- Produces:
+  - `DISC_FEATURE_COLUMNS: list[str]` = `["disc_count", "disc_ratio", "disc_correction_ratio", "days_since_disc", "is_insider", "is_contract", "is_capex", "is_payout", "is_funding", "is_earnings"]`
+  - `disclosure_features(disc, calendar, *, baseline_window=60, min_periods=20, baseline_floor=0.2) -> pd.DataFrame` — 컬럼 `[code, date, *DISC_FEATURE_COLUMNS, top_material_type]`
+  - `DISC_DATASET_COLUMNS: list[str]`
+  - `build_dart_dataset(prices, supply_demand, disc, *, adv_floor=5000.0, adv_window=20, entry_offset=1, hold_start=20, hold_end=40) -> pd.DataFrame` — 컬럼 `[code, date, *FEATURE_COLUMNS, *DISC_FEATURE_COLUMNS, fwd_return, excess_return, top_material_type]`
+
+**피처 정의**
+
+| 피처 | 정의 |
+|---|---|
+| `disc_count` | 그날 그 종목 공시 수 (악재 제외 후) |
+| `disc_ratio` | `disc_count / baseline`. baseline 은 직전 `baseline_window` 거래일 평균(**shift(1)**), 하한 `baseline_floor` |
+| `disc_correction_ratio` | 정정 공시 비율 — 재탕은 신선도가 낮다 |
+| `days_since_disc` | 직전 공시일로부터 경과 거래일. 첫 공시는 `baseline_window` |
+| `is_insider` … `is_earnings` | 유형별 그날 비율 (내부자 / 공급계약 / 시설투자 / 주주환원 / 자본조달 / 실적) |
+
+`top_material_type` 은 **모델 행렬에 넣지 않는다** — 근거 카드 표시용이다.
+원-핫으로 펼치면 14개 값이 스펙 §7 의 10~20개 상한을 혼자 먹는다. 대신 비율 6개로 요약한다.
+
+**피처 예산:** 계획 1 수급 7개 + 공시 10개 = **17개**. 상한 안이다.
+
+**계획 1 `FEATURE_COLUMNS` 와의 충돌 없음:** `tv_ratio`·`log_adv` 는 계획 1 소유이고
+공시 피처 이름과 겹치지 않는다. 테스트로 고정한다.
+
+- [ ] **Step 1: 실패하는 피처 테스트 작성**
+
+`tests/test_features_disclosure.py`:
 
 ```python
 import numpy as np
 import pandas as pd
 
+from swing_it.features.disclosure import DISC_FEATURE_COLUMNS, disclosure_features
+
+
+CAL = pd.Series(pd.to_datetime(
+    ["2026-08-13", "2026-08-14", "2026-08-17", "2026-08-18", "2026-08-19"]))
+
+
+def _disc(rows, corrections=None):
+    corrections = corrections or [False] * len(rows)
+    return pd.DataFrame({
+        "rcept_no": [f"r{i}" for i in range(len(rows))],
+        "rcept_dt": pd.to_datetime([r[0] for r in rows]),
+        "code": [r[1] for r in rows],
+        "corp_name": ["회사"] * len(rows),
+        "corp_cls": ["K"] * len(rows),
+        "report_nm": [r[2] for r in rows],
+        "material_type": [r[2] for r in rows],
+        "is_correction": corrections,
+    })
+
+
+def test_columns_contract():
+    out = disclosure_features(_disc([("2026-08-14", "A", "공급계약")]), CAL, min_periods=1)
+    assert list(out.columns) == ["code", "date", *DISC_FEATURE_COLUMNS, "top_material_type"]
+
+
+def test_count_and_type_ratios():
+    disc = _disc([("2026-08-14", "A", "공급계약"), ("2026-08-14", "A", "내부자")])
+    row = disclosure_features(disc, CAL, min_periods=1).iloc[0]
+    assert row["disc_count"] == 2
+    assert row["is_contract"] == 0.5
+    assert row["is_insider"] == 0.5
+    assert row["is_capex"] == 0.0
+
+
+def test_holiday_disclosure_moves_forward():
+    disc = _disc([("2026-08-15", "A", "공급계약")])
+    out = disclosure_features(disc, CAL, min_periods=1)
+    assert out.iloc[0]["date"] == pd.Timestamp("2026-08-17")
+
+
+def test_baseline_uses_only_the_past():
+    disc = _disc([("2026-08-13", "A", "행정"), ("2026-08-14", "A", "행정"),
+                  ("2026-08-17", "A", "공급계약"), ("2026-08-17", "A", "공급계약"),
+                  ("2026-08-17", "A", "공급계약")])
+    out = disclosure_features(disc, CAL, baseline_window=2, min_periods=2)
+    row = out[out["date"] == pd.Timestamp("2026-08-17")].iloc[0]
+    assert np.isclose(row["disc_ratio"], 3.0)   # 직전 2일 평균 1.0 → 3배
+
+
+def test_days_since_counts_trading_days():
+    disc = _disc([("2026-08-13", "A", "행정"), ("2026-08-19", "A", "공급계약")])
+    out = disclosure_features(disc, CAL, min_periods=1).set_index("date")
+    assert out.loc[pd.Timestamp("2026-08-19"), "days_since_disc"] == 4
+
+
+def test_correction_ratio():
+    disc = _disc([("2026-08-14", "A", "공급계약"), ("2026-08-14", "A", "공급계약")],
+                 corrections=[True, False])
+    assert disclosure_features(disc, CAL, min_periods=1).iloc[0]["disc_correction_ratio"] == 0.5
+
+
+def test_top_material_type_is_most_common_and_not_a_model_feature():
+    disc = _disc([("2026-08-14", "A", "공급계약"), ("2026-08-14", "A", "공급계약"),
+                  ("2026-08-14", "A", "행정")])
+    out = disclosure_features(disc, CAL, min_periods=1)
+    assert out.iloc[0]["top_material_type"] == "공급계약"
+    assert "top_material_type" not in DISC_FEATURE_COLUMNS
+
+
+def test_empty_input():
+    out = disclosure_features(_disc([]), CAL)
+    assert out.empty
+    assert list(out.columns) == ["code", "date", *DISC_FEATURE_COLUMNS, "top_material_type"]
+```
+
+- [ ] **Step 2: 실패하는 데이터셋 테스트 작성**
+
+`tests/test_dart_dataset.py`:
+
+```python
+import pandas as pd
+
+from swing_it.dart.dataset import DISC_DATASET_COLUMNS, build_dart_dataset
 from swing_it.dataset import FEATURE_COLUMNS
 from swing_it.features.disclosure import DISC_FEATURE_COLUMNS
-from swing_it.layers_disclosure import build_disclosure_dataset
 
 
-def _prices(codes, n, spike_at):
+def _prices(codes, n):
     rows = []
     for code in codes:
         for i in range(n):
-            tv = 6000.0 * (5.0 if i == spike_at else 1.0)
             rows.append({"code": code,
                          "date": pd.Timestamp("2026-01-01") + pd.Timedelta(days=i),
-                         "open": 100.0 + i, "close": 100.0 + i, "trade_value": tv})
+                         "open": 100.0 + i, "close": 100.0 + i, "trade_value": 9000.0})
     return pd.DataFrame(rows)
 
 
@@ -1385,123 +1526,638 @@ def _supply(codes, n):
     return pd.DataFrame(rows)
 
 
-def _disc_features(codes, n):
-    rows = []
-    for code in codes:
-        for i in range(n):
-            rows.append({"code": code,
-                         "date": pd.Timestamp("2026-01-01") + pd.Timedelta(days=i),
-                         "disc_count": 1.0, "disc_ratio": 2.0, "disc_is_bad": 0.0,
-                         "disc_is_contract": 1.0, "disc_is_capex": 0.0,
-                         "disc_is_equity": 0.0, "disc_correction_ratio": 0.0,
-                         "days_since_disc": 5.0})
-    return pd.DataFrame(rows)
+def _disc(pairs):
+    return pd.DataFrame({
+        "rcept_no": [f"r{i}" for i in range(len(pairs))],
+        "rcept_dt": pd.to_datetime([p[0] for p in pairs]),
+        "code": [p[1] for p in pairs],
+        "corp_name": ["회사"] * len(pairs),
+        "corp_cls": ["K"] * len(pairs),
+        "report_nm": [p[2] for p in pairs],
+        "material_type": [p[2] for p in pairs],
+        "is_correction": [False] * len(pairs),
+    })
 
 
-def test_dataset_has_supply_and_disclosure_columns():
-    ds = build_disclosure_dataset(
-        _prices(["A", "B"], 80, 25), _supply(["A", "B"], 80),
-        _disc_features(["A", "B"], 80), hold_start=10, hold_end=20,
+def test_dataset_columns_contract():
+    ds = build_dart_dataset(
+        _prices(["A", "B"], 80), _supply(["A", "B"], 80),
+        _disc([("2026-01-30", "A", "공급계약"), ("2026-01-30", "B", "내부자")]),
+        hold_start=10, hold_end=20,
     )
-    expected = ["code", "date", *FEATURE_COLUMNS, *DISC_FEATURE_COLUMNS,
-                "fwd_return", "excess_return"]
-    assert list(ds.columns) == expected
+    assert list(ds.columns) == DISC_DATASET_COLUMNS
 
 
-def test_rows_without_disclosure_are_dropped():
-    """세 층이 같은 표본을 봐야 비교가 성립한다 (계획 4 결측 정책)."""
-    ds = build_disclosure_dataset(
-        _prices(["A", "B"], 80, 25), _supply(["A", "B"], 80),
-        _disc_features(["A"], 80), hold_start=10, hold_end=20,
+def test_feature_budget_is_within_spec_limit():
+    """스펙 §7: 피처 10~20개."""
+    assert 10 <= len(FEATURE_COLUMNS) + len(DISC_FEATURE_COLUMNS) <= 20
+
+
+def test_no_column_collision_between_plan1_and_disclosure():
+    assert set(FEATURE_COLUMNS).isdisjoint(DISC_FEATURE_COLUMNS)
+
+
+def test_rows_are_events_only():
+    ds = build_dart_dataset(
+        _prices(["A", "B"], 80), _supply(["A", "B"], 80),
+        _disc([("2026-01-30", "A", "공급계약")]), hold_start=10, hold_end=20,
     )
     assert set(ds["code"]) <= {"A"}
 
 
-def test_no_column_collision_with_plan1_features():
-    overlap = set(FEATURE_COLUMNS) & set(DISC_FEATURE_COLUMNS)
-    assert overlap == set()
-
-
-def test_feature_budget_within_spec_limit():
-    """스펙 §6: 피처 10~20개."""
-    assert 10 <= len(FEATURE_COLUMNS) + len(DISC_FEATURE_COLUMNS) <= 20
+def test_labels_and_features_have_no_nan():
+    ds = build_dart_dataset(
+        _prices(["A", "B"], 80), _supply(["A", "B"], 80),
+        _disc([("2026-01-30", "A", "공급계약"), ("2026-01-31", "B", "시설투자")]),
+        hold_start=10, hold_end=20,
+    )
+    cols = [*FEATURE_COLUMNS, *DISC_FEATURE_COLUMNS, "excess_return"]
+    assert ds[cols].notna().all().all()
 ```
 
-- [ ] **Step 2: 테스트 실패 확인**
+- [ ] **Step 3: 테스트 실패 확인**
 
-Run: `uv run --extra dev pytest tests/test_layers_disclosure.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'swing_it.layers_disclosure'`
+Run: `uv run --extra dev pytest tests/test_features_disclosure.py tests/test_dart_dataset.py -q`
+Expected: FAIL — 두 모듈 모두 `ModuleNotFoundError`
 
-- [ ] **Step 3: 구현**
+- [ ] **Step 4: 피처 구현**
 
-`src/swing_it/layers_disclosure.py`:
+`src/swing_it/features/disclosure.py`:
 
 ```python
-"""공시 층(②) 데이터셋 — 계획 4 하네스에 얇게 위임한다.
+"""②층 공시 피처 — 무료·규칙 기반, LLM 불필요.
 
-계획 4 의 ``build_layered_dataset(news=, news_columns=)`` 은 사실 "이벤트 행에
-``(code, date)`` 프레임을 붙이고 결측 행을 떨어뜨린다"는 일반 동작이다.
-공시도 모양이 같으므로 새 경로를 만들지 않고 그 자리에 넣는다.
-인자 이름만 뉴스일 뿐이다.
-
-계획 4 의 함수는 고치지 않는다 — 계획 4 테스트가 계속 통과해야 한다.
+거래일 이월은 계획 2 의 ``news.calendar.align_to_trading_days`` 를 재사용한다.
+휴장일 접수분이 사라지는 버그를 뉴스에서 이미 겪었고, 같은 문제를 두 번 풀지 않는다.
 """
 
 from __future__ import annotations
 
 import pandas as pd
 
-from .features.disclosure import DISC_FEATURE_COLUMNS
-from .layers import build_layered_dataset
+from ..news.calendar import align_to_trading_days
 
-LAYER_NAMES: list[str] = ["supply", "supply_disc"]
-LAYER_LABELS: dict[str, str] = {
-    "supply": "① 수급 단독",
-    "supply_disc": "② + 공시(DART)",
+_TYPE_FLAGS: dict[str, str] = {
+    "is_insider": "내부자",
+    "is_contract": "공급계약",
+    "is_capex": "시설투자",
+    "is_payout": "주주환원",
+    "is_funding": "자본조달",
+    "is_earnings": "실적",
+}
+
+DISC_FEATURE_COLUMNS: list[str] = [
+    "disc_count",
+    "disc_ratio",
+    "disc_correction_ratio",
+    "days_since_disc",
+    *_TYPE_FLAGS,
+]
+
+_OUT_COLUMNS = ["code", "date", *DISC_FEATURE_COLUMNS, "top_material_type"]
+
+
+def disclosure_features(
+    disc: pd.DataFrame,
+    calendar: pd.Series,
+    *,
+    baseline_window: int = 60,
+    min_periods: int = 20,
+    baseline_floor: float = 0.2,
+) -> pd.DataFrame:
+    """``(code, date)`` 별 공시 건수·급증 배수·유형 비율·신선도."""
+    if disc.empty:
+        return pd.DataFrame(columns=_OUT_COLUMNS)
+
+    frame = disc.rename(columns={"rcept_dt": "date"}).copy()
+    frame = align_to_trading_days(frame, calendar)
+    if frame.empty:
+        return pd.DataFrame(columns=_OUT_COLUMNS)
+    frame["is_correction"] = frame["is_correction"].astype(bool)
+
+    aggs = {
+        "disc_count": ("rcept_no", "size"),
+        "n_correction": ("is_correction", "sum"),
+        "top_material_type": ("material_type", lambda s: s.value_counts().index[0]),
+    }
+    daily = frame.groupby(["code", "date"], sort=False).agg(**aggs).reset_index()
+    for flag, label in _TYPE_FLAGS.items():
+        hits = (
+            frame.assign(_hit=(frame["material_type"] == label).astype(float))
+            .groupby(["code", "date"], sort=False)["_hit"].sum()
+            .reset_index(name=flag)
+        )
+        daily = daily.merge(hits, on=["code", "date"], how="left")
+
+    # 전 거래일 격자로 펼쳐야 '평소'가 과대평가되지 않는다.
+    trading = pd.Index(pd.to_datetime(pd.Series(calendar)).unique()).sort_values()
+    codes = pd.Index(sorted(daily["code"].unique()), name="code")
+    grid = pd.MultiIndex.from_product([codes, trading], names=["code", "date"]).to_frame(
+        index=False
+    )
+    dense = grid.merge(daily[["code", "date", "disc_count"]], on=["code", "date"], how="left")
+    dense["disc_count"] = dense["disc_count"].fillna(0.0)
+    dense = dense.sort_values(["code", "date"])
+    grouped = dense.groupby("code", sort=False)
+
+    dense["baseline"] = grouped["disc_count"].transform(
+        lambda s: s.shift(1).rolling(baseline_window, min_periods=min_periods).mean()
+    )
+    dense["baseline"] = dense["baseline"].fillna(baseline_floor).clip(lower=baseline_floor)
+
+    dense["_ordinal"] = grouped.cumcount()
+    dense["_last"] = dense["_ordinal"].where(dense["disc_count"] > 0)
+    dense["_prev"] = grouped["_last"].transform(lambda s: s.shift(1).ffill())
+    dense["days_since_disc"] = (dense["_ordinal"] - dense["_prev"]).fillna(baseline_window)
+
+    out = daily.merge(
+        dense[["code", "date", "baseline", "days_since_disc"]], on=["code", "date"], how="left"
+    )
+    count = out["disc_count"].astype(float)
+    out["disc_ratio"] = count / out["baseline"]
+    out["disc_correction_ratio"] = out["n_correction"] / count
+    for flag in _TYPE_FLAGS:
+        out[flag] = out[flag].fillna(0.0) / count
+    out["days_since_disc"] = out["days_since_disc"].fillna(baseline_window)
+
+    return out[_OUT_COLUMNS].sort_values(["date", "code"]).reset_index(drop=True)
+```
+
+- [ ] **Step 5: 데이터셋 구현**
+
+`src/swing_it/dart/dataset.py`:
+
+```python
+"""공시 이벤트 + 수급 피처 + 공시 피처 + 라벨을 한 표로 조립한다."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+from ..dataset import FEATURE_COLUMNS
+from ..features.disclosure import DISC_FEATURE_COLUMNS, disclosure_features
+from ..features.supply import supply_features
+from ..labels import excess_return, forward_return
+from .events import build_disclosure_events
+
+DISC_DATASET_COLUMNS: list[str] = [
+    "code", "date", *FEATURE_COLUMNS, *DISC_FEATURE_COLUMNS,
+    "fwd_return", "excess_return", "top_material_type",
+]
+
+_SCALED = {
+    "smart_money_net_5d_scaled": "smart_money_net_5d",
+    "indiv_net_5d_scaled": "indiv_net_5d",
+    "pension_net_5d_scaled": "pension_net_5d",
 }
 
 
-def build_disclosure_dataset(
+def build_dart_dataset(
     prices: pd.DataFrame,
     supply_demand: pd.DataFrame,
-    disc_features: pd.DataFrame,
-    **kwargs,
+    disc: pd.DataFrame,
+    *,
+    adv_floor: float = 5000.0,
+    adv_window: int = 20,
+    entry_offset: int = 1,
+    hold_start: int = 20,
+    hold_end: int = 40,
 ) -> pd.DataFrame:
-    """①층 피처 + 공시 피처 + 라벨을 한 표에 담는다."""
-    return build_layered_dataset(
-        prices,
-        supply_demand,
-        news=disc_features,
-        news_columns=DISC_FEATURE_COLUMNS,
-        **kwargs,
+    """공시 이벤트 행에 피처와 라벨을 붙인다."""
+    events = build_disclosure_events(
+        disc, prices, adv_floor=adv_floor, adv_window=adv_window
+    )
+    if events.empty:
+        return pd.DataFrame(columns=DISC_DATASET_COLUMNS)
+
+    supply = supply_features(supply_demand)
+    disc_feats = disclosure_features(disc, prices["date"])
+    labels = excess_return(
+        forward_return(
+            prices, entry_offset=entry_offset, hold_start=hold_start, hold_end=hold_end
+        )
     )
 
+    df = events.merge(supply, on=["code", "date"], how="left")
+    df = df.merge(disc_feats, on=["code", "date"], how="left")
+    df = df.merge(labels, on=["code", "date"], how="left")
 
-def layer_features_disc() -> dict[str, list[str]]:
-    """층 이름 → 그 층이 쓰는 피처 컬럼(누적)."""
-    from .dataset import FEATURE_COLUMNS
+    shares_capacity = (df["adv"] * 1e6) / df["entry_price"]
+    for scaled, raw in _SCALED.items():
+        df[scaled] = df[raw] / shares_capacity
+    df["log_adv"] = np.log10(df["adv"])
 
+    out = df[DISC_DATASET_COLUMNS].replace([np.inf, -np.inf], np.nan)
+    numeric = [*FEATURE_COLUMNS, *DISC_FEATURE_COLUMNS, "excess_return"]
+    out = out.dropna(subset=numeric)
+    return out.sort_values(["date", "code"]).reset_index(drop=True)
+```
+
+- [ ] **Step 6: 테스트 통과 확인**
+
+Run: `uv run --extra dev pytest tests/test_features_disclosure.py tests/test_dart_dataset.py -q`
+Expected: 13 passed
+
+- [ ] **Step 7: 커밋**
+
+```bash
+git add src/swing_it/features/disclosure.py src/swing_it/dart/dataset.py \
+        tests/test_features_disclosure.py tests/test_dart_dataset.py
+git commit -m "feat(dart): 공시 피처 10종과 이벤트 데이터셋 조립"
+```
+
+---
+
+### Task 7: 판정 — 층 비교 · 십분위 단조성 · 절대 임계
+
+**Files:**
+- Create: `src/swing_it/validate/monotonic.py`
+- Create: `src/swing_it/report/threshold.py`
+- Create: `src/swing_it/cli_dart_layers.py`
+- Modify: `pyproject.toml` — `swing-dart-layers` 추가
+- Test: `tests/test_validate_monotonic.py`
+- Test: `tests/test_report_threshold.py`
+
+**Interfaces:**
+- Consumes: `build_dart_dataset`, 계획 4 `model.layered.walk_forward_predict_features`·`fold_dates`, `validate.layer_verdict.layer_verdict`, `validate.compare.compare_layers`
+- Produces:
+  - `decile_table(pred: pd.DataFrame, *, n_bins: int = 10) -> pd.DataFrame` — 컬럼 `[decile, n, mean_excess, median_excess]`. `decile` 0 = 예측 최저
+  - `monotonicity(pred: pd.DataFrame, *, n_bins: int = 10) -> dict` — 키 `spearman`, `top_minus_bottom`, `top_vs_median`, `is_monotone`. `is_monotone` 은 `spearman >= 0.6` **그리고** `top_minus_bottom > 0`
+  - `concurrency_threshold(pred: pd.DataFrame, *, hold_days: int = 40, target_concurrent: int = 20) -> dict` — 키 `threshold`, `expected_per_day`, `expected_concurrent`, `n_train_days`
+  - `main(argv) -> int` — `swing-dart-layers`
+
+**절대 임계 산식 (사전등록).** 성과가 아니라 구조에서 나온다.
+
+```
+목표 동시 보유 = 20   (스펙 §6 의 15~25 중앙값)
+하루 필요 후보 = 20 / hold_days = 20 / 40 = 0.5
+임계값 = 학습 구간 예측값의 상위 (0.5 × n_train_days / n_train_rows) 분위수
+```
+
+즉 "학습 구간에서 하루 평균 0.5건이 통과하는 예측값"이다. 검증 구간에서는 이 값을
+그대로 적용한다. **결과를 보고 조정하지 않는다.**
+
+- [ ] **Step 1: 실패하는 단조성 테스트 작성**
+
+`tests/test_validate_monotonic.py`:
+
+```python
+import numpy as np
+import pandas as pd
+
+from swing_it.validate.monotonic import decile_table, monotonicity
+
+
+def _pred(n: int, signal: float, seed: int = 0) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    prediction = rng.normal(size=n)
+    excess = prediction * signal + rng.normal(scale=0.02, size=n)
+    return pd.DataFrame({
+        "code": [f"{i % 50:06d}" for i in range(n)],
+        "date": pd.to_datetime("2026-01-01") + pd.to_timedelta(np.arange(n) // 5, unit="D"),
+        "excess_return": excess,
+        "prediction": prediction,
+        "fold": 0,
+    })
+
+
+def test_decile_table_shape():
+    table = decile_table(_pred(2000, 0.05))
+    assert list(table.columns) == ["decile", "n", "mean_excess", "median_excess"]
+    assert len(table) == 10
+    assert table["decile"].tolist() == list(range(10))
+
+
+def test_monotone_when_prediction_carries_signal():
+    got = monotonicity(_pred(2000, 0.05))
+    assert got["is_monotone"] is True
+    assert got["spearman"] > 0.6
+    assert got["top_minus_bottom"] > 0
+
+
+def test_not_monotone_when_prediction_is_noise():
+    got = monotonicity(_pred(2000, 0.0))
+    assert got["is_monotone"] is False
+
+
+def test_inverted_signal_is_not_monotone():
+    """예측이 거꾸로면 단조가 아니다 — 상위를 골라 들어갈 수 없다."""
+    pred = _pred(2000, 0.05)
+    pred["prediction"] = -pred["prediction"]
+    assert monotonicity(pred)["is_monotone"] is False
+
+
+def test_report_has_all_keys():
+    got = monotonicity(_pred(500, 0.05))
+    for key in ("spearman", "top_minus_bottom", "top_vs_median", "is_monotone"):
+        assert key in got
+```
+
+- [ ] **Step 2: 실패하는 임계 테스트 작성**
+
+`tests/test_report_threshold.py`:
+
+```python
+import numpy as np
+import pandas as pd
+
+from swing_it.report.threshold import concurrency_threshold
+
+
+def _pred(n_days: int, per_day: int, seed: int = 0) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    rows = []
+    for d in range(n_days):
+        for i in range(per_day):
+            rows.append({
+                "code": f"{i:06d}",
+                "date": pd.Timestamp("2026-01-01") + pd.Timedelta(days=d),
+                "excess_return": rng.normal(scale=0.05),
+                "prediction": rng.normal(),
+                "fold": 0,
+            })
+    return pd.DataFrame(rows)
+
+
+def test_threshold_yields_the_target_concurrency():
+    pred = _pred(200, 50)
+    got = concurrency_threshold(pred, hold_days=40, target_concurrent=20)
+    assert np.isclose(got["expected_concurrent"], 20, rtol=0.25)
+
+
+def test_threshold_is_a_prediction_quantile():
+    pred = _pred(200, 50)
+    got = concurrency_threshold(pred, hold_days=40, target_concurrent=20)
+    passing = (pred["prediction"] >= got["threshold"]).sum()
+    assert np.isclose(passing / pred["date"].nunique(), got["expected_per_day"], rtol=0.25)
+
+
+def test_higher_target_lowers_the_threshold():
+    pred = _pred(200, 50)
+    low = concurrency_threshold(pred, target_concurrent=10)["threshold"]
+    high = concurrency_threshold(pred, target_concurrent=40)["threshold"]
+    assert high < low
+
+
+def test_report_has_all_keys():
+    got = concurrency_threshold(_pred(50, 20))
+    for key in ("threshold", "expected_per_day", "expected_concurrent", "n_train_days"):
+        assert key in got
+```
+
+- [ ] **Step 3: 테스트 실패 확인**
+
+Run: `uv run --extra dev pytest tests/test_validate_monotonic.py tests/test_report_threshold.py -q`
+Expected: FAIL — 두 모듈 `ModuleNotFoundError`
+
+- [ ] **Step 4: 단조성 구현**
+
+`src/swing_it/validate/monotonic.py`:
+
+```python
+"""예측값 십분위 단조성 — "확실한 것만"이 성립하는지 (스펙 §6).
+
+층이 랜덤 널을 이겨도 **예측값이 클수록 실제 수익이 좋지 않으면** 상위만 골라
+들어가는 전략은 성립하지 않는다. 게이트와 별개로 반드시 본다.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+
+def decile_table(pred: pd.DataFrame, *, n_bins: int = 10) -> pd.DataFrame:
+    """예측값 분위별 실제 초과수익. ``decile`` 0 이 예측 최저다."""
+    frame = pred.dropna(subset=["prediction", "excess_return"]).copy()
+    frame["decile"] = pd.qcut(
+        frame["prediction"].rank(method="first"), n_bins, labels=False
+    )
+    table = (
+        frame.groupby("decile")
+        .agg(n=("excess_return", "size"),
+             mean_excess=("excess_return", "mean"),
+             median_excess=("excess_return", "median"))
+        .reset_index()
+    )
+    return table.sort_values("decile").reset_index(drop=True)
+
+
+def monotonicity(pred: pd.DataFrame, *, n_bins: int = 10) -> dict:
+    """분위 평균이 예측 순서를 따라 오르는가.
+
+    ``is_monotone`` 은 스피어만 상관 0.6 이상 **그리고** 최상위−최하위 > 0 이다.
+    완전한 단조를 요구하지 않는 이유는 분위 평균에 잡음이 있기 때문이고,
+    0.6 은 사전등록 값이다 — 결과를 보고 낮추지 않는다.
+    """
+    table = decile_table(pred, n_bins=n_bins)
+    if len(table) < 3:
+        return {"spearman": float("nan"), "top_minus_bottom": float("nan"),
+                "top_vs_median": float("nan"), "is_monotone": False}
+
+    ranks = table["decile"].to_numpy(dtype=float)
+    means = table["mean_excess"].to_numpy(dtype=float)
+    spearman = float(pd.Series(ranks).corr(pd.Series(means), method="spearman"))
+    top_minus_bottom = float(means[-1] - means[0])
+    top_vs_median = float(means[-1] - np.median(means))
     return {
-        "supply": list(FEATURE_COLUMNS),
-        "supply_disc": [*FEATURE_COLUMNS, *DISC_FEATURE_COLUMNS],
+        "spearman": spearman,
+        "top_minus_bottom": top_minus_bottom,
+        "top_vs_median": top_vs_median,
+        "is_monotone": bool(spearman >= 0.6 and top_minus_bottom > 0),
     }
 ```
 
-- [ ] **Step 4: 테스트 통과 확인**
+- [ ] **Step 5: 임계 구현**
 
-Run: `uv run --extra dev pytest tests/test_layers_disclosure.py -q`
-Expected: 4 passed
+`src/swing_it/report/threshold.py`:
 
-- [ ] **Step 5: 전체 테스트와 lint**
+```python
+"""절대 임계 — "확실한 것만" (스펙 §6).
+
+날짜당 상위 N 을 억지로 뽑으면 재료가 시원찮은 날에도 후보가 나온다.
+임계 미달이면 그날은 0건이어야 한다.
+
+**임계값은 구조에서 정한다, 성과에서가 아니다.** 목표 동시 보유를 정하고
+거기서 하루 통과 건수를 역산한 뒤, 학습 구간 예측값의 해당 분위수를 쓴다.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+
+def concurrency_threshold(
+    pred: pd.DataFrame,
+    *,
+    hold_days: int = 40,
+    target_concurrent: int = 20,
+) -> dict:
+    """목표 동시 보유를 만족하는 예측값 임계를 학습 구간에서 구한다.
+
+    Args:
+        hold_days: 보유 거래일. 동시 보유 ≈ 하루 통과 건수 × hold_days.
+        target_concurrent: 목표 동시 보유 종목 수. 스펙 §6 의 15~25 중앙값이 20.
+    """
+    frame = pred.dropna(subset=["prediction"])
+    n_days = int(frame["date"].nunique())
+    if n_days == 0 or frame.empty:
+        return {"threshold": float("nan"), "expected_per_day": 0.0,
+                "expected_concurrent": 0.0, "n_train_days": 0}
+
+    per_day = target_concurrent / float(hold_days)
+    n_pass = max(1, int(round(per_day * n_days)))
+    quantile = 1.0 - min(1.0, n_pass / len(frame))
+    threshold = float(np.quantile(frame["prediction"].to_numpy(), quantile))
+
+    passing = int((frame["prediction"] >= threshold).sum())
+    return {
+        "threshold": threshold,
+        "expected_per_day": passing / n_days,
+        "expected_concurrent": passing / n_days * hold_days,
+        "n_train_days": n_days,
+    }
+```
+
+- [ ] **Step 6: 판정 CLI 구현**
+
+`src/swing_it/cli_dart_layers.py`:
+
+```python
+"""`swing-dart-layers` — ①수급 vs ②+공시 판정.
+
+FAIL 이 나와도 exit 0 이다. 부정 결과는 오류가 아니라 결과다 (스펙 §11).
+파라미터를 바꿔 재시도하는 경로는 만들지 않는다.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from .adapters.db import connect, load_prices, load_supply_demand
+from .dart.dataset import build_dart_dataset
+from .dart.store import init_dart_db, load_disclosures
+from .dataset import FEATURE_COLUMNS
+from .features.disclosure import DISC_FEATURE_COLUMNS
+from .model.layered import fold_dates, walk_forward_predict_features
+from .report.threshold import concurrency_threshold
+from .validate.layer_verdict import layer_verdict
+from .validate.monotonic import decile_table, monotonicity
+
+_LAYERS = {
+    "supply": FEATURE_COLUMNS,
+    "supply_disc": [*FEATURE_COLUMNS, *DISC_FEATURE_COLUMNS],
+}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="공시 층 판정 (①수급 vs ②+공시)")
+    parser.add_argument("--db", default=None, help="가격 DSN. 생략 시 KR_QUANT_DB")
+    parser.add_argument("--dart-db", default="data/dart.db")
+    parser.add_argument("--start", default="2016-09-09")
+    parser.add_argument("--end", default="2026-08-14")
+    parser.add_argument("--adv-floor", type=float, default=5000.0)
+    parser.add_argument("--hold-end", type=int, default=40)
+    parser.add_argument("--top-n", type=int, default=2)
+    parser.add_argument("--folds", type=int, default=4)
+    parser.add_argument("--target-concurrent", type=int, default=20)
+    parser.add_argument("--out", default="results/dart_layers.json")
+    args = parser.parse_args(argv)
+
+    if not Path(args.dart_db).is_file():
+        print(f"\n공시 DB 가 없다: {args.dart_db}\n  → 먼저 `swing-dart` 를 돌려야 한다.\n",
+              file=sys.stderr)
+        return 1
+
+    conn = connect(args.db)
+    prices = load_prices(conn, args.start, args.end)
+    supply = load_supply_demand(conn, args.start, args.end)
+    disc = load_disclosures(
+        init_dart_db(args.dart_db),
+        args.start.replace("-", ""),
+        args.end.replace("-", ""),
+    )
+    print(f"가격 {len(prices):,} · 수급 {len(supply):,} · 공시 {len(disc):,}", file=sys.stderr)
+
+    ds = build_dart_dataset(prices, supply, disc,
+                            adv_floor=args.adv_floor, hold_end=args.hold_end)
+    print(f"이벤트 {len(ds):,} · 종목 {ds['code'].nunique():,}", file=sys.stderr)
+    if ds.empty:
+        print("이벤트가 없다. 공시 수집 범위를 확인하라.", file=sys.stderr)
+        return 1
+
+    folds = fold_dates(ds, n_folds=args.folds)
+    report: dict = {
+        "n_events": len(ds),
+        "n_codes": int(ds["code"].nunique()),
+        "date_range": [str(ds["date"].min().date()), str(ds["date"].max().date())],
+        "config": {"adv_floor": args.adv_floor, "hold_end": args.hold_end,
+                   "top_n": args.top_n, "folds": args.folds,
+                   "target_concurrent": args.target_concurrent},
+        "layers": {},
+    }
+
+    for name, features in _LAYERS.items():
+        pred = walk_forward_predict_features(ds, features, folds=folds)
+        verdict = layer_verdict(pred, top_n=args.top_n)
+        verdict["monotonicity"] = monotonicity(pred)
+        verdict["deciles"] = decile_table(pred).round(6).to_dict("records")
+        verdict["threshold"] = concurrency_threshold(
+            pred, hold_days=args.hold_end, target_concurrent=args.target_concurrent
+        )
+        verdict["n_features"] = len(features)
+        report["layers"][name] = verdict
+        print(f"  {name}: {verdict['overall_verdict']} · "
+              f"단조 {verdict['monotonicity']['is_monotone']}", file=sys.stderr)
+
+    base = report["layers"]["supply"]
+    disc_layer = report["layers"]["supply_disc"]
+    report["disclosure_adds_value"] = bool(
+        disc_layer["gate"]["strategy_mean"] > base["gate"]["strategy_mean"]
+        and disc_layer["monotonicity"]["is_monotone"]
+    )
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(json.dumps(report["layers"]["supply_disc"]["checks"], indent=2, ensure_ascii=False))
+    print(f"\n저장: {out_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+**참고:** `layer_verdict` 의 반환 키 이름(`gate`·`checks`·`overall_verdict`)은 계획 4
+Task 4 구현본을 따른다. 실제 키가 다르면 **CLI 를 맞춘다** — `layer_verdict` 를 고치지
+않는다. 계획 4 테스트가 계속 통과해야 한다.
+
+- [ ] **Step 7: `pyproject.toml` 에 엔트리포인트 추가**
+
+```toml
+swing-dart-layers = "swing_it.cli_dart_layers:main"
+```
+
+Run: `uv sync --extra dev`
+
+- [ ] **Step 8: 전체 테스트와 lint**
 
 Run: `uv run --extra dev pytest -q && uv run --extra dev ruff check src tests`
 Expected: 전부 통과. 기존 테스트가 하나도 깨지지 않아야 한다.
 
-- [ ] **Step 6: 커밋**
+- [ ] **Step 9: 커밋**
 
 ```bash
-git add src/swing_it/layers_disclosure.py tests/test_layers_disclosure.py
-git commit -m "feat(layers): ②층 공시 데이터셋 — 계획 4 하네스에 위임"
+git add src/swing_it/validate/monotonic.py src/swing_it/report/threshold.py \
+        src/swing_it/cli_dart_layers.py pyproject.toml \
+        tests/test_validate_monotonic.py tests/test_report_threshold.py
+git commit -m "feat(validate): 십분위 단조성 · 절대 임계 · 공시 층 판정 CLI"
 ```
 
 ---
@@ -1509,16 +2165,25 @@ git commit -m "feat(layers): ②층 공시 데이터셋 — 계획 4 하네스�
 ## 이 계획이 끝나면 답할 수 있는 것
 
 > **DART 공시가 수급 위에 D+20~40 초과수익 예측력을 더하는가?**
+> **그리고 "확실한 것만 골라 들어가기"가 성립하는가?**
 
-판정은 계획 4 의 `layer_verdict` 를 그대로 쓴다 — 전체 널 대비 / 모든 폴드 널 대비 / 손 안 댄 최종창 / 플라시보, 그리고 하방 회피(`p10`, `tail_capture_rate`)와 선별도(`selection_ratio`).
+판정은 계획 4 의 `layer_verdict`(전체 널 대비 / 모든 폴드 널 대비 / 손 안 댄 최종창 /
+플라시보, 하방 회피, 선별도) 에 **십분위 단조성**을 더해서 본다.
 
 **어느 쪽이 나오든 기록하고 끝낸다.**
 
-- **②가 ①을 이기면** — "재료가 D+20~40 을 설명한다"가 무료로 증명된다. 뉴스 구매(뉴스토어 견적)가 근거 있는 지출이 되고, 공시가 없는 재료(테마·정책·해외수요)를 뉴스가 메울 수 있는지가 다음 질문이 된다.
-- **②가 ①을 못 이기면** — 재료 축 자체가 이 지평에서 약하다는 신호다. 뉴스에 돈을 쓰기 전에 그 사실을 알게 된다. 이것이 이 계획의 존재 이유다.
+- **②가 ①을 이기고 단조성도 성립하면** — 재료 축이 실재함이 무료로 증명된다.
+  ③층(공시 원문 + LLM)으로 간다. 여전히 무료다.
+- **②가 ①을 못 이기면** — 재료 축 자체가 이 지평에서 약하다. ③·④에 시간과 돈을
+  쓰기 전에 알게 된다. **이것이 이 계획의 존재 이유다.**
+- **널은 이겼는데 단조성이 없으면** — 평균으로는 우위이나 "상위만 골라 들어간다"가
+  성립하지 않는다. 그 경우 운영 형태를 다시 설계해야 한다(분산 보유 등).
 
 ## 범위 밖
 
-- **공시 원문 수집과 LLM 피처 (③층).** 원문은 무료로 받을 수 있고(`document.xml`, ZIP 안 XML, CSS 블록 제거 필요) 계약금액·매출액 대비·계약기간이 텍스트에 있다. ②층 결과를 보고 계획 6 으로 다룬다. **여기서 미리 만들지 않는다** — ②가 실패하면 필요 없다.
-- 뉴스 수집(계획 2 나머지), 뉴스 LLM(계획 3 Task 7).
-- 포지션 예산 시뮬레이션.
+- **공시 원문 수집과 LLM 피처 (③층).** 원문은 무료로 받을 수 있고(`document.xml`,
+  ZIP 안 XML, `<STYLE>` 블록 제거 필요) 계약금액·매출액 대비·계약기간이 텍스트에 있다.
+  ②층 결과를 보고 계획 6 으로 다룬다. **여기서 미리 만들지 않는다.**
+- **내부자 거래 방향(매수/매도).** 1차는 건수만 쓴다. 방향은 지분공시 종합정보 API
+  또는 원문에서 2차에.
+- ④층 뉴스, 포지션 예산 시뮬레이션, 실시간 모니터링, 주문 실행.
