@@ -30,6 +30,7 @@ swing-layers = "swing_it.cli_layers:main"
 swing-today = "swing_it.cli_today:main"
 swing-dart = "swing_it.cli_dart:main"
 swing-dart-layers = "swing_it.cli_dart_layers:main"
+swing-watch = "swing_it.cli_watch:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/swing_it"]
