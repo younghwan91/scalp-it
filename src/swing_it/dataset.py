@@ -56,10 +56,15 @@ def build_dataset(
 
     df = events.merge(supply, on=["code", "date"], how="left")
     df = df.merge(labels, on=["code", "date"], how="left")
+    df = df.merge(prices[["code", "date", "close"]], on=["code", "date"], how="left")
 
     # 순매수 주식 수를 '평균 거래대금이 감당하는 주식 수'로 나눠 규모 차이를 제거한다.
-    # adv 단위는 백만원이므로 1e6 을 곱해 원 단위로 되돌린 뒤 진입가로 나눈다.
-    shares_capacity = (df["adv"] * 1e6) / df["entry_price"]
+    # adv 단위는 백만원이므로 1e6 을 곱해 원 단위로 되돌린 뒤 주가로 나눈다.
+    #
+    # 분모는 **이벤트일 종가**다. 진입가(D+1 시가)를 쓰면 후보를 고르는 시점(D 종가)에
+    # 모르는 값이 피처에 들어간다. 실측으로는 차이가 9bp 로 무시할 수준이었지만
+    # (2024+ 구간 strategy +0.0300 → +0.0291), 시점 안전이 공짜라면 공짜인 쪽을 쓴다.
+    shares_capacity = (df["adv"] * 1e6) / df["close"]
     for scaled, raw in _SCALED.items():
         df[scaled] = df[raw] / shares_capacity
 
