@@ -18,6 +18,7 @@ DB 쓰기 없음. 읽기만 한다.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import sys
@@ -78,7 +79,7 @@ def build_events(ohlcv: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
     # D+1 = 전체 시장 달력상 다음 거래일. 그 종목에 그날 봉이 없으면 제외(거래정지 등).
     cal = pd.Series(sorted(ohlcv["date"].unique()))
-    nxt = dict(zip(cal[:-1], cal[1:]))
+    nxt = dict(itertools.pairwise(cal))
     prev["d1"] = prev["d0"].map(nxt)
     n_no_next_cal = int(prev["d1"].isna().sum())  # 마지막 날짜(미래) 등
     prev = prev[prev["d1"].notna()]
