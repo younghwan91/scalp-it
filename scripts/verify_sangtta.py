@@ -8,16 +8,18 @@
 피처 8개는 사전등록에 고정돼 있다. 추가·변경 금지.
 """
 from __future__ import annotations
+
 import argparse
 import os
 import sys
+
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import roc_auc_score
 
 from scalp_it.adapters.db import connect, load_ohlcv
-from scalp_it.intraday.loader import load_minute_bars, available_codes
+from scalp_it.intraday.loader import available_codes, load_minute_bars
 
 FEATURES = ["touch_minute","gap_open","cum_tv","cum_tv_ratio",
             "speed","max_dd_before","pos_in_range","n_vi_like"]
