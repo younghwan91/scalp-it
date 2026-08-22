@@ -93,10 +93,10 @@ def build_events(ohlcv: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     ev["is_main"] = (ev["gap"] >= GAP_MIN) & (ev["gap"] < GAP_LIMIT)
 
     meta = {
-        "n_prev_cond": int(len(prev)) + n_no_next_cal,
+        "n_prev_cond": len(prev) + n_no_next_cal,
         "n_no_next_calendar": n_no_next_cal,
         "n_no_next_bar": n_no_bar,
-        "n_with_open": int(len(ev)),
+        "n_with_open": len(ev),
     }
     return ev, meta
 
@@ -138,14 +138,14 @@ def summarize(ev: pd.DataFrame, meta: dict, mcov: pd.DataFrame, last_year_start:
         capped = cap_top_n(main, TOP_N)
         per_day = main.groupby("d1").size()
         return {
-            "n_prev_cond_with_open": int(len(e)),
+            "n_prev_cond_with_open": len(e),
             "n_prev_limit_up": int(e["prev_limit_up"].sum()),
             "gap_bins_all": {str(k): int(v) for k, v in e["gap_bin"].value_counts(sort=False).items()},
             "gap_bins_prev_limit_up": {str(k): int(v) for k, v in e.loc[e["prev_limit_up"], "gap_bin"].value_counts(sort=False).items()},
             "gap_bins_prev_not_limit_up": {str(k): int(v) for k, v in e.loc[~e["prev_limit_up"], "gap_bin"].value_counts(sort=False).items()},
-            "n_main": int(len(main)),
+            "n_main": len(main),
             "n_main_prev_limit_up": int(main["prev_limit_up"].sum()),
-            "n_main_capped": int(len(capped)),
+            "n_main_capped": len(capped),
             "n_days_main": int(main["d1"].nunique()),
             "per_day_mean": float(per_day.mean()) if len(per_day) else 0.0,
             "per_day_median": float(per_day.median()) if len(per_day) else 0.0,
@@ -177,16 +177,16 @@ def summarize(ev: pd.DataFrame, meta: dict, mcov: pd.DataFrame, last_year_start:
     codes_w = mw["code"].nunique()
     out["minute_window"] = {
         "start": MINUTE_START,
-        "n_events_main": int(len(mw)),
+        "n_events_main": len(mw),
         "n_codes": int(codes_w),
         "n_codes_with_minute": int(mw.loc[mw["has_minute_code"], "code"].nunique()),
         "n_events_code_has_minute": int(mw["has_minute_code"].sum()),
         "n_events_day_covered": int(mw["has_minute_day"].sum()),
-        "n_minute_codes_total": int(len(mcov)),
+        "n_minute_codes_total": len(mcov),
     }
     mwc = cap_top_n(mw, TOP_N)
     out["minute_window"]["capped"] = {
-        "n_events": int(len(mwc)),
+        "n_events": len(mwc),
         "n_codes": int(mwc["code"].nunique()),
         "n_codes_with_minute": int(mwc.loc[mwc["has_minute_code"], "code"].nunique()),
         "n_events_day_covered": int(mwc["has_minute_day"].sum()),
