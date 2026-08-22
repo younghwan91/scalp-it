@@ -14,6 +14,24 @@
 * ``ka10080`` 응답에 거래대금 필드는 **없다**. 실측 필드는
   ``cntr_tm, cur_prc, open_pric, high_pric, low_pric, trde_qty,
   acc_trde_qty, pred_pre, pred_pre_sig`` 뿐이다.
+
+테마는 ``ka90001`` (테마그룹별요청) 과 ``ka90002`` (테마구성종목요청) 두 개다.
+키움 테마 API 는 **현재 스냅샷**만 주므로 매일 저장해야 과거 소속 히스토리가 생긴다.
+2026-08-23 실측:
+
+* 경로는 ``/api/dostk/thme``. 헤더·토큰·연속조회(``cont-yn``/``next-key``)는
+  분봉과 같다. ``ka90001`` 은 한 페이지 100행이고 ``cont-yn: Y`` 로 이어진다.
+* ``ka90001`` 요청 바디 ``qry_tp=0``(전체) · ``stk_cd=""`` · ``date_tp``(기간수익률
+  일수) · ``thema_nm=""`` · ``flu_pl_amt_tp``(정렬) · ``stex_tp``(1=KRX). 응답의
+  테마 행은 ``thema_grp`` 배열이고 필드는 ``thema_grp_cd, thema_nm, stk_num, flu_sig,
+  flu_rt, rising_stk_num, fall_stk_num, dt_prft_rt, main_stk`` 다.
+* ``ka90002`` 요청 바디 ``thema_grp_cd, date_tp, stex_tp``. 응답의 구성종목 행은
+  ``thema_comp_stk`` 배열이고 필드는 ``stk_cd, stk_nm, cur_prc, flu_sig, pred_pre,
+  flu_rt, acc_trde_qty, sel_bid, sel_req, buy_bid, buy_req, dt_prft_rt_n`` 다.
+  최상위에 테마 등락률 ``flu_rt`` · 기간수익률 ``dt_prft_rt`` 가 따로 온다.
+* 등락률·수익률(``flu_rt, dt_prft_rt, dt_prft_rt_n``)의 부호는 가격과 달리
+  **실제 음양**이다 (``-3.74`` 는 마이너스 3.74%). 가격(``cur_prc`` 등)은 분봉과
+  같은 방향 표시 부호라 ``strip_sign`` 으로 뗀다.
 """
 
 from __future__ import annotations
@@ -30,10 +48,16 @@ import pandas as pd
 KIWOOM_BASE = "https://api.kiwoom.com"
 TOKEN_PATH = "/oauth2/token"
 CHART_PATH = "/api/dostk/chart"
+THEME_PATH = "/api/dostk/thme"
 MINUTE_API_ID = "ka10080"
+THEME_GROUP_API_ID = "ka90001"
+THEME_MEMBER_API_ID = "ka90002"
 
 #: 분봉 행이 담겨 오는 키.
 CHART_ROWS_KEY = "stk_min_pole_chart_qry"
+#: 테마 목록 행 · 테마 구성종목 행이 담겨 오는 키.
+THEME_GROUP_ROWS_KEY = "thema_grp"
+THEME_MEMBER_ROWS_KEY = "thema_comp_stk"
 
 _JSON_CT = "application/json;charset=UTF-8"
 _KEY_ENV = "KIWOOM_APP_KEY"
@@ -113,6 +137,69 @@ def normalize_row(code: str, row: dict) -> dict[str, Any]:
     }
 
 
+def parse_rate(value: Any) -> float | None:
+    """``+25.22`` / ``-3.74`` 같은 등락률·수익률을 부호 **그대로** 실수로 읽는다.
+
+    가격과 달리 여기 부호는 실제 음양이다. 빈 값은 ``None`` 이다.
+    """
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError as exc:
+        raise KiwoomError(f"비율로 읽을 수 없는 값이다: {value!r}") from exc
+
+
+def _int_or_none(value: Any) -> int | None:
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except ValueError as exc:
+        raise KiwoomError(f"정수로 읽을 수 없는 값이다: {value!r}") from exc
+
+
+def normalize_theme_group(row: dict) -> dict[str, Any]:
+    """``ka90001`` 한 행을 ``theme_groups`` 저장 계약에 맞춘다.
+
+    실측 필드만 컬럼으로 뽑고, 응답 원문은 ``raw`` 에 그대로 남긴다 — 키움이
+    필드를 바꾸거나 추가해도 원문은 잃지 않는다.
+    """
+    code = str(row.get("thema_grp_cd") or "").strip()
+    if not code:
+        raise KiwoomError(f"테마 행에 thema_grp_cd 가 없다: {sorted(row)}")
+    return {
+        "theme_code": code,
+        "theme_name": str(row.get("thema_nm") or "").strip(),
+        "stk_num": _int_or_none(row.get("stk_num")),
+        "flu_rt": parse_rate(row.get("flu_rt")),
+        "dt_prft_rt": parse_rate(row.get("dt_prft_rt")),
+        "rising_stk_num": _int_or_none(row.get("rising_stk_num")),
+        "fall_stk_num": _int_or_none(row.get("fall_stk_num")),
+        "main_stk": str(row.get("main_stk") or "").strip(),
+        "raw": dict(row),
+    }
+
+
+def normalize_theme_member(theme_code: str, row: dict) -> dict[str, Any]:
+    """``ka90002`` 한 행을 ``theme_members`` 저장 계약에 맞춘다."""
+    code = str(row.get("stk_cd") or "").strip()
+    if not code:
+        raise KiwoomError(f"구성종목 행에 stk_cd 가 없다: {sorted(row)}")
+    return {
+        "theme_code": str(theme_code),
+        "code": code,
+        "name": str(row.get("stk_nm") or "").strip(),
+        "cur_prc": strip_sign(row.get("cur_prc")),
+        "flu_rt": parse_rate(row.get("flu_rt")),
+        "acc_trde_qty": strip_sign(row.get("acc_trde_qty")),
+        "dt_prft_rt_n": parse_rate(row.get("dt_prft_rt_n")),
+        "raw": dict(row),
+    }
+
+
 def since_to_datetime(since: str | None) -> datetime | None:
     """``--since`` 인자(YYYYMMDD)를 하한 시각으로 바꾼다."""
     if not since:
@@ -142,7 +229,7 @@ def _raise_on_return_code(payload: Any, what: str) -> None:
 
 
 class KiwoomClient:
-    """토큰 발급·갱신과 ``ka10080`` 페이지네이션을 담당한다."""
+    """토큰 발급·갱신과 ``ka10080`` · ``ka90001`` · ``ka90002`` 페이지네이션을 담당한다."""
 
     def __init__(
         self,
@@ -201,36 +288,46 @@ class KiwoomClient:
 
     # ------------------------------------------------------------------ 조회
 
-    def _post_chart(
-        self, code: str, tic_scope: str, cont_yn: str | None, next_key: str | None
+    def _post(
+        self,
+        path: str,
+        api_id: str,
+        body: dict,
+        cont_yn: str | None,
+        next_key: str | None,
     ) -> httpx.Response:
         headers = {
             "Content-Type": _JSON_CT,
             "authorization": f"Bearer {self.token}",
-            "api-id": MINUTE_API_ID,
+            "api-id": api_id,
         }
         if cont_yn:
             headers["cont-yn"] = cont_yn
         if next_key:
             headers["next-key"] = next_key
-        body = {"stk_cd": code, "tic_scope": str(tic_scope), "upd_stkpc_tp": "1"}
-        return self._client.post(f"{self._base}{CHART_PATH}", headers=headers, json=body)
+        return self._client.post(f"{self._base}{path}", headers=headers, json=body)
 
-    def fetch_page(
+    def _fetch_rows(
         self,
-        code: str,
+        path: str,
+        api_id: str,
+        body: dict,
+        rows_key: str,
+        what: str,
         *,
-        tic_scope: str = "1",
         cont_yn: str | None = None,
         next_key: str | None = None,
-    ) -> tuple[list[dict], str | None, str | None]:
-        """분봉 한 페이지. ``(행, cont-yn, next-key)`` 를 돌려준다."""
+    ) -> tuple[list[dict], str | None, str | None, dict]:
+        """한 페이지를 받아 ``(행, cont-yn, next-key, 응답 전체)`` 를 돌려준다.
+
+        레이트리밋·401 토큰 갱신·5xx 재시도는 모든 API 가 같으므로 여기 한 곳에 있다.
+        """
         last_error = ""
         for attempt in range(self._max_retries):
             # 레이트리밋. 호출 **직전**에 재우므로 재시도에도 간격이 보장된다.
             if self._sleep:
                 self._sleeper(self._sleep)
-            response = self._post_chart(code, tic_scope, cont_yn, next_key)
+            response = self._post(path, api_id, body, cont_yn, next_key)
             if response.status_code == 401 and attempt + 1 < self._max_retries:
                 # 토큰 만료. 한 번 다시 받고 재시도한다.
                 self.refresh_token()
@@ -243,11 +340,32 @@ class KiwoomClient:
             if response.status_code >= 400:
                 raise KiwoomError(f"키움 HTTP {response.status_code}: {response.text[:200]}")
             payload = response.json()
-            _raise_on_return_code(payload, f"{code} 분봉")
-            rows = payload.get(CHART_ROWS_KEY) or []
+            _raise_on_return_code(payload, what)
+            rows = payload.get(rows_key) or []
             # 빈 응답은 오류가 아니다. 신규 상장·거래정지 종목이 실제로 그렇다.
-            return list(rows), response.headers.get("cont-yn"), response.headers.get("next-key")
-        raise KiwoomError(f"{code} 분봉 재시도 소진: {last_error}")
+            return (
+                list(rows),
+                response.headers.get("cont-yn"),
+                response.headers.get("next-key"),
+                payload,
+            )
+        raise KiwoomError(f"{what} 재시도 소진: {last_error}")
+
+    def fetch_page(
+        self,
+        code: str,
+        *,
+        tic_scope: str = "1",
+        cont_yn: str | None = None,
+        next_key: str | None = None,
+    ) -> tuple[list[dict], str | None, str | None]:
+        """분봉 한 페이지. ``(행, cont-yn, next-key)`` 를 돌려준다."""
+        body = {"stk_cd": code, "tic_scope": str(tic_scope), "upd_stkpc_tp": "1"}
+        rows, cont, key, _ = self._fetch_rows(
+            CHART_PATH, MINUTE_API_ID, body, CHART_ROWS_KEY, f"{code} 분봉",
+            cont_yn=cont_yn, next_key=next_key,
+        )
+        return rows, cont, key
 
     def minute_chart(
         self,
@@ -287,5 +405,108 @@ class KiwoomClient:
                     break
                 collected.append(item)
             if stop or str(cont_yn or "").upper() != "Y" or not next_key:
+                break
+        return collected
+
+    # ------------------------------------------------------------------ 테마
+
+    def fetch_theme_groups_page(
+        self,
+        *,
+        date_tp: str = "1",
+        flu_pl_amt_tp: str = "1",
+        stex_tp: str = "1",
+        cont_yn: str | None = None,
+        next_key: str | None = None,
+    ) -> tuple[list[dict], str | None, str | None]:
+        """``ka90001`` 한 페이지(100행). ``(행, cont-yn, next-key)`` 를 돌려준다.
+
+        ``qry_tp=0`` 으로 전체 테마를 받는다. ``date_tp`` 는 기간수익률 일수,
+        ``flu_pl_amt_tp`` 는 정렬 기준(1=기간수익률 상위), ``stex_tp`` 는 거래소
+        (1=KRX) 다. 행 자체는 원문 그대로다 — 정규화는 ``normalize_theme_group``.
+        """
+        body = {
+            "qry_tp": "0",
+            "stk_cd": "",
+            "date_tp": str(date_tp),
+            "thema_nm": "",
+            "flu_pl_amt_tp": str(flu_pl_amt_tp),
+            "stex_tp": str(stex_tp),
+        }
+        rows, cont, key, _ = self._fetch_rows(
+            THEME_PATH, THEME_GROUP_API_ID, body, THEME_GROUP_ROWS_KEY, "테마 목록",
+            cont_yn=cont_yn, next_key=next_key,
+        )
+        return rows, cont, key
+
+    def theme_groups(
+        self,
+        *,
+        pages: int = 50,
+        date_tp: str = "1",
+        flu_pl_amt_tp: str = "1",
+        stex_tp: str = "1",
+    ) -> list[dict[str, Any]]:
+        """전 테마 목록을 페이지네이션으로 모아 정규화된 행 리스트로 돌려준다.
+
+        같은 테마코드가 두 번 오면 처음 것만 남긴다 — 페이지 경계에서 정렬이
+        흔들려 중복이 올 수 있다.
+        """
+        collected: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        cont_yn: str | None = None
+        next_key: str | None = None
+        for _ in range(max(0, int(pages))):
+            rows, cont_yn, next_key = self.fetch_theme_groups_page(
+                date_tp=date_tp, flu_pl_amt_tp=flu_pl_amt_tp, stex_tp=stex_tp,
+                cont_yn=cont_yn, next_key=next_key,
+            )
+            if not rows:
+                break
+            for row in rows:
+                item = normalize_theme_group(row)
+                if item["theme_code"] in seen:
+                    continue
+                seen.add(item["theme_code"])
+                collected.append(item)
+            if str(cont_yn or "").upper() != "Y" or not next_key:
+                break
+        return collected
+
+    def theme_members(
+        self,
+        theme_code: str,
+        *,
+        date_tp: str = "2",
+        stex_tp: str = "1",
+        pages: int = 10,
+    ) -> list[dict[str, Any]]:
+        """``ka90002`` 로 한 테마의 구성종목을 정규화된 행 리스트로 돌려준다.
+
+        실측으로는 한 페이지에 다 오지만(``cont-yn: N``), 혹시 이어지면 따라간다.
+        """
+        body = {
+            "thema_grp_cd": str(theme_code),
+            "date_tp": str(date_tp),
+            "stex_tp": str(stex_tp),
+        }
+        collected: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        cont_yn: str | None = None
+        next_key: str | None = None
+        for _ in range(max(0, int(pages))):
+            rows, cont_yn, next_key, _payload = self._fetch_rows(
+                THEME_PATH, THEME_MEMBER_API_ID, body, THEME_MEMBER_ROWS_KEY,
+                f"테마 {theme_code} 구성종목", cont_yn=cont_yn, next_key=next_key,
+            )
+            if not rows:
+                break
+            for row in rows:
+                item = normalize_theme_member(theme_code, row)
+                if item["code"] in seen:
+                    continue
+                seen.add(item["code"])
+                collected.append(item)
+            if str(cont_yn or "").upper() != "Y" or not next_key:
                 break
         return collected

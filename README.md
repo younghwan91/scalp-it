@@ -35,6 +35,7 @@ uv run scalp-closebet --start 2016-09-09 --end 2026-08-14 \
 uv run scalp-cbet-watch                                    # 오늘 후보 기록
 uv run scalp-cbet-watch --score                            # 전진 기록 채점
 uv run scalp-intraday --codes 005930 --pages 5             # 분봉 수집
+uv run scalp-theme-snapshot --sleep 0.3                    # 키움 테마 소속 오늘 스냅샷 (매일)
 ```
 
 ## 문서

@@ -1,0 +1,300 @@
+"""테마 스냅샷 — 어댑터(ka90001/ka90002) 파싱·페이지네이션, 저장소 upsert, CLI.
+
+네트워크는 타지 않는다(MockTransport). 응답 행은 2026-08-23 실측 원문 그대로다.
+"""
+
+import json
+import sqlite3
+
+import httpx
+import pytest
+
+from scalp_it import cli_theme
+from scalp_it.adapters.kiwoom import (
+    THEME_GROUP_ROWS_KEY,
+    THEME_MEMBER_ROWS_KEY,
+    KiwoomClient,
+    KiwoomError,
+    normalize_theme_group,
+    normalize_theme_member,
+    parse_rate,
+)
+from scalp_it.theme.store import (
+    _CREATE_GROUPS,
+    _CREATE_MEMBERS,
+    count_groups,
+    count_members,
+    init_theme_tables,
+    normalize_snapshot_date,
+    upsert_theme_groups,
+    upsert_theme_members,
+)
+
+_TOKEN_BODY = {"return_code": 0, "return_msg": "정상", "token_type": "bearer", "token": "tok-abc"}
+
+#: ka90001 실측 행.
+_GROUP_ROW = {
+    "thema_grp_cd": "141", "thema_nm": "2차전지_소재(양극화물질등)", "stk_num": "14",
+    "flu_sig": "5", "flu_rt": "-3.74", "rising_stk_num": "2", "fall_stk_num": "12",
+    "dt_prft_rt": "+25.22", "main_stk": "보유B, 티엔엔터테인먼트",
+}
+_GROUP_ROW2 = dict(_GROUP_ROW, thema_grp_cd="420", thema_nm="보험_생명보험", stk_num="3",
+                   flu_sig="2", flu_rt="+3.29", rising_stk_num="1", fall_stk_num="1",
+                   dt_prft_rt="+3.29", main_stk="삼성생명, 동양생명")
+#: ka90002 실측 행.
+_MEMBER_ROW = {
+    "stk_cd": "000020", "stk_nm": "보유B", "cur_prc": "+116200", "flu_sig": "2",
+    "pred_pre": "+2600", "flu_rt": "+2.29", "acc_trde_qty": "575218", "sel_bid": "+116200",
+    "sel_req": "153", "buy_bid": "+116100", "buy_req": "627", "dt_prft_rt_n": "-2.92",
+}
+_MEMBER_ROW2 = dict(_MEMBER_ROW, stk_cd="131100", stk_nm="티엔엔터테인먼트", cur_prc="+2280",
+                    flu_rt="+1.33", acc_trde_qty="15491", dt_prft_rt_n="+406.67")
+
+
+def _groups_resp(rows, *, cont_yn="N", next_key=""):
+    body = {THEME_GROUP_ROWS_KEY: rows, "return_code": 0, "return_msg": "정상"}
+    return httpx.Response(200, json=body, headers={"cont-yn": cont_yn, "next-key": next_key})
+
+
+def _members_resp(rows, *, cont_yn="N", next_key=""):
+    body = {"flu_rt": "-3.74", "dt_prft_rt": "+26.32", THEME_MEMBER_ROWS_KEY: rows,
+            "return_code": 0, "return_msg": "정상"}
+    return httpx.Response(200, json=body, headers={"cont-yn": cont_yn, "next-key": next_key})
+
+
+def _router(theme_handler):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth2/token":
+            return httpx.Response(200, json=_TOKEN_BODY)
+        assert request.url.path == "/api/dostk/thme"
+        return theme_handler(request)
+
+    return handler
+
+
+def _make(handler, **kwargs):
+    return KiwoomClient(
+        "key", "secret",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleeper=lambda _s: None,
+        **kwargs,
+    )
+
+
+# ------------------------------------------------------------------ 어댑터 파싱
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"), [("+25.22", 25.22), ("-3.74", -3.74), ("0.00", 0.0), ("", None)]
+)
+def test_parse_rate_keeps_real_sign(raw, expected):
+    """등락률 부호는 가격과 달리 실제 음양이다."""
+    assert parse_rate(raw) == expected
+
+
+def test_normalize_theme_group_maps_fields_and_keeps_raw():
+    got = normalize_theme_group(_GROUP_ROW)
+    assert got["theme_code"] == "141"
+    assert got["theme_name"] == "2차전지_소재(양극화물질등)"
+    assert got["stk_num"] == 14
+    assert got["flu_rt"] == -3.74
+    assert got["dt_prft_rt"] == 25.22
+    assert (got["rising_stk_num"], got["fall_stk_num"]) == (2, 12)
+    assert got["main_stk"] == "보유B, 티엔엔터테인먼트"
+    assert got["raw"] == _GROUP_ROW
+
+
+def test_normalize_theme_member_strips_price_sign_but_keeps_rate_sign():
+    got = normalize_theme_member("141", _MEMBER_ROW)
+    assert got["theme_code"] == "141"
+    assert got["code"] == "000020"
+    assert got["name"] == "보유B"
+    assert got["cur_prc"] == 116200
+    assert got["flu_rt"] == 2.29
+    assert got["acc_trde_qty"] == 575218
+    assert got["dt_prft_rt_n"] == -2.92
+    assert got["raw"]["sel_bid"] == "+116200"
+
+
+def test_normalize_theme_group_without_code_raises():
+    with pytest.raises(KiwoomError):
+        normalize_theme_group({"thema_nm": "코드 없음"})
+
+
+# ------------------------------------------------------------------ 어댑터 호출
+
+
+def test_theme_groups_sends_ka90001_body_and_follows_next_key():
+    seen: list[dict] = []
+
+    def theme(request: httpx.Request) -> httpx.Response:
+        seen.append({"api": request.headers["api-id"], "nk": request.headers.get("next-key"),
+                     "body": json.loads(request.content)})
+        if len(seen) == 1:
+            return _groups_resp([_GROUP_ROW], cont_yn="Y", next_key="00100")
+        return _groups_resp([_GROUP_ROW2, _GROUP_ROW], cont_yn="N")  # 경계 중복 포함
+
+    groups = _make(_router(theme)).theme_groups()
+    assert [s["api"] for s in seen] == ["ka90001", "ka90001"]
+    assert [s["nk"] for s in seen] == [None, "00100"]
+    assert seen[0]["body"] == {"qry_tp": "0", "stk_cd": "", "date_tp": "1", "thema_nm": "",
+                               "flu_pl_amt_tp": "1", "stex_tp": "1"}
+    assert [g["theme_code"] for g in groups] == ["141", "420"]
+
+
+def test_theme_members_sends_ka90002_body():
+    seen: list[dict] = []
+
+    def theme(request: httpx.Request) -> httpx.Response:
+        seen.append({"api": request.headers["api-id"], "body": json.loads(request.content)})
+        return _members_resp([_MEMBER_ROW, _MEMBER_ROW2])
+
+    members = _make(_router(theme)).theme_members("141")
+    assert seen[0]["api"] == "ka90002"
+    assert seen[0]["body"] == {"thema_grp_cd": "141", "date_tp": "2", "stex_tp": "1"}
+    assert [m["code"] for m in members] == ["000020", "131100"]
+    assert all(m["theme_code"] == "141" for m in members)
+
+
+def test_theme_members_empty_is_not_an_error():
+    assert _make(_router(lambda r: _members_resp([]))).theme_members("999") == []
+
+
+# ------------------------------------------------------------------ 저장소
+
+
+@pytest.fixture()
+def conn(tmp_path):
+    connection = sqlite3.connect(tmp_path / "theme.db")
+    init_theme_tables(connection)
+    yield connection
+    connection.close()
+
+
+def test_schema_uses_only_portable_types():
+    for ddl in (_CREATE_GROUPS, _CREATE_MEMBERS):
+        lowered = ddl.lower()
+        assert "autoincrement" not in lowered
+        assert "serial" not in lowered
+        assert "snapshot_date" in lowered
+
+
+@pytest.mark.parametrize("value", ["20260823", "2026-08-23"])
+def test_normalize_snapshot_date_accepts_both_forms(value):
+    assert normalize_snapshot_date(value) == "2026-08-23"
+
+
+def test_normalize_snapshot_date_rejects_garbage():
+    with pytest.raises(ValueError):
+        normalize_snapshot_date("2026-8-23")
+
+
+def test_upsert_groups_is_idempotent_and_keyed_by_date(conn):
+    rows = [normalize_theme_group(_GROUP_ROW), normalize_theme_group(_GROUP_ROW2)]
+    assert upsert_theme_groups(conn, "20260823", rows) == 2
+    upsert_theme_groups(conn, "20260823", rows)
+    upsert_theme_groups(conn, "20260824", rows)
+    assert count_groups(conn) == 4
+    assert count_groups(conn, "2026-08-23") == 2
+
+
+def test_upsert_groups_overwrites_and_keeps_raw_json(conn):
+    upsert_theme_groups(conn, "20260823", [normalize_theme_group(_GROUP_ROW)])
+    changed = normalize_theme_group(dict(_GROUP_ROW, thema_nm="이름변경", flu_rt="+1.00"))
+    upsert_theme_groups(conn, "20260823", [changed])
+    name, flu, raw = conn.execute(
+        "select theme_name, flu_rt, raw from theme_groups").fetchone()
+    assert (name, flu) == ("이름변경", 1.0)
+    assert json.loads(raw)["thema_nm"] == "이름변경"
+    assert count_groups(conn) == 1
+
+
+def test_upsert_members_pk_is_date_theme_code(conn):
+    m = [normalize_theme_member("141", _MEMBER_ROW), normalize_theme_member("141", _MEMBER_ROW2)]
+    assert upsert_theme_members(conn, "20260823", m) == 2
+    upsert_theme_members(conn, "20260823", m)
+    # 같은 종목이 다른 테마에도 있을 수 있다.
+    upsert_theme_members(conn, "20260823", [normalize_theme_member("999", _MEMBER_ROW)])
+    assert count_members(conn, "20260823") == 3
+    got = conn.execute(
+        "select code, name, cur_prc, flu_rt, acc_trde_qty, dt_prft_rt_n from theme_members "
+        "where theme_code='141' order by code").fetchall()
+    assert got[0] == ("000020", "보유B", 116200, 2.29, 575218, -2.92)
+
+
+def test_upsert_empty_is_zero(conn):
+    assert upsert_theme_groups(conn, "20260823", []) == 0
+    assert upsert_theme_members(conn, "20260823", []) == 0
+
+
+# ------------------------------------------------------------------ CLI
+
+
+def _cli_handler():
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth2/token":
+            return httpx.Response(200, json=_TOKEN_BODY)
+        api = request.headers["api-id"]
+        calls.append(api)
+        if api == "ka90001":
+            return _groups_resp([_GROUP_ROW, _GROUP_ROW2])
+        body = json.loads(request.content)
+        if body["thema_grp_cd"] == "141":
+            return _members_resp([_MEMBER_ROW, _MEMBER_ROW2])
+        return _members_resp([_MEMBER_ROW])
+
+    return handler, calls
+
+
+def test_cli_saves_groups_and_members_for_the_date(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("KIWOOM_APP_KEY", "k")
+    monkeypatch.setenv("KIWOOM_APP_SECRET", "s")
+    handler, calls = _cli_handler()
+    db = str(tmp_path / "theme.db")
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    rc = cli_theme.main(["--dsn", db, "--date", "20260823", "--sleep", "0"], client=client)
+    assert rc == 0
+    assert calls == ["ka90001", "ka90002", "ka90002"]
+    out = capsys.readouterr()
+    assert out.out.strip() == "3"
+    assert "테마 2개" in out.err
+
+    conn = sqlite3.connect(db)
+    assert count_groups(conn, "2026-08-23") == 2
+    assert count_members(conn, "2026-08-23") == 3
+    codes = {r[0] for r in conn.execute(
+        "select code from theme_members where theme_code='141'").fetchall()}
+    assert codes == {"000020", "131100"}
+    conn.close()
+
+    # 같은 날 다시 돌려도 행이 늘지 않는다.
+    rc = cli_theme.main(["--dsn", db, "--date", "20260823", "--sleep", "0"],
+                        client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert rc == 0
+    conn = sqlite3.connect(db)
+    assert count_members(conn) == 3
+    conn.close()
+
+
+def test_cli_dry_run_lists_themes_without_members_or_db(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("KIWOOM_APP_KEY", "k")
+    monkeypatch.setenv("KIWOOM_APP_SECRET", "s")
+    handler, calls = _cli_handler()
+    db = tmp_path / "theme.db"
+    rc = cli_theme.main(["--dsn", str(db), "--dry-run", "--sleep", "0"],
+                        client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert rc == 0
+    assert calls == ["ka90001"]
+    assert not db.exists()
+    out = capsys.readouterr()
+    assert out.out.strip() == "2"
+    assert "보험_생명보험" in out.err
+
+
+def test_cli_rejects_bad_date(monkeypatch):
+    monkeypatch.setenv("KIWOOM_APP_KEY", "k")
+    monkeypatch.setenv("KIWOOM_APP_SECRET", "s")
+    assert cli_theme.main(["--date", "2026-8-1", "--dry-run"]) == 2

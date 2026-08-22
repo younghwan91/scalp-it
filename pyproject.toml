@@ -34,6 +34,7 @@ scalp-watch = "scalp_it.cli_watch:main"
 scalp-intraday = "scalp_it.cli_intraday:main"
 scalp-closebet = "scalp_it.cli_closebet:main"
 scalp-cbet-watch = "scalp_it.cli_cbet_watch:main"
+scalp-theme-snapshot = "scalp_it.cli_theme:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/scalp_it"]
