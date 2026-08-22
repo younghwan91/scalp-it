@@ -82,6 +82,46 @@ def _empty_result(cost_round_trip: float, exit_col: str, n_excluded: int) -> dic
     }
 
 
+def select_close_bet(
+    features: pd.DataFrame,
+    labels: pd.DataFrame,
+    *,
+    rules: dict[str, tuple[float | None, float | None]],
+    top_n: int | None = None,
+    exit_col: str = "ret_open",
+) -> tuple[pd.DataFrame, int]:
+    """규칙·top_n 을 적용해 **선택된 거래 행 자체**를 돌려준다.
+
+    :func:`run_close_bet` 의 선택 단계만 떼어낸 것이다 — 요약 통계가 아니라
+    "어떤 (종목, 일자) 가 뽑혔는가" 가 필요한 진단(상한가 도달 시각 등)이 쓴다.
+    선택 논리는 한 곳에만 있어야 백테스트와 진단이 같은 종목을 본다.
+
+    Returns:
+        ``(selected, n_excluded)``. ``selected`` 는 피처·라벨이 합쳐진 행이고
+        ``n_excluded`` 는 다음날 봉이 없어 버린 행 수다.
+    """
+    if exit_col not in _EXIT_COLUMNS:
+        raise ValueError(f"exit_col 은 {_EXIT_COLUMNS} 중 하나여야 한다: {exit_col}")
+
+    merged = features.merge(labels, on=["code", "date"], how="inner")
+    selected = apply_rules(merged, rules)
+
+    # 거래정지·상장폐지로 다음날 봉이 없는 행. 몇 건인지 반드시 보고한다.
+    exit_values = pd.to_numeric(selected[exit_col], errors="coerce")
+    n_excluded = int(exit_values.isna().sum())
+    selected = selected[exit_values.notna()]
+
+    if top_n is not None and not selected.empty:
+        if "tv_ratio" not in selected.columns:
+            raise KeyError("top_n 을 쓰려면 tv_ratio 컬럼이 있어야 한다")
+        selected = (
+            selected.sort_values(["date", "tv_ratio"], ascending=[True, False])
+            .groupby("date", sort=False)
+            .head(top_n)
+        )
+    return selected, n_excluded
+
+
 def run_close_bet(
     features: pd.DataFrame,
     labels: pd.DataFrame,
@@ -106,25 +146,9 @@ def run_close_bet(
     Returns:
         요약 통계 dict. 키는 모듈 docstring 과 스펙 참고.
     """
-    if exit_col not in _EXIT_COLUMNS:
-        raise ValueError(f"exit_col 은 {_EXIT_COLUMNS} 중 하나여야 한다: {exit_col}")
-
-    merged = features.merge(labels, on=["code", "date"], how="inner")
-    selected = apply_rules(merged, rules)
-
-    # 거래정지·상장폐지로 다음날 봉이 없는 행. 몇 건인지 반드시 보고한다.
-    exit_values = pd.to_numeric(selected[exit_col], errors="coerce")
-    n_excluded = int(exit_values.isna().sum())
-    selected = selected[exit_values.notna()]
-
-    if top_n is not None and not selected.empty:
-        if "tv_ratio" not in selected.columns:
-            raise KeyError("top_n 을 쓰려면 tv_ratio 컬럼이 있어야 한다")
-        selected = (
-            selected.sort_values(["date", "tv_ratio"], ascending=[True, False])
-            .groupby("date", sort=False)
-            .head(top_n)
-        )
+    selected, n_excluded = select_close_bet(
+        features, labels, rules=rules, top_n=top_n, exit_col=exit_col
+    )
 
     if selected.empty:
         return _empty_result(cost_round_trip, exit_col, n_excluded)

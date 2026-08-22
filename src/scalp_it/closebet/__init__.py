@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from .backtest import run_close_bet
+from .backtest import run_close_bet, select_close_bet
 from .features import CB_FEATURE_COLUMNS, close_bet_features
 from .labels import CB_LABEL_COLUMNS, close_bet_labels
 
@@ -16,4 +16,5 @@ __all__ = [
     "close_bet_features",
     "close_bet_labels",
     "run_close_bet",
+    "select_close_bet",
 ]
