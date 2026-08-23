@@ -56,12 +56,23 @@ def build_records(
     ]
 
 
-def _key(record: dict) -> tuple:
-    return tuple(record[field] for field in LOG_KEY)
+def _key(record: dict, fields: Sequence[str] = LOG_KEY) -> tuple:
+    return tuple(record[field] for field in fields)
 
 
-def append_forward_log(path: str | Path, records: Sequence[dict]) -> int:
-    """중복을 건너뛰고 JSONL 에 덧붙인다. 새로 쓴 건수를 돌려준다."""
+def append_forward_log(
+    path: str | Path,
+    records: Sequence[dict],
+    *,
+    key: Sequence[str] = LOG_KEY,
+) -> int:
+    """중복을 건너뛰고 JSONL 에 덧붙인다. 새로 쓴 건수를 돌려준다.
+
+    ``key`` 는 중복 판정에 쓸 필드들이다. 기본값 :data:`LOG_KEY` 는 종가베팅처럼
+    매일 새로 기록하는 전략용이다. PEAD 처럼 분기 리밸이라 ``logged_at`` 이 달라도
+    같은 분기를 다시 쓰면 안 되는 경우엔 ``logged_at`` 을 뺀 키를 넘긴다.
+    기존 줄에 키 필드가 없으면 그 줄은 (다른 전략의 기록으로 보고) 건너뛴다.
+    """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -69,17 +80,20 @@ def append_forward_log(path: str | Path, records: Sequence[dict]) -> int:
     if target.exists():
         with target.open(encoding="utf-8") as fh:
             for line in fh:
-                if line.strip():
-                    seen.add(_key(json.loads(line)))
+                if not line.strip():
+                    continue
+                existing = json.loads(line)
+                if all(field in existing for field in key):
+                    seen.add(_key(existing, key))
 
     written = 0
     with target.open("a", encoding="utf-8") as fh:
         for record in records:
-            key = _key(record)
-            if key in seen:
+            rec_key = _key(record, key)
+            if rec_key in seen:
                 continue
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-            seen.add(key)
+            seen.add(rec_key)
             written += 1
     return written
 

@@ -59,6 +59,43 @@ def load_prices(conn: Any, start: str, end: str) -> pd.DataFrame:
     return _query(conn, sql, (start, end), _PRICE_COLUMNS)
 
 
+def load_daily_bars_raw(conn: Any, start: str, end: str) -> pd.DataFrame:
+    """``daily_bars`` 에서 원주가(분할 미반영)를 읽는다.
+
+    PEAD 진입일 상한가 판정(익일 시가 / 전일 종가 >= 1.29)은 원주가로만 옳다.
+    수정주가는 분할이 반영돼 상한가 비율이 왜곡된다.
+    """
+    ph = _placeholder(conn)
+    sql = (
+        "select code, date, open, close from daily_bars "
+        f"where date >= {ph} and date <= {ph} order by code, date"
+    )
+    return _query(conn, sql, (start, end), ["code", "date", "open", "close"])
+
+
+_EARNINGS_COLUMNS = ["code", "period", "avail_date", "op_income", "op_income_prior"]
+
+
+def load_earnings(conn: Any) -> pd.DataFrame:
+    """``earnings`` 에서 PEAD 시그널 원자료를 읽는다.
+
+    ``avail_date`` 는 정보 도착 시점(PIT). ``op_income_prior`` 는 직전연도
+    동일분기(YoY) 영업이익이다 (사전등록 23번에서 확인).
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "select code, period, avail_date, op_income, op_income_prior from earnings"
+    )
+    df = pd.DataFrame(cur.fetchall(), columns=_EARNINGS_COLUMNS)
+    cur.close()
+    df["code"] = df["code"].astype(str).str.strip()
+    df["period"] = df["period"].astype(str)
+    df["avail_date"] = pd.to_datetime(df["avail_date"], errors="coerce")
+    for col in ("op_income", "op_income_prior"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
 def load_supply_demand(conn: Any, start: str, end: str) -> pd.DataFrame:
     """투자자별 순매수를 읽는다. 개인·외국인·기관계·연기금만 쓴다."""
     ph = _placeholder(conn)
