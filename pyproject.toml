@@ -16,6 +16,7 @@ dependencies = [
     "scikit-learn>=1.3",
     "openpyxl>=3.1",
     "httpx>=0.27",
+    "websockets>=12.0",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +36,7 @@ scalp-intraday = "scalp_it.cli_intraday:main"
 scalp-closebet = "scalp_it.cli_closebet:main"
 scalp-cbet-watch = "scalp_it.cli_cbet_watch:main"
 scalp-theme-snapshot = "scalp_it.cli_theme:main"
+scalp-tick-collect = "scalp_it.cli_tick:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/scalp_it"]
