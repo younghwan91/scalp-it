@@ -1,0 +1,89 @@
+# 짝꿍 파이프라인 E2E 검증 (2026-08-25)
+
+> 감지·가드·알림 조각은 끝까지 맞물림(리플레이 완주, 청산감시 가드가 매틱 평가=무한보유 아님, 전용키 배선). 그러나 **두 공백**:
+> **공백1(중요): 매수비율≥30% 필터 코드 미반영.** doc39 문서만. 감지기가 side(매수/매도)를 아예 안 받음(on_tick·폴링쿼리·on_frame 전부 side 누락) → 역선택 방어(감사·최적화 교차검증 핵심)가 파이프라인에 없음.
+> **공백2: 주문 어댑터 부재**(order-module 진행 중, 예정).
+> 정상: 타입·단위 정합, bid1 보존, 리플레이=라이브 동치, 전용키 경로. App키 충돌은 전용키 없이 동시구동 금지.
+
+
+레포: `/home/young/Documents/git/scalp-it` · 검증일 2026-08-25 · 수정/커밋/주문 없음.
+
+## 한 줄 결론
+조각(감지·가드·알림)은 모두 맞물려 끝까지 흐른다(합성 리플레이로 감지→알림→가드 체결·익절까지 실증). **그러나 파이프라인은 알림+가상포지션에서 끝난다 — 주문·청산 실행 단계가 코드에 존재하지 않고(❌), doc39의 매수비율≥30% 필터도 코드 미반영(❌)이다.** "내일 실전"이 자동주문을 뜻한다면 성립하지 않는다. 알림 보고 사람이 손주문하는 형태라면 감지·가드 경로는 배선 정상.
+
+---
+
+## 항목별 결과
+
+### 1. 매수비율 필터 코드 반영 — ❌ 문서만, 코드 미반영 (중요)
+- doc39(`docs/research/manju/39-pair-optimize-buyratio-filter.md`)의 **유일한 견고한 순개선** = 후속주 직전30초 매수체결비율≥30% 필터. through(역선택) +0.052→+0.309.
+- `pair_detector.py`에 **buy_ratio/매수비율/side 관련 파라미터·계산이 전무**. `DetectorConfig`에 필드 없음, `_check_follower`는 cosurge·premove·min_turnover만 검사.
+- 입력 배선도 끊김: 감지기 `on_tick(code, ts, price, *, bid1, volume)`에 **side 인자 자체가 없다.** collector는 틱마다 `side`(+1/−1)를 만들지만,
+  - 폴링/리플레이: `_TICK_COLS = "code, ts, price, volume, best_bid"` — **side를 SELECT하지 않음.**
+  - 라이브: `on_frame`이 `t.get("side")`를 갖고 있으나 `on_tick`에 넘기지 않음.
+  → 필터를 넣으려면 config 필드 + `_check_follower` 계산 + **side를 감지기까지 흘리는 배선**(쿼리 컬럼·on_tick 시그니처·30초 롤링 매수량 집계)이 모두 필요. 지금은 계산할 원재료조차 감지기에 도달 안 함.
+- doc39는 시간청산 120초도 권장하나 코드 기본 `time_exit=90`. 역시 미반영.
+- **필터 전후 알림 수 차이**: 필터 파라미터가 없어 토글 불가 → 전후 동일(필터 효과 0). 리플레이로 비교할 대상이 없음.
+- 참고: doc39 자체가 "하루치·n24·확증 아님, 사전등록 후 OOS 재판정 필수"라 **의도적 미반영일 수도** 있음(팀 판단 필요). 단 "코드에 들어갔나"의 답은 명확히 아니오.
+
+### 2. 데이터 흐름 타입 정합 — ✅ (side만 예외적으로 미전달)
+- collector `parse_tick_values` → `{code, ts:datetime, price:int(절댓값,원), volume:int(절댓값,주), side:±1, best_bid:int(원), ...}`.
+- 라이브 `on_frame`: `bid1=t.get("best_bid")`(원), `volume=t.get("volume")`(주) → 감지기. 키명·단위 일치.
+- 감지기: `turnover += price*volume`(원×주=원) ✅. `Alert.entry = bid1`(원).
+- 가드: `Position.entry = alert.entry`, `take_profit=entry*(1+tp)` — 전 구간 원 단위 일관. bps/원 혼선 없음.
+- **bid1 흐름**: 감지(`self._bid`) → `Alert.bid1=entry` → `RiskGuard.on_alert`가 `Position.entry`로 그대로 승계 → 체결/익절/손절 판정 전부 이 entry 기준. 감지→가드까지 값 보존 확인. (주문 단계는 없음.)
+- 유일 단절: `side`(매수/매도 부호)가 감지기 입력에 도달하지 않음(→ 항목1).
+
+### 3. 리플레이 vs 라이브 동치 — ✅ 핵심 로직 공유, bid1 출처만 상이
+- 세 모드 모두 동일 `detector.on_tick → _check_follower`를 탄다(감지 로직 단일 소스).
+- 차이는 **bid1 갱신 경로**뿐:
+  - 리플레이·폴링: `ticks.best_bid`(0B 최우선매수호가)만 사용. `on_quote` 미호출.
+  - 라이브: `on_quote`(0D 호가 bid1)로 추가 갱신 + 틱 best_bid. → 라이브 진입가가 더 신선.
+  → 감지 판정(서지/동반/프리무브)은 완전 동일. 진입가(bid1)가 미세하게 갈릴 수 있음(리플레이는 라이브의 호가기반 bid1을 정확 재현 못 함). 실전 영향 작음, 인지 필요.
+- **어제 리플레이 재현**: 이 QA 환경엔 postgres(`KR_QUANT_DB`)가 없어 실데이터 리플레이 불가. 대신 합성 sqlite로 실 CLI `run_replay` 경로를 태워 동치 로직 정상 작동 확인(항목7).
+
+### 4. 청산 감시 — ⚠️ 가상 리허설은 있음, 실주문 청산은 없음 (중요)
+- `RiskGuard.on_tick`이 후속주 틱마다 열린 가상 포지션의 체결·MAE/MFE·청산(익절→손절→재난선→90초 시간청산)을 **실시간 평가**한다. 라이브(`on_frame`)·폴링·리플레이 모두 매 틱 `guard.on_tick` 호출 → **가격을 계속 보는 주체는 RiskGuard**. 무한보유 아님(시간청산·flush_expired 존재).
+- 단 이는 **리허설(가상)일 뿐 실제 청산 주문이 아니다.** `risk_guard.py` 명시: "자동 주문 없음… 킬스위치도 신규 알림 억제일 뿐 청산 주문을 내지 않는다." 익절/손절 값은 `Alert.to_line`에 표시돼 **사람이 수동 청산**.
+- 즉 "가격 감시 루프"는 존재(가상), "청산 실행"은 부재. 자동청산을 기대하면 빠져 있음.
+
+### 5. App key 1세션 — ✅ 전용키 경로 배선됨, 충돌 리스크는 실측으로 확인
+- `run_live`가 `PAIR_DETECT_APP_KEY`/`PAIR_DETECT_APP_SECRET`를 읽어 있으면 그 키로, 없으면 기본 `KIWOOM_APP_KEY`로 접속(경고 출력). 배선 정상.
+- 등록 쌍 8종목만 구독 → 커넥션 1개로 충분, 전용키면 프로덕션 tick-collect와 무충돌.
+- 충돌은 실제로 발생하는 리스크: `data/tick_collect.log`에 `105110 (LOGIN 요청 건수 초과)` + 재연결 기록 — 같은 키 다중 세션 thrash의 실측 증거. 전용키 없이 tick-collect와 --live 동시 구동 시 재현됨.
+- 주문 API: **주문 어댑터 자체가 없어**(항목 아래) 세션 채널 확인 불가. 키움 주문은 REST(별 채널)라 WS 세션과 무관할 가능성이 높으나, 코드가 없어 미검증.
+
+### 6. 종목 커버리지 — ⚠️ 모드별로 보장 수준이 다름
+- **--live**: `codes = detector.codes`(대장+후속 8개)를 **직접 구독** → 커버리지 보장. 대신 App key 충돌 대상(항목5).
+- **폴링/리플레이**: 별도 tick-collect 데몬이 채운 `ticks`를 읽음. tick-collect는 `--auto`=`event_candidates`(급등주 80%+유동주 20%) 유니버스. **등록 쌍의 후속주(좋은사람들·갤럭시아머니트리·쿠콘·금호건설)가 그날 --auto 유니버스에 없으면 틱이 없어 감시 불가.**
+- `_warn_missing`이 "오늘 ticks에 후속주 없음"을 경고로 잡아줌(방어장치 존재). 단 경고일 뿐 자동 편입은 아님.
+- 결론: 실전 --live는 커버리지 자급자족(문제는 App키), 폴링은 --auto 편성 의존. 두 모드의 커버리지 보장이 구조적으로 다르다는 점 인지 필요.
+
+### 7. E2E 리허설 — ✅ 감지→알림(dry-run)→가드 체결·익절까지 실 CLI로 완주
+- postgres 부재로 합성 sqlite 틱을 만들어 **실제 `cli_pair_detect.main(["--replay",...,"--pairs","014990:033340","--fill-basis","through"])`** 실행. `_fetch_ticks→_feed→detector.on_tick→_emit_guarded→guard.on_alert/on_tick→AlertBus(dry_run)` 전 구간 통과.
+- 출력:
+  ```
+  [dry-run] [09:31:02] 짝꿍 신호 014990 +1.52%/서지 → 033340 동반+0.60% 프리무브+0.00%
+            | bid1 지정가매수 1,005  익절 1,010  손절 1,001  청산 09:32:32
+  [가드] 정상 실현 500원 승1/패0 ...  가상 포지션 1건(회계 through): 체결 1 · 미체결 0
+  통과 짝꿍 알림 1건
+  ```
+  → through 체결(1004<1005) 후 익절(1011≥TP1010) 리허설, 실현 +500원(10만 명목의 +0.5%). 파이프라인이 "제안 진입가 bid1"까지 **실제로 끝까지 도달**.
+- **단 "1주 매수 주문 dry-run"은 나오지 않는다** — 주문 어댑터가 없어 파이프라인 종착은 알림 라인 + 가상 포지션. order stage 부재의 직접 증거.
+- 단위 테스트: `test_pair_detector / test_pair_risk_guard / test_realtime_collector` 46개 전부 통과.
+
+---
+
+## 주문(order) 단계 — ❌ 미구현 (파이프라인 최대 공백)
+- `adapters/kiwoom_order.py`가 **어디에도 없음**(메인·워크트리·워킹트리 전부). `grep`로 주문 실행 함수(place_order/send_order/주문전송 등) 0건.
+- 기존 `adapters/kiwoom.py`는 토큰+시세조회만(normalize_row·theme), 주문 메서드 없음.
+- 워크트리 `.claude/worktrees/agent-a7df6e5ea44c6c661`는 **HEAD 3271e61(리스크가드까지)로 메인보다 뒤처진 클린 체크아웃**, uncommitted 변경 0 → order-module 산출물이 아직 커밋/작업트리에 없음.
+- `cli_pair_detect.py`/`risk_guard.py`/`alerts.py` 모두 "주문은 사람이"를 명시. 감지기→가드→**주문 어댑터→청산**의 뒷 절반이 코드에 존재하지 않는다.
+
+## 내일 실전 전 고칠 것(이어붙임 관점, 우선순위)
+1. **(정책 결정)** 내일 실전이 자동주문인가 수동주문인가부터 확정. 자동이면 주문·청산 실행 단계가 통째로 없음(현재 알림에서 종료).
+2. **주문 어댑터 부재** — order-module 산출물이 아직 없음. 있어야 감지→가드 Decision(allowed) 이후 실제 매수/청산이 배선됨. 현재는 배선할 대상이 없음.
+3. **매수비율≥30% 필터 미반영** — 채택하려면 side를 감지기까지 흘리는 배선(쿼리 컬럼+on_tick 시그니처+30초 롤링 매수량)과 config·`_check_follower` 로직 추가. 단 doc39가 "OOS 재판정 전 소액 이상 금지"라 반영 여부는 팀 판단.
+4. **App key** — --live 실전이면 tick-collect와의 동시 구동은 `PAIR_DETECT_APP_KEY` 전용키 필수(없으면 tick-collect 내리고 --live로 대체). 로그상 충돌 실측됨.
+5. **커버리지** — 폴링 백업을 쓸 경우 등록 쌍 후속주가 --auto 유니버스에 드는지 매일 확인(현재는 사후 경고만).
+6. **자동청산** 원하면 RiskGuard의 청산 판정은 지금 가상이므로, 실주문 청산 훅을 별도로 붙여야 함(현재 시간청산=사람 몫).
