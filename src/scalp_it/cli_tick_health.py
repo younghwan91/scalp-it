@@ -20,7 +20,10 @@
 4. **가격 정합** — tick price 가 그날(없으면 최근) daily_bars 고저 범위/스케일 안,
    best_bid ≤ best_ask.
 5. **호가** — bid1<ask1, 총잔량>0, 10호가 채움, ts 갱신(1초 스냅샷), vi_flag 수신.
-6. **raw 샘플** — 이상 유형별 raw 원문 1건씩 로그에 덤프(사후 FID 보정용).
+6. **VI 이벤트** — vi_events 최근 N분 수신 건수. VI 는 드문 이벤트라 0 건도 실패가
+   아니다(장중이면 경고까지만).
+
+이상 유형별 raw 원문 1건씩은 로그에 덤프한다(사후 FID 보정용).
 
 운영은 postgres, 테스트는 sqlite fixture 로 판정 로직을 검증한다. 판정 함수는
 DB 조회에서 뽑은 집계 dict 만 받는 순수 함수라 fixture 로 그대로 시험할 수 있다.
@@ -239,6 +242,30 @@ def fetch_quote_stats(conn: Any, cutoff: datetime) -> QuoteStats:
     qs.vi_seen = int((cur.fetchone() or [0])[0] or 0)
     cur.close()
     return qs
+
+
+def fetch_vi_count(conn: Any, cutoff: datetime) -> tuple[int, int, str | None]:
+    """최근 N분 vi_events 수신 건수·종목 수·최신 시각. 테이블이 없으면 (0,0,None)."""
+    ph = _placeholder(conn)
+    cut = _bind_ts(conn, cutoff)
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"select count(*), count(distinct code), max(ts) "
+            f"from vi_events where ts >= {ph}",
+            (cut,),
+        )
+        row = cur.fetchone()
+    except Exception:  # noqa: BLE001 — vi_events 미존재 등
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        row = None
+    finally:
+        with contextlib.suppress(Exception):
+            cur.close()
+    if not row:
+        return 0, 0, None
+    return int(row[0] or 0), int(row[1] or 0), _fmt_ts(row[2])
 
 
 def fetch_daily_ranges(
@@ -473,6 +500,24 @@ def judge_quotes(quote: QuoteStats, *, market: bool) -> Check:
     return Check(name, status, " · ".join(parts))
 
 
+def judge_vi(n_rows: int, n_codes: int, *, minutes: int, market: bool) -> Check:
+    """항목 6 — vi_events 최근 N분 수신 건수.
+
+    VI 는 드문 이벤트라 0 건도 실패가 아니다(경고까지만). 발동/해제가 잦은 날엔
+    수십 건, 잔잔한 날엔 0 건이 정상이다. 다만 장중이면 파이프라인 점검 차 경고로
+    눈에 띄게 남긴다.
+    """
+    name = "6. VI 이벤트"
+    if n_rows > 0:
+        return Check(name, Status.OK, f"최근 {minutes}분 {n_rows:,}건 / {n_codes}종목")
+    if not market:
+        return Check(name, Status.OK, f"최근 {minutes}분 0건 — 장중 아님(정상)")
+    return Check(
+        name, Status.WARN,
+        f"최근 {minutes}분 0건 — VI 는 드문 이벤트라 정상일 수 있으나 1h 구독 점검 권장",
+    )
+
+
 # --------------------------------------------------------------------- 리포트
 
 
@@ -482,6 +527,7 @@ def run_checks(conn: Any, *, minutes: int, expected: int, now: datetime) -> list
     market = is_market_hours(now)
     tick = fetch_tick_stats(conn, cutoff)
     quote = fetch_quote_stats(conn, cutoff)
+    vi_rows, vi_codes, _vi_latest = fetch_vi_count(conn, cutoff)
 
     trade_date = None
     latest_tick = _parse_ts(tick.latest_ts)
@@ -495,6 +541,7 @@ def run_checks(conn: Any, *, minutes: int, expected: int, now: datetime) -> list
         judge_strength(tick),
         judge_price(tick, ranges, ref_date, same_day),
         judge_quotes(quote, market=market),
+        judge_vi(vi_rows, vi_codes, minutes=minutes, market=market),
     ]
 
     # 항목 6 — 이상(경고/실패) 유형별 raw 원문 1건씩 붙인다.

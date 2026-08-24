@@ -8,8 +8,16 @@
 4. 장중 ``{"trnm":"REAL","data":[{"type":"0B","item":"005930","values":{"<FID>":..}}]}`` push
 5. 키움이 ``{"trnm":"PING"}`` 을 보내면 그대로 되돌려줘야 연결이 유지된다.
 
-한 커넥션 등록 한도 ≈ 100 건(종목×type). 0B+0D 면 종목당 2 건이라 **커넥션당 ~50
-종목**. 종목이 많으면 커넥션을 쪼갠다. 끊기면 재연결하고 **재REG** 한다.
+한 커넥션 등록 한도 ≈ 100 건(종목×type). 0B+0D 면 종목당 2 건이라 커넥션당 ~50
+종목, **0B+0D+1h(VI) 면 종목당 3 건이라 커넥션당 ~33종목**. 종목이 많으면 커넥션을
+쪼갠다. 끊기면 재연결하고 **재REG** 한다.
+
+.. warning::
+   키움 WebSocket 은 **App key 당 동시 세션 1개**만 허용한다(장중 실측: 두 번째
+   접속 시 ``SYSTEM R10001 "동일한 App key 로 접속 … 기존 세션은 종료"``). 같은
+   키로 커넥션을 여러 개 열면 서로 kick·재연결을 반복하며 **thrash** 하고
+   ``105110 (LOGIN 요청 건수 초과)`` 가 뜬다. 다커넥션이 필요하면 **App key 를
+   커넥션 수만큼** 두거나, 한 커넥션에 담기는 종목 수(≤33, 3 type)로 줄여야 한다.
 
 **FID 매핑은 표준값**(20번 문서)이고 장중 REAL 프레임으로 최종 대조해야 한다. 그
 대비로 원문 ``values`` 를 ``raw`` 에 통째 저장한다 — 오매핑이어도 복구 가능하다.
@@ -55,6 +63,22 @@ FID_TOT_BID_QTY = "125"    # 총매수잔량
 
 TYPE_TRADE = "0B"
 TYPE_QUOTE = "0D"
+TYPE_VI = "1h"             # VI(변동성완화장치) 발동/해제
+
+# 1h VI발동/해제 — FID 매핑은 키움 문서(koapy realtype ``1h`` = "VI발동/해제") 기준.
+# **장중 REAL 프레임으로 아직 최종 대조하지 못했다**(VI 는 드문 이벤트라 프로브에서
+# 안 잡힘). REG(1h) return_code=0 로 타입 수용은 확인. 원문은 ``raw`` 에 통째 보존해
+# 오매핑이어도 되살린다. csv 확정 = koapy fid.csv 에 이름이 있는 FID, 추측 = 90xx 계열.
+FID_VI_CODE = "9001"          # 종목코드 (csv 확정)
+FID_VI_KIND = "9068"         # VI발동구분(발동/해제) — 추측(90xx, csv 미수록)
+FID_VI_APPLY = "1225"        # VI적용구분(정적/동적/정적&동적) (csv 확정)
+FID_VI_TRIGGER_PRICE = "1221"  # 발동가격 (csv 확정)
+FID_VI_TRIGGER_TIME = "1223"   # 매매체결처리시각=발동시각 HHMMSS (csv 확정)
+FID_VI_RELEASE_TIME = "1224"   # VI해제시각 HHMMSS (csv 확정)
+FID_VI_BASE_STATIC = "1236"    # 정적기준가격 (csv 확정)
+FID_VI_BASE_DYNAMIC = "1237"   # 동적기준가격 (csv 확정)
+FID_VI_GAP_STATIC = "1238"     # 정적괴리율 (csv 확정)
+FID_VI_GAP_DYNAMIC = "1239"    # 동적괴리율 (csv 확정)
 
 
 # --------------------------------------------------------------- 파싱 헬퍼
@@ -175,18 +199,96 @@ def parse_quote_values(code: str, values: dict, trade_date: date) -> dict | None
     return row
 
 
-def parse_real_message(
-    message: Any, trade_date: date, seq_assigner: SeqAssigner
-) -> tuple[list[dict], list[dict]]:
-    """REAL 프레임(문자열 또는 dict)을 ``(ticks, quotes)`` 로 파싱한다.
+def _vi_type(value: Any) -> str:
+    """FID 9068(VI발동구분) → '발동'/'해제'. 인코딩 미확인이라 방어적으로 매핑한다.
 
-    REAL 이 아니거나 data 가 없으면 빈 두 리스트. 알 수 없는 type 은 무시한다.
+    값이 비면 대부분의 프레임이 발동이므로 '발동' 으로 본다(raw 로 되살릴 수 있다).
+    """
+    text = _clean(value)
+    if not text:
+        return "발동"
+    if "해제" in text or text == "2":
+        return "해제"
+    if "발동" in text or text == "1":
+        return "발동"
+    return text
+
+
+def _vi_kind(value: Any) -> str | None:
+    """FID 1225(VI적용구분) → '정적'/'동적'/'정적동적'. 못 읽으면 원문 그대로."""
+    text = _clean(value)
+    if not text:
+        return None
+    mapping = {"1": "정적", "2": "동적", "3": "정적동적"}
+    if text in mapping:
+        return mapping[text]
+    has_static = "정적" in text
+    has_dynamic = "동적" in text
+    if has_static and has_dynamic:
+        return "정적동적"
+    if has_static:
+        return "정적"
+    if has_dynamic:
+        return "동적"
+    return text
+
+
+def _first_int(*values: Any) -> int | None:
+    for v in values:
+        got = _abs_int(v)
+        if got is not None:
+            return got
+    return None
+
+
+def parse_vi_values(
+    code: str, values: dict, trade_date: date, received_at: datetime | None = None
+) -> dict | None:
+    """1h ``values`` 한 건을 ``vi_events`` 행으로.
+
+    발동시각(FID 1223)을 못 읽으면 ``received_at`` (수신 시각)으로 대체한다. 둘 다
+    없으면 None. 원문은 ``raw`` 에 통째 보존한다(FID 미확정 대비).
+    """
+    ts = _parse_hhmmss(values.get(FID_VI_TRIGGER_TIME), trade_date)
+    if ts is None:
+        ts = received_at
+    if ts is None:
+        return None
+    release_raw = _clean(values.get(FID_VI_RELEASE_TIME))
+    return {
+        "code": code,
+        "ts": ts,
+        "vi_type": _vi_type(values.get(FID_VI_KIND)),
+        "vi_kind": _vi_kind(values.get(FID_VI_APPLY)),
+        "base_price": _first_int(
+            values.get(FID_VI_BASE_STATIC), values.get(FID_VI_BASE_DYNAMIC)
+        ),
+        "trigger_price": _abs_int(values.get(FID_VI_TRIGGER_PRICE)),
+        "gap_rate": _to_float(values.get(FID_VI_GAP_STATIC))
+        if _to_float(values.get(FID_VI_GAP_STATIC)) is not None
+        else _to_float(values.get(FID_VI_GAP_DYNAMIC)),
+        "release_time": release_raw or None,
+        "raw": values,
+    }
+
+
+def parse_real_message(
+    message: Any,
+    trade_date: date,
+    seq_assigner: SeqAssigner,
+    received_at: datetime | None = None,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """REAL 프레임(문자열 또는 dict)을 ``(ticks, quotes, vi_events)`` 로 파싱한다.
+
+    REAL 이 아니거나 data 가 없으면 빈 세 리스트. 알 수 없는 type 은 무시한다.
+    ``received_at`` 은 VI 발동시각 FID 결손 시 대체할 수신 시각이다.
     """
     msg = json.loads(message) if isinstance(message, (str, bytes)) else message
     if not isinstance(msg, dict) or msg.get("trnm") != "REAL":
-        return [], []
+        return [], [], []
     ticks: list[dict] = []
     quotes: list[dict] = []
+    vis: list[dict] = []
     for item in msg.get("data") or []:
         if not isinstance(item, dict):
             continue
@@ -203,7 +305,11 @@ def parse_real_message(
             row = parse_quote_values(code, values, trade_date)
             if row is not None:
                 quotes.append(row)
-    return ticks, quotes
+        elif rtype == TYPE_VI:
+            row = parse_vi_values(code, values, trade_date, received_at)
+            if row is not None:
+                vis.append(row)
+    return ticks, quotes, vis
 
 
 # --------------------------------------------------------------- 메시지 빌더
@@ -284,12 +390,14 @@ class KiwoomRealtimeCollector:
         self._seq = SeqAssigner()
         self._tick_buf: list[dict] = []
         self._quote_buf: list[dict] = []
+        self._vi_buf: list[dict] = []
         self._stop = asyncio.Event()
 
         # 통계
         self.frames_seen = 0
         self.ticks_stored = 0
         self.quotes_stored = 0
+        self.vi_stored = 0
         self.reconnects = 0
 
     # ------------------------------------------------------------- 공개 API
@@ -326,7 +434,8 @@ class KiwoomRealtimeCollector:
             self._flush()  # graceful: 남은 버퍼를 마저 쓴다
             self._log(
                 f"종료 · 프레임 {self.frames_seen:,} · 틱 {self.ticks_stored:,} · "
-                f"호가 {self.quotes_stored:,} · 재연결 {self.reconnects}"
+                f"호가 {self.quotes_stored:,} · VI {self.vi_stored:,} · "
+                f"재연결 {self.reconnects}"
             )
 
     # ------------------------------------------------------------- 내부
@@ -395,9 +504,14 @@ class KiwoomRealtimeCollector:
         self.frames_seen += 1
         if self._on_frame is not None:
             self._on_frame(msg)
-        ticks, quotes = parse_real_message(msg, self._trade_date, self._seq)
+        # VI 발동시각 FID 결손 대비 수신 시각(naive KST) 을 넘긴다.
+        now = datetime.now()  # noqa: DTZ005 — KST naive, 프로젝트 표준
+        ticks, quotes, vis = parse_real_message(
+            msg, self._trade_date, self._seq, received_at=now
+        )
         self._tick_buf.extend(ticks)
         self._quote_buf.extend(quotes)
+        self._vi_buf.extend(vis)
 
     async def _flush_loop(self) -> None:
         while not self._stop.is_set():
@@ -408,8 +522,9 @@ class KiwoomRealtimeCollector:
         if not self._store or self._conn is None:
             self._tick_buf.clear()
             self._quote_buf.clear()
+            self._vi_buf.clear()
             return
-        from .store import insert_quotes, insert_ticks
+        from .store import insert_quotes, insert_ticks, insert_vi_events
 
         if self._tick_buf:
             batch, self._tick_buf = self._tick_buf, []
@@ -417,6 +532,9 @@ class KiwoomRealtimeCollector:
         if self._quote_buf:
             batch, self._quote_buf = self._quote_buf, []
             self.quotes_stored += insert_quotes(self._conn, batch)
+        if self._vi_buf:
+            batch, self._vi_buf = self._vi_buf, []
+            self.vi_stored += insert_vi_events(self._conn, batch)
 
     async def _sleep_or_stop(self, seconds: float) -> None:
         with contextlib.suppress(asyncio.TimeoutError):
@@ -470,7 +588,10 @@ async def dry_run(
             if msg.get("trnm") != "REAL":
                 continue
             seen += 1
-            ticks, quotes = parse_real_message(msg, date.today(), seq)  # noqa: DTZ011
-            log(f"  REAL #{seen}: 틱 {len(ticks)} · 호가 {len(quotes)} · raw={json.dumps(msg, ensure_ascii=False)[:200]}")
+            ticks, quotes, vis = parse_real_message(
+                msg, date.today(), seq, received_at=datetime.now()  # noqa: DTZ011,DTZ005
+            )
+            log(f"  REAL #{seen}: 틱 {len(ticks)} · 호가 {len(quotes)} · VI {len(vis)}"
+                f" · raw={json.dumps(msg, ensure_ascii=False)[:200]}")
     log(f"dry-run 종료 · REAL 프레임 {seen} (0 이면 장중 아님 — 연결·인증·구독만 검증)")
     return seen

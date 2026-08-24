@@ -13,14 +13,18 @@ import pytest
 from scalp_it.realtime.store import (
     _CREATE_QUOTES,
     _CREATE_TICKS,
+    _CREATE_VI_EVENTS,
     QUOTE_COLUMNS,
     TICK_COLUMNS,
+    VI_COLUMNS,
     count_quotes,
     count_ticks,
+    count_vi_events,
     event_candidates,
     init_realtime_tables,
     insert_quotes,
     insert_ticks,
+    insert_vi_events,
 )
 
 
@@ -54,10 +58,19 @@ def _quote(ts, code="005930", **kw):
     return row
 
 
+def _vi(ts, code="005930", vi_type="발동", **kw):
+    row = {"code": code, "ts": ts, "vi_type": vi_type, "vi_kind": "정적",
+           "base_price": 272000, "trigger_price": 300000, "gap_rate": 10.29,
+           "release_time": "093215", "raw": {"9068": "1"}}
+    row.update(kw)
+    return row
+
+
 def test_init_creates_tables_and_indexes(conn):
     names = {r[0] for r in conn.execute(
         "select name from sqlite_master where type in ('table','index')").fetchall()}
-    assert {"ticks", "quotes", "idx_ticks_ts", "idx_quotes_ts"} <= names
+    assert {"ticks", "quotes", "vi_events",
+            "idx_ticks_ts", "idx_quotes_ts", "idx_vi_events_ts"} <= names
 
 
 def test_init_idempotent(conn):
@@ -67,12 +80,53 @@ def test_init_idempotent(conn):
 
 
 def test_schema_names_only_portable_types():
-    for ddl in (_CREATE_TICKS, _CREATE_QUOTES):
+    for ddl in (_CREATE_TICKS, _CREATE_QUOTES, _CREATE_VI_EVENTS):
         low = ddl.lower()
         assert "serial" not in low
         assert "autoincrement" not in low
         assert "jsonb" not in low  # sqlite 에 없다 — raw 는 text
     assert "double precision" in _CREATE_TICKS.lower()
+
+
+def test_vi_columns_shape():
+    assert VI_COLUMNS[:3] == ["code", "ts", "vi_type"]
+    assert {"vi_kind", "base_price", "trigger_price", "gap_rate",
+            "release_time", "raw"} <= set(VI_COLUMNS)
+
+
+def test_insert_vi_events_roundtrip(conn):
+    ts = datetime(2026, 8, 24, 9, 30, 15)
+    n = insert_vi_events(conn, [_vi(ts)])
+    assert n == 1
+    assert count_vi_events(conn) == 1
+    row = conn.execute(
+        "select vi_type, vi_kind, base_price, trigger_price, gap_rate, "
+        "release_time, raw from vi_events").fetchone()
+    assert row[0] == "발동"
+    assert row[1] == "정적"
+    assert row[2] == 272000
+    assert row[3] == 300000
+    assert row[4] == pytest.approx(10.29)
+    assert row[5] == "093215"
+    assert json.loads(row[6]) == {"9068": "1"}
+
+
+def test_insert_vi_events_upsert_on_pk(conn):
+    ts = datetime(2026, 8, 24, 9, 30, 15)
+    insert_vi_events(conn, [_vi(ts, trigger_price=1)])
+    insert_vi_events(conn, [_vi(ts, trigger_price=999)])  # 같은 (code,ts,vi_type) — 덮는다
+    assert count_vi_events(conn) == 1
+    assert conn.execute("select trigger_price from vi_events").fetchone()[0] == 999
+
+
+def test_insert_vi_events_type_is_pk_component(conn):
+    ts = datetime(2026, 8, 24, 9, 30, 15)
+    insert_vi_events(conn, [_vi(ts, vi_type="발동"), _vi(ts, vi_type="해제")])
+    assert count_vi_events(conn) == 2  # 같은 시각이라도 발동·해제는 별개 행
+
+
+def test_insert_vi_empty_is_zero(conn):
+    assert insert_vi_events(conn, []) == 0
 
 
 def test_quote_columns_cover_ten_levels():

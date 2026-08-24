@@ -24,13 +24,16 @@ from scalp_it.intraday.store import _bind_ts, _placeholder, connect, is_postgres
 __all__ = [
     "QUOTE_COLUMNS",
     "TICK_COLUMNS",
+    "VI_COLUMNS",
     "connect",
     "count_quotes",
     "count_ticks",
+    "count_vi_events",
     "event_candidates",
     "init_realtime_tables",
     "insert_quotes",
     "insert_ticks",
+    "insert_vi_events",
     "is_postgres",
 ]
 
@@ -86,8 +89,34 @@ _CREATE_QUOTES = (
     ")"
 )
 
+#: VI(변동성완화장치) 발동·해제는 초당 흐르는 체결·호가와 성격이 다른 **이벤트**라
+#: quotes 에 붙이지 않고 별도 테이블로 둔다. 종목당 하루 몇 건뿐이라 저장 비용도
+#: 무시할 만하다. FID 매핑은 키움 문서(koapy realtype ``1h``) 기준이고 장중 REAL
+#: 프레임으로 아직 최종 대조하지 못했으므로(VI 는 드물다) 원문을 ``raw`` 에 통째
+#: 보존한다 — 오매핑이어도 raw 에서 되살린다.
+VI_COLUMNS: list[str] = [
+    "code", "ts", "vi_type", "vi_kind", "base_price",
+    "trigger_price", "gap_rate", "release_time", "raw",
+]
+
+_CREATE_VI_EVENTS = """
+CREATE TABLE IF NOT EXISTS vi_events (
+    code          text NOT NULL,
+    ts            timestamp NOT NULL,
+    vi_type       text NOT NULL,
+    vi_kind       text,
+    base_price    integer,
+    trigger_price integer,
+    gap_rate      double precision,
+    release_time  text,
+    raw           text,
+    PRIMARY KEY (code, ts, vi_type)
+)
+"""
+
 _CREATE_TICKS_TS_IDX = "CREATE INDEX IF NOT EXISTS idx_ticks_ts ON ticks(ts)"
 _CREATE_QUOTES_TS_IDX = "CREATE INDEX IF NOT EXISTS idx_quotes_ts ON quotes(ts)"
+_CREATE_VI_TS_IDX = "CREATE INDEX IF NOT EXISTS idx_vi_events_ts ON vi_events(ts)"
 
 
 def _try_hypertable(conn: Any, table: str) -> None:
@@ -113,16 +142,22 @@ def _try_hypertable(conn: Any, table: str) -> None:
 
 
 def init_realtime_tables(conn: Any) -> Any:
-    """``ticks`` · ``quotes`` 와 ``ts`` 인덱스를 만든다. 이미 있으면 무해하다."""
+    """``ticks`` · ``quotes`` · ``vi_events`` 와 ``ts`` 인덱스를 만든다.
+
+    이미 있으면 무해하다.
+    """
     cur = conn.cursor()
     cur.execute(_CREATE_TICKS)
     cur.execute(_CREATE_QUOTES)
+    cur.execute(_CREATE_VI_EVENTS)
     cur.execute(_CREATE_TICKS_TS_IDX)
     cur.execute(_CREATE_QUOTES_TS_IDX)
+    cur.execute(_CREATE_VI_TS_IDX)
     cur.close()
     conn.commit()
     _try_hypertable(conn, "ticks")
     _try_hypertable(conn, "quotes")
+    _try_hypertable(conn, "vi_events")
     return conn
 
 
@@ -208,6 +243,51 @@ def insert_quotes(conn: Any, rows: Iterable[dict]) -> int:
     return len(payload)
 
 
+def insert_vi_events(conn: Any, rows: Iterable[dict]) -> int:
+    """VI 발동·해제(1h) 행을 배치 insert 한다. ``(code, ts, vi_type)`` 중복은 덮는다.
+
+    같은 종목·같은 시각·같은 발동구분이 재연결로 다시 오면 최신 값으로 갱신한다
+    (멱등). VI 는 드문 이벤트라 배치는 대개 비어 있거나 한두 건이다.
+    """
+    payload: list[Sequence[Any]] = []
+    for row in rows:
+        payload.append(
+            (
+                str(row["code"]),
+                _bind_ts(conn, row["ts"]),
+                str(row["vi_type"]),
+                _opt_str(row.get("vi_kind")),
+                _opt_int(row.get("base_price")),
+                _opt_int(row.get("trigger_price")),
+                _opt_float(row.get("gap_rate")),
+                _opt_str(row.get("release_time")),
+                _raw_text(row.get("raw")),
+            )
+        )
+    if not payload:
+        return 0
+    ph = _placeholder(conn)
+    updatable = [c for c in VI_COLUMNS if c not in ("code", "ts", "vi_type")]
+    sql = (
+        f"INSERT INTO vi_events ({', '.join(VI_COLUMNS)}) "
+        f"VALUES ({','.join([ph] * len(VI_COLUMNS))}) "
+        "ON CONFLICT (code, ts, vi_type) DO UPDATE SET "
+        + ", ".join(f"{c}=excluded.{c}" for c in updatable)
+    )
+    cur = conn.cursor()
+    cur.executemany(sql, payload)
+    cur.close()
+    conn.commit()
+    return len(payload)
+
+
+def _opt_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
+
+
 def _opt_int(value: Any) -> int | None:
     if value is None:
         return None
@@ -229,6 +309,10 @@ def count_ticks(conn: Any, code: str | None = None) -> int:
 
 def count_quotes(conn: Any, code: str | None = None) -> int:
     return _count(conn, "quotes", code)
+
+
+def count_vi_events(conn: Any, code: str | None = None) -> int:
+    return _count(conn, "vi_events", code)
 
 
 def _count(conn: Any, table: str, code: str | None) -> int:

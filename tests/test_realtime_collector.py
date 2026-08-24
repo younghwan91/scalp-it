@@ -20,8 +20,14 @@ from scalp_it.realtime.collector import (
     parse_quote_values,
     parse_real_message,
     parse_tick_values,
+    parse_vi_values,
 )
-from scalp_it.realtime.store import count_quotes, count_ticks, init_realtime_tables
+from scalp_it.realtime.store import (
+    count_quotes,
+    count_ticks,
+    count_vi_events,
+    init_realtime_tables,
+)
 
 TDAY = date(2026, 8, 24)
 
@@ -39,6 +45,22 @@ def _quote_values():
         v[str(61 + i)] = str((i + 1) * 5)   # 매도잔량
         v[str(71 + i)] = str((i + 1) * 10)  # 매수잔량
     return v
+
+
+def _vi_values(kind="1", apply="1"):
+    """1h VI발동 프레임 values(문서 FID 기준). kind=9068, apply=1225."""
+    return {
+        "9001": "005930", "302": "삼성전자", "13": "1000000", "14": "270000000000",
+        "9068": kind,          # VI발동구분: 1=발동, 2=해제
+        "1225": apply,         # VI적용구분: 1=정적, 2=동적, 3=정적&동적
+        "1221": "+300000",     # 발동가격
+        "1223": "093015",      # 발동시각
+        "1224": "093215",      # 해제시각(예상)
+        "1236": "+272000",     # 정적기준가격
+        "1237": "+295000",     # 동적기준가격
+        "1238": "10.29",       # 정적괴리율
+        "1239": "1.69",        # 동적괴리율
+    }
 
 
 # --------------------------------------------------------------- 파싱
@@ -83,22 +105,51 @@ def test_parse_quote_values_ten_levels():
     assert row["vi_flag"] is None
 
 
+def test_parse_vi_values_maps_fids():
+    row = parse_vi_values("005930", _vi_values(kind="1", apply="1"), TDAY)
+    assert row["ts"] == datetime(2026, 8, 24, 9, 30, 15)  # 발동시각 1223
+    assert row["vi_type"] == "발동"        # 9068=1
+    assert row["vi_kind"] == "정적"        # 1225=1
+    assert row["trigger_price"] == 300000  # 1221, 부호 제거
+    assert row["base_price"] == 272000     # 정적기준가 우선(1236)
+    assert row["gap_rate"] == pytest.approx(10.29)  # 정적괴리율 우선(1238)
+    assert row["release_time"] == "093215"          # 1224
+    assert row["raw"]["9068"] == "1"       # 원문 보존
+
+
+def test_parse_vi_values_release_and_dynamic():
+    row = parse_vi_values("000660", _vi_values(kind="2", apply="2"), TDAY)
+    assert row["vi_type"] == "해제"  # 9068=2
+    assert row["vi_kind"] == "동적"  # 1225=2
+
+
+def test_parse_vi_values_falls_back_to_received_at():
+    v = _vi_values()
+    del v["1223"]  # 발동시각 결손
+    now = datetime(2026, 8, 24, 10, 0, 0)
+    row = parse_vi_values("005930", v, TDAY, received_at=now)
+    assert row["ts"] == now
+
+
 def test_parse_real_message_splits_types():
     seq = SeqAssigner()
     msg = {"trnm": "REAL", "data": [
         {"type": "0B", "item": "005930", "values": _tick_values()},
         {"type": "0D", "item": "005930", "values": _quote_values()},
+        {"type": "1h", "item": "005930", "values": _vi_values()},
         {"type": "0C", "item": "005930", "values": {"20": "093015"}},  # 무시
     ]}
-    ticks, quotes = parse_real_message(json.dumps(msg), TDAY, seq)
+    ticks, quotes, vis = parse_real_message(json.dumps(msg), TDAY, seq)
     assert len(ticks) == 1
     assert len(quotes) == 1
+    assert len(vis) == 1
+    assert vis[0]["vi_type"] == "발동"
 
 
 def test_parse_real_message_ignores_non_real():
     seq = SeqAssigner()
-    assert parse_real_message({"trnm": "PING"}, TDAY, seq) == ([], [])
-    assert parse_real_message({"trnm": "REG", "return_code": 0}, TDAY, seq) == ([], [])
+    assert parse_real_message({"trnm": "PING"}, TDAY, seq) == ([], [], [])
+    assert parse_real_message({"trnm": "REG", "return_code": 0}, TDAY, seq) == ([], [], [])
 
 
 def test_seq_assigner_increments_and_resets():
@@ -120,6 +171,7 @@ def test_chunk_codes_dedups_and_splits():
 def test_codes_per_connection():
     assert codes_per_connection(["0B", "0D"]) == 50   # 100 // 2
     assert codes_per_connection(["0B"]) == 100
+    assert codes_per_connection(["0B", "0D", "1h"]) == 33  # 100 // 3, VI 포함
 
 
 def test_build_reg_message_shape():
@@ -190,6 +242,8 @@ def test_collector_run_stores_frames(conn):
                 {"type": "0B", "item": "005930", "values": _tick_values()}]}),
             json.dumps({"trnm": "REAL", "data": [
                 {"type": "0D", "item": "005930", "values": _quote_values()}]}),
+            json.dumps({"trnm": "REAL", "data": [
+                {"type": "1h", "item": "005930", "values": _vi_values()}]}),
         ]
         handshake = [
             json.dumps({"trnm": "LOGIN", "return_code": 0}),
@@ -206,10 +260,12 @@ def test_collector_run_stores_frames(conn):
         return collector
 
     collector = asyncio.run(_run())
-    assert collector.frames_seen == 2
+    assert collector.frames_seen == 3
     assert count_ticks(conn) == 1
     assert count_quotes(conn) == 1
+    assert count_vi_events(conn) == 1
     assert collector.ticks_stored == 1
+    assert collector.vi_stored == 1
 
 
 def test_collector_dry_run_does_not_store(conn):

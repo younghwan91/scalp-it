@@ -11,7 +11,12 @@ from datetime import datetime, timedelta
 import pytest
 
 from scalp_it import cli_tick_health as H
-from scalp_it.realtime.store import init_realtime_tables, insert_quotes, insert_ticks
+from scalp_it.realtime.store import (
+    init_realtime_tables,
+    insert_quotes,
+    insert_ticks,
+    insert_vi_events,
+)
 
 # 검사 기준 시각 — 장중(평일 10:00)으로 고정해 '장중 데이터 기대' 경로를 태운다.
 NOW = datetime(2026, 8, 24, 10, 0, 0)  # 월요일
@@ -219,6 +224,42 @@ def test_vi_flag_seen_reported(conn):
     insert_quotes(conn, [_quote(0, code="000660", vi_flag=1)])
     q = _by_name(H.run_checks(conn, minutes=15, expected=1, now=NOW))["5. 호가"]
     assert "vi_flag 1건" in q.detail
+
+
+# --------------------------------------------------------------- 항목 6 VI 이벤트
+
+
+def _vi(secs, *, code="005930", vi_type="발동", **kw):
+    ts = (NOW - timedelta(seconds=secs)).strftime("%Y-%m-%d %H:%M:%S")
+    row = {"code": code, "ts": ts, "vi_type": vi_type, "vi_kind": "정적",
+           "base_price": 272000, "trigger_price": 300000, "gap_rate": 10.29,
+           "release_time": "093215", "raw": {"9068": "1"}}
+    row.update(kw)
+    return row
+
+
+def test_vi_events_reported(conn):
+    _healthy(conn, n=2)
+    insert_vi_events(conn, [_vi(10), _vi(5, code="000660")])
+    vi = _by_name(H.run_checks(conn, minutes=15, expected=1, now=NOW))["6. VI 이벤트"]
+    assert vi.status is H.Status.OK
+    assert "2건" in vi.detail
+
+
+def test_vi_absent_during_market_is_warn_not_fail(conn):
+    _healthy(conn, n=2)  # 틱·호가는 정상, VI 만 없음
+    checks = H.run_checks(conn, minutes=15, expected=1, now=NOW)
+    vi = _by_name(checks)["6. VI 이벤트"]
+    assert vi.status is H.Status.WARN
+    # VI 부재는 실패가 아니다 — 종료코드는 0 이어야 한다.
+    assert H.worst_status(checks) is not H.Status.FAIL
+
+
+def test_vi_absent_after_hours_is_ok(conn):
+    _healthy(conn, n=2)
+    after = datetime(2026, 8, 24, 18, 0, 0)
+    vi = _by_name(H.run_checks(conn, minutes=15, expected=1, now=after))["6. VI 이벤트"]
+    assert vi.status is H.Status.OK
 
 
 # --------------------------------------------------------------- main / 종료코드

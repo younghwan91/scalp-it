@@ -27,15 +27,19 @@ from typing import Any
 
 from .adapters.kiwoom import KiwoomClient, KiwoomError, api_credentials
 from .realtime.collector import (
+    TYPE_VI,
     WS_URL,
     WS_URL_MOCK,
     KiwoomRealtimeCollector,
+    chunk_codes,
+    codes_per_connection,
     dry_run,
 )
 from .realtime.store import (
     connect,
     count_quotes,
     count_ticks,
+    count_vi_events,
     event_candidates,
     init_realtime_tables,
 )
@@ -78,6 +82,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="HH:MM-HH:MM. 종료시각까지 돈다. 생략 시 Ctrl+C 까지")
     parser.add_argument("--types", default="0B,0D",
                         help="구독 실시간 type (기본 0B,0D)")
+    parser.add_argument("--with-vi", action=argparse.BooleanOptionalAction, default=True,
+                        help="VI(1h) 발동/해제 구독 여부 (기본 켬, --no-with-vi 로 끔)")
+    parser.add_argument("--max-connections", type=int, default=2, metavar="N",
+                        help="최대 커넥션 수 (기본 2). 키움은 App key 당 동시 세션 "
+                             "1개라 여러 커넥션은 thrash 한다 — 초과분 종목은 잘라낸다")
     parser.add_argument("--flush-interval", type=float, default=1.5,
                         help="배치 저장 간격(초)")
     parser.add_argument("--mock", action="store_true",
@@ -98,6 +107,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     types = [t.strip() for t in args.types.split(",") if t.strip()]
+    if args.with_vi and TYPE_VI not in types:
+        types.append(TYPE_VI)  # 기본 켬: 0B,0D 에 1h(VI) 추가
     url = WS_URL_MOCK if args.mock else WS_URL
 
     # --dry-run 은 DB 가 필요없다(저장 안 함). --codes 만 있으면 DB 접속을 건너뛴다.
@@ -118,6 +129,24 @@ def main(argv: list[str] | None = None) -> int:
         if not codes:
             print("대상 종목이 없다.", file=sys.stderr)
             return 1
+
+        # 구독 한도 회계: 종목당 len(types) 건, 커넥션당 ~100건 → per_conn 종목.
+        # 키움은 App key 당 동시 세션 1개라 여러 커넥션은 thrash 한다. 그래서
+        # 커넥션 수를 --max-connections 로 막고 초과분 종목은 잘라낸다(폴백).
+        per_conn = codes_per_connection(types)
+        max_conn = max(1, args.max_connections)
+        cap = max_conn * per_conn
+        # chunk_codes 로 중복 제거·순서 보존한 뒤 커넥션 수 상한만큼 자른다.
+        codes = [c for group in chunk_codes(codes, cap) for c in group]
+        if len(codes) > cap:
+            need = -(-len(codes) // per_conn)  # ceil
+            print(
+                f"주의: {len(codes)}종목은 type {len(types)}개·커넥션당 {per_conn}종목 기준 "
+                f"{need}커넥션이 필요하지만, --max-connections={args.max_connections} 라 "
+                f"{cap}종목으로 자른다 (키움 App key 당 동시 세션 1개 — 다커넥션은 thrash).",
+                file=sys.stderr,
+            )
+            codes = codes[:cap]
         print(f"대상 {len(codes)}종목 · type {types} · {url}", file=sys.stderr)
 
         try:
@@ -144,7 +173,8 @@ def main(argv: list[str] | None = None) -> int:
 
         _run_with_signals(collector, duration)
         print(f"틱 {collector.ticks_stored:,} · 호가 {collector.quotes_stored:,} · "
-              f"테이블 총 틱 {count_ticks(conn):,} · 호가 {count_quotes(conn):,}",
+              f"VI {collector.vi_stored:,} · 테이블 총 틱 {count_ticks(conn):,} · "
+              f"호가 {count_quotes(conn):,} · VI {count_vi_events(conn):,}",
               file=sys.stderr)
         return 0
     finally:
