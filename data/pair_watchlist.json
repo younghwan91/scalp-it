@@ -1,0 +1,9 @@
+{
+  "_comment": "짝꿍 감시 쌍 — 사람이 큐레이션한다. 대장(강한 급등) → 알려진 소형 후속. 종목코드 6자리. 쌍을 추가/삭제해 감시 대상을 바꾼다. 주의: 두 종목 다 그날 수집(--auto) 유니버스에 들어와야 감시된다.",
+  "pairs": [
+    {"leader": "014990", "follower": "033340", "leader_name": "인디에프", "follower_name": "좋은사람들"},
+    {"leader": "462860", "follower": "094480", "leader_name": "더즌", "follower_name": "갤럭시아머니트리"},
+    {"leader": "124500", "follower": "294570", "leader_name": "아이티센글로벌", "follower_name": "쿠콘"},
+    {"leader": "001210", "follower": "002990", "leader_name": "금호전기", "follower_name": "금호건설"}
+  ]
+}

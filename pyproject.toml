@@ -38,6 +38,7 @@ scalp-cbet-watch = "scalp_it.cli_cbet_watch:main"
 scalp-theme-snapshot = "scalp_it.cli_theme:main"
 scalp-tick-collect = "scalp_it.cli_tick:main"
 scalp-tick-health = "scalp_it.cli_tick_health:main"
+scalp-pair-detect = "scalp_it.cli_pair_detect:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/scalp_it"]
