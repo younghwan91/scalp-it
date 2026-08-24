@@ -327,7 +327,27 @@ def _count(conn: Any, table: str, code: str | None) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
-def event_candidates(conn: Any, limit: int, *, tv_floor: float = 5_000.0) -> list[str]:
+def _liquid_above_floor(conn: Any, tv_floor: float) -> list[str]:
+    """최신 거래일 거래대금이 하한 이상인 종목코드."""
+    ph = _placeholder(conn)
+    cur = conn.cursor()
+    cur.execute("select max(date) from daily_bars_adjusted")
+    row = cur.fetchone()
+    if not row or row[0] is None:
+        cur.close()
+        return []
+    cur.execute(
+        "select code from daily_bars_adjusted "
+        f"where date = {ph} and trade_value is not null and trade_value >= {ph}",
+        (row[0], float(tv_floor)),
+    )
+    codes = [str(r[0]).strip() for r in cur.fetchall()]
+    cur.close()
+    return codes
+
+
+def event_candidates(conn: Any, limit: int, *, tv_floor: float = 5_000.0,
+                     movers_frac: float = 0.8, min_gain: float = 0.10) -> list[str]:
     """내일 구독할 '전일 이벤트 후보' 종목.
 
     ``--auto`` 의 근간이다. 두 갈래를 합친다:
@@ -341,7 +361,11 @@ def event_candidates(conn: Any, limit: int, *, tv_floor: float = 5_000.0) -> lis
     ``daily_bars_adjusted`` 만 읽고, ``trade_value`` 하한(백만원 단위, 기본 50억)을
     둔다. 두 리스트를 순서대로 합쳐 중복을 제거하고 ``limit`` 개로 자른다.
 
-    거래대금 상위와 급등주를 절반씩 섞는다 — 어느 한쪽이 후보를 독식하지 않게.
+    **급등주 위주(기본 80%)** 로 섞는다 — 만쥬 상따/돌파/짝꿍 대상은 대형 유동주가
+    아니라 급등 소형주다(2026-08-24 발견: 거래대금 상위 절반 편성은 삼성전자·NAVER
+    같은 대형주가 슬롯을 먹어 정작 상한가 갈 종목이 안 들어왔다 — `research/manju/34`).
+    나머지(20%)만 유동성 상위를 넣어 짝꿍 대장주·시장 맥락을 확인한다.
+    ``min_gain`` (기본 +10%) 이상 오른 전일 급등주만 movers 로 본다.
     """
     from scalp_it.intraday.store import top_universe
 
@@ -349,9 +373,15 @@ def event_candidates(conn: Any, limit: int, *, tv_floor: float = 5_000.0) -> lis
     if limit == 0:
         return []
 
-    half = max(1, limit // 2)
-    liquid = top_universe(conn, half)
-    movers = _prev_day_movers(conn, limit, tv_floor=tv_floor)
+    # 급등주 우선. 유동주는 (a) 최소 보장분(1-movers_frac) + (b) 급등주가 적은 날
+    # 남는 슬롯을 채우는 예비 풀 — 항상 limit 개를 채워 구독 슬롯을 낭비하지 않는다.
+    movers = _prev_day_movers(conn, limit, tv_floor=tv_floor, min_gain=min_gain)
+    n_liquid_min = max(0, round(limit * (1.0 - movers_frac)))
+    # 예비 풀도 거래대금 하한을 존중 — 저유동 종목엔 구독 슬롯을 쓰지 않는다.
+    floor_ok = set(_liquid_above_floor(conn, tv_floor))
+    liquid = [c for c in top_universe(conn, limit * 2) if c in floor_ok][:limit]
+    # 급등주가 많으면 유동주는 최소 보장분만 앞에 끼우고, 나머지는 급등주로.
+    movers = movers[: max(0, limit - n_liquid_min)] or movers
 
     ordered: list[str] = []
     seen: set[str] = set()
@@ -368,8 +398,9 @@ def event_candidates(conn: Any, limit: int, *, tv_floor: float = 5_000.0) -> lis
     return ordered[:limit]
 
 
-def _prev_day_movers(conn: Any, limit: int, *, tv_floor: float) -> list[str]:
-    """가장 최근 거래일 종가 상승률 상위. 거래대금 하한 적용."""
+def _prev_day_movers(conn: Any, limit: int, *, tv_floor: float,
+                     min_gain: float = 0.10) -> list[str]:
+    """가장 최근 거래일 종가 상승률 상위. 거래대금 하한 + 최소 상승률 적용."""
     ph = _placeholder(conn)
     cur = conn.cursor()
     cur.execute("select distinct date from daily_bars_adjusted order by date desc limit 2")
@@ -384,8 +415,9 @@ def _prev_day_movers(conn: Any, limit: int, *, tv_floor: float) -> list[str]:
         f"where t.date = {ph} and y.date = {ph} "
         "and t.close is not null and y.close is not null and y.close > 0 "
         f"and t.trade_value is not null and t.trade_value >= {ph} "
+        f"and (t.close / y.close - 1.0) >= {ph} "
         f"order by (t.close / y.close) desc limit {ph}",
-        (last, prev, float(tv_floor), int(limit)),
+        (last, prev, float(tv_floor), float(min_gain), int(limit)),
     )
     codes = [str(r[0]).strip() for r in cur.fetchall()]
     cur.close()
