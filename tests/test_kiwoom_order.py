@@ -251,6 +251,69 @@ def test_preorder_holdings_fail_closed():
     assert rec.order_posts == []
 
 
+# ------------------------------------------------------------------ N-1: 동적 보유 병합은 매수만
+
+def test_dynamic_holdings_block_buy_but_not_sell():
+    """N-1: refresh 로 병합된 실시간 보유분은 **매수만** 차단하고 청산 매도는 막지 않는다."""
+    rec = Recorder(holdings=[
+        {"stk_cd": "A294570", "stk_nm": "쿠콘", "rmnd_qty": "1",
+         "trde_able_qty": "1", "cur_prc": "10000"},
+    ])
+    c = _client(rec, OrderGuardConfig(whitelist=frozenset({"294570"})))
+    added = c.refresh_blocklist_from_account()
+    assert "294570" in added
+    # 매수는 차단(방금 보유로 확인).
+    assert c.buy_limit("294570", 1, 10000, ref_price=10000).blocked is True
+    # 그러나 그 종목의 **청산 매도**는 차단되지 않는다 — 무감시 방치 방지.
+    s = c.sell_limit("294570", 1, 10000, live=False, ref_price=10000)
+    assert s.blocked is False
+    assert rec.order_posts == []          # dry-run 이라 POST 는 없음
+
+
+def test_preorder_verify_blocks_buy_but_sell_unaffected():
+    """N-1: verify=True 여도 매도는 잔고병합 차단을 받지 않는다(side!=buy)."""
+    rec = Recorder(holdings=[
+        {"stk_cd": "A294570", "stk_nm": "쿠콘", "rmnd_qty": "1",
+         "trde_able_qty": "1", "cur_prc": "10000"},
+    ])
+    c = _client(rec, OrderGuardConfig(whitelist=frozenset({"294570"})), verify=True)
+    assert c.buy_limit("294570", 1, 10000, live=False, ref_price=10000).blocked is True
+    assert c.sell_limit("294570", 1, 10000, live=False, ref_price=10000).blocked is False
+
+
+def test_hardcoded_held_blocks_sell_too():
+    """하드코딩 3종목은 매도까지 양방향 차단(우리가 안 파는 종목이라 무해)."""
+    rec = Recorder()
+    c = _client(rec)
+    assert c.sell_limit("000010", 1, 10000, live=False, ref_price=10000).blocked is True
+
+
+# ------------------------------------------------------------------ N-3: 체결 오판 방지
+
+def test_is_filled_false_when_not_in_balance():
+    """N-3: 미체결 목록에 없어도(취소·거부) 잔고에 없으면 체결로 오판하지 않는다."""
+    rec = Recorder(holdings=[])           # 잔고 비었음 · 미체결 목록도 빈 oso
+    c = _client(rec)
+    assert c.is_filled("0000001", "294570") is False
+
+
+def test_is_filled_true_when_in_balance():
+    """N-3: 잔고에 종목·수량이 잡히면 체결로 본다."""
+    rec = Recorder(holdings=[
+        {"stk_cd": "A294570", "stk_nm": "쿠콘", "rmnd_qty": "1",
+         "trde_able_qty": "1", "cur_prc": "10000"},
+    ])
+    c = _client(rec)
+    assert c.is_filled("0000001", "294570") is True
+
+
+def test_is_filled_false_on_balance_query_failure():
+    """N-3: 잔고조회 실패 시 체결로 단정하지 않는다(fail-safe)."""
+    rec = Recorder(holdings_fail=True)
+    c = _client(rec)
+    assert c.is_filled("0000001", "294570") is False
+
+
 def test_intent_api_id_and_body():
     intent = OrderIntent(side="buy", code="294570", qty=1, price=1928)
     assert intent.api_id() == "kt10000"

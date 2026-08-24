@@ -96,9 +96,16 @@ class OrderExecutor:
             self._notice(f"[주문] dedup — {alert.follower_name or code} 이미 활성 포지션, 매수 생략")
             return None
         entry = round(alert.entry)
-        result = self._client.buy_limit(
-            code, self._qty, entry, live=self._live, ref_price=alert.price
-        )
+        try:
+            result = self._client.buy_limit(
+                code, self._qty, entry, live=self._live, ref_price=alert.price
+            )
+        except Exception as exc:  # noqa: BLE001 — N-2: 매수 거부로 프로세스 크래시 금지
+            self._notice(
+                f"[주문][경보] 매수 실패(예외) — {alert.follower_name or code} "
+                f"@ {entry:,}: {exc} · 포지션 열지 않고 스킵"
+            )
+            return None
         pos = LivePosition(
             code=code,
             name=alert.follower_name or code,
@@ -144,7 +151,8 @@ class OrderExecutor:
             if not filled:
                 # 미체결 취소 시각 도달 → 취소.
                 if ts >= pos.cancel_deadline:
-                    self._client.cancel(pos.buy_ord_no or "", pos.code, pos.qty, live=self._live)
+                    if not self._try_cancel(pos, "미체결취소"):
+                        return False   # 취소 실패 → pending 유지, 다음 틱 재시도
                     pos.status = "cancelled"
                     pos.exit_reason = "미체결취소"
                     self._notice(f"[주문] 미체결 취소 — {pos.name}({pos.code})")
@@ -165,8 +173,9 @@ class OrderExecutor:
             reason = "시간청산"
         if reason is None:
             return False
-        self._sell(pos, ts, round(price), reason)
-        return True
+        # N-1/N-2: 매도가 실제로 성사됐을 때만 done(=history 이동). 차단·거부·예외면
+        # False → 포지션은 open(filled) 으로 남아 다음 틱에 재시도된다(무감시 방지).
+        return self._sell(pos, ts, round(price), reason)
 
     def _check_fill(self, pos: LivePosition, ts: datetime, price: float) -> bool:
         """대기 매수가 체결됐는지. live 는 미체결조회, dry 는 틱 관통 근사."""
@@ -185,12 +194,52 @@ class OrderExecutor:
             self._notice(f"[주문] 체결 — {pos.name}({pos.code}) {pos.qty}주 @ {pos.entry:,}")
         return filled
 
-    def _sell(self, pos: LivePosition, ts: datetime, price: int, reason: str) -> None:
-        result = self._client.sell_limit(pos.code, pos.qty, price, live=self._live, ref_price=price)
+    def _sell(self, pos: LivePosition, ts: datetime, price: int, reason: str) -> bool:
+        """청산 매도. 성사 시 True(exited), 차단·거부·예외 시 False(open 유지).
+
+        N-1: ``result.blocked``/실패를 확인하지 않고 무조건 '청산완료(exited)' 로
+        표기하면, 실계좌엔 매도가 안 나간 채 시스템만 청산으로 착각해 실포지션이
+        무감시로 남는다. 그래서 성사 확인 후에만 exited 표기한다.
+        N-2: 발주 거부는 어댑터에서 예외(KiwoomError)로 튄다 → 여기서 잡아 루프를
+        살리고 포지션을 open 으로 유지, 다음 틱에 재시도한다.
+        """
+        try:
+            result = self._client.sell_limit(
+                pos.code, pos.qty, price, live=self._live, ref_price=price
+            )
+        except Exception as exc:  # noqa: BLE001 — 거부·네트워크 어떤 예외든 크래시 금지
+            self._notice(
+                f"[주문][경보] 청산 매도 실패(예외) — {pos.name}({pos.code}) {reason} "
+                f"@ {price:,}: {exc} · 실포지션 무감시 방지 위해 open 유지, 다음 틱 재시도"
+            )
+            return False
+        if result.blocked or not result.ok:
+            why = result.blocked_reason or f"rc={result.return_code}"
+            self._notice(
+                f"[주문][경보] 청산 매도 미성사 — {pos.name}({pos.code}) {reason} "
+                f"@ {price:,}: {why} · open 유지, 다음 틱 재시도"
+            )
+            return False
         pos.status = "exited"
         pos.exit_reason = reason
         pos.sell_ord_no = result.ord_no
         self._notice(f"[주문] 청산({reason}) — {pos.name}({pos.code}) {pos.qty}주 @ {price:,}")
+        return True
+
+    def _try_cancel(self, pos: LivePosition, reason: str) -> bool:
+        """대기 매수 취소를 시도한다. N-2: 거부·예외를 잡아 크래시를 막는다.
+
+        성공 시 True, 실패 시 False(호출부가 pending 유지·재시도 판단).
+        """
+        try:
+            self._client.cancel(pos.buy_ord_no or "", pos.code, pos.qty, live=self._live)
+        except Exception as exc:  # noqa: BLE001 — 취소 거부로 프로세스 크래시 금지
+            self._notice(
+                f"[주문][경보] 취소 실패({reason}) — {pos.name}({pos.code}): {exc} · "
+                f"pending 유지, 재시도"
+            )
+            return False
+        return True
 
     # ----- 킬/마감 -----------------------------------------------------------
 
@@ -198,7 +247,8 @@ class OrderExecutor:
         """가드 킬 발동 → 대기 매수 전부 취소(체결분은 청산규칙에 맡긴다)."""
         for pos in self.positions:
             if pos.status == "pending":
-                self._client.cancel(pos.buy_ord_no or "", pos.code, pos.qty, live=self._live)
+                if not self._try_cancel(pos, "킬스위치취소"):
+                    continue   # 실패분은 pending 유지 — 다음 on_kill/flush 에서 재시도
                 pos.status = "cancelled"
                 pos.exit_reason = "킬스위치취소"
                 self._notice(f"[주문] 킬스위치 — 대기 매수 취소 {pos.name}({pos.code})")
@@ -207,7 +257,8 @@ class OrderExecutor:
         """장 마감·틱 공백 정리: 대기분 취소, 체결분 시간청산 도달분 정리."""
         for pos in list(self.positions):
             if pos.status == "pending" and now >= pos.cancel_deadline:
-                self._client.cancel(pos.buy_ord_no or "", pos.code, pos.qty, live=self._live)
+                if not self._try_cancel(pos, "마감미체결취소"):
+                    continue
                 pos.status = "cancelled"
                 pos.exit_reason = "마감미체결취소"
 

@@ -6,6 +6,7 @@
 
 from datetime import datetime, timedelta
 
+from scalp_it.adapters.kiwoom import KiwoomError
 from scalp_it.adapters.kiwoom_order import OrderIntent, OrderResult
 from scalp_it.realtime.order_executor import OrderExecutor
 from scalp_it.realtime.pair_detector import Alert
@@ -140,3 +141,129 @@ def test_live_flag_flows_to_client():
     ex = OrderExecutor(c, qty=1, live=True)
     ex.on_signal(_alert())
     assert c.buys[0][3] is True                        # live=True 전달
+
+
+# ------------------------------------------------------------------ N-1: 매도 미성사 → open 유지
+
+class _BlockingSellClient(FakeClient):
+    def sell_limit(self, code, qty, price, *, live=False, ref_price=None, exchange="KRX"):
+        self.sells.append((code, qty, price, live))
+        intent = OrderIntent(side="sell", code=code, qty=qty, price=price)
+        return OrderResult(intent=intent, dry_run=not live, submitted=False,
+                           blocked=True, blocked_reason="블록리스트")
+
+
+def test_sell_blocked_keeps_position_open_not_exited():
+    """N-1(b): 청산 매도가 차단되면 '청산완료' 표기 금지 → 포지션 open 유지."""
+    c = _BlockingSellClient()
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=10050))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 10000)   # 체결
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10050)   # 익절 매도 시도 → 차단
+    assert c.sells                                            # 매도 시도는 했다
+    assert len(ex.positions) == 1                            # 무감시 방치 금지
+    assert ex.positions[0].status == "filled"               # exited 로 착각 안 함
+    assert all(p.status != "exited" for p in ex.history)
+
+
+def test_sell_retries_next_tick_after_transient_failure():
+    """N-1/N-2: 1차 매도 실패 후 다음 틱에 재시도해 성사되면 exited."""
+
+    class _FlakySell(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self._first = True
+
+        def sell_limit(self, code, qty, price, *, live=False, ref_price=None, exchange="KRX"):
+            self.sells.append((code, qty, price, live))
+            intent = OrderIntent(side="sell", code=code, qty=qty, price=price)
+            if self._first:
+                self._first = False
+                return OrderResult(intent=intent, dry_run=not live, submitted=False,
+                                   blocked=True, blocked_reason="일시차단")
+            return OrderResult(intent=intent, dry_run=not live, submitted=live, ord_no="S1")
+
+    c = _FlakySell()
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=10050))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 10000)   # 체결
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10050)   # 1차 매도 차단 → open 유지
+    assert ex.positions[0].status == "filled"
+    ex.on_tick("294570", t0 + timedelta(seconds=6), 10050)   # 2차 매도 성사
+    assert ex.history[-1].status == "exited" and ex.history[-1].exit_reason == "익절"
+    assert len(c.sells) == 2
+
+
+# ------------------------------------------------------------------ N-2: 주문 거부(예외) → 루프 지속
+
+def test_buy_exception_does_not_crash_and_skips_position():
+    """N-2: 매수 거부(KiwoomError)로 크래시 금지 → 포지션 안 열고 스킵."""
+
+    class _RaisingBuy(FakeClient):
+        def buy_limit(self, code, qty, price, *, live=False, ref_price=None, exchange="KRX"):
+            raise KiwoomError("가격밴드 이탈 거부")
+
+    c = _RaisingBuy()
+    ex = OrderExecutor(c, qty=1)
+    res = ex.on_signal(_alert())                            # 예외 전파 안 됨
+    assert res is None and ex.positions == []
+
+
+def test_sell_exception_keeps_position_open_and_continues():
+    """N-2: 매도 거부(KiwoomError)로 크래시 금지 → open 유지, 루프 계속."""
+
+    class _RaisingSell(FakeClient):
+        def sell_limit(self, code, qty, price, *, live=False, ref_price=None, exchange="KRX"):
+            raise KiwoomError("장마감 거부")
+
+    c = _RaisingSell()
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=10050))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 10000)   # 체결
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10050)   # 매도 예외 → 삼켜짐
+    assert len(ex.positions) == 1 and ex.positions[0].status == "filled"
+
+
+def test_cancel_exception_keeps_pending():
+    """N-2: 미체결 취소 거부(KiwoomError)로 크래시 금지 → pending 유지."""
+
+    class _RaisingCancel(FakeClient):
+        def cancel(self, ord_no, code, qty, *, exchange="KRX", live=False):
+            raise KiwoomError("취소 거부")
+
+    c = _RaisingCancel()
+    ex = OrderExecutor(c, qty=1, unfilled_timeout=15.0)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000))
+    ex.on_tick("294570", t0 + timedelta(seconds=20), 10100)  # 미체결 취소 시도 → 예외
+    assert len(ex.positions) == 1 and ex.positions[0].status == "pending"
+
+
+def test_other_positions_managed_after_one_rejection():
+    """N-2: 한 종목 매도 거부가 다른 종목의 정상 청산을 막지 않는다."""
+
+    class _RejectOne(FakeClient):
+        def sell_limit(self, code, qty, price, *, live=False, ref_price=None, exchange="KRX"):
+            self.sells.append((code, qty, price, live))
+            intent = OrderIntent(side="sell", code=code, qty=qty, price=price)
+            if code == "294570":
+                raise KiwoomError("거부")
+            return OrderResult(intent=intent, dry_run=not live, submitted=live, ord_no="S1")
+
+    c = _RejectOne()
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    a1 = _alert(code="294570", ts=t0, entry=10000, tp=10050)
+    a2 = _alert(code="033340", ts=t0, entry=20000, tp=20100)
+    ex.on_signal(a1)
+    ex.on_signal(a2)
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 10000)   # 체결
+    ex.on_tick("033340", t0 + timedelta(seconds=2), 20000)   # 체결
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10050)   # 거부 → open 유지
+    ex.on_tick("033340", t0 + timedelta(seconds=5), 20100)   # 정상 청산
+    codes_open = {p.code for p in ex.positions}
+    assert "294570" in codes_open                            # 거부분은 open 유지
+    assert any(p.code == "033340" and p.status == "exited" for p in ex.history)

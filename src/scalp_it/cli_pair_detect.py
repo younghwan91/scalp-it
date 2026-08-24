@@ -322,10 +322,16 @@ def run_realtime(args: argparse.Namespace, conn: Any, detector: PairDetector,
     deadline = _parse_deadline(args.duration)
     try:
         while True:
-            rows = _fetch_ticks(conn, codes, since=watermark, day=None)
-            if rows:
-                _feed(detector, bus, rows, guard=guard, poslog=poslog, executor=executor)
-                watermark = max(_as_dt(r[1]) for r in rows)
+            try:
+                rows = _fetch_ticks(conn, codes, since=watermark, day=None)
+                if rows:
+                    _feed(detector, bus, rows, guard=guard, poslog=poslog, executor=executor)
+                    watermark = max(_as_dt(r[1]) for r in rows)
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001 — N-2: 한 틱배치 오류로 감지 루프 죽지 않게
+                print(f"[감지][경보] 틱 처리 중 예외 — 루프 계속: {exc}",
+                      file=sys.stderr, flush=True)
             if deadline is not None and datetime.now() >= deadline:  # noqa: DTZ005
                 break
             time.sleep(args.poll_interval)
@@ -405,22 +411,29 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
     seq = SeqAssigner()
 
     def on_frame(msg: dict) -> None:
-        now = datetime.now()  # noqa: DTZ005 — KST naive
-        ticks, quotes, _vis = parse_real_message(msg, trade_date, seq, received_at=now)
-        for q in quotes:                      # 호가로 bid1 우선 갱신
-            detector.on_quote(str(q["code"]), q["ts"], q.get("bid1"))
-        for t in ticks:                       # 체결로 서지·매칭 판정
-            if t.get("price") is None:
-                continue
-            code_s, ts_t, px_t = str(t["code"]), t["ts"], float(t["price"])
-            if guard is not None:             # 가드: 체결·MAE·청산 리허설
-                guard.on_tick(code_s, ts_t, px_t)
-            if executor is not None:          # 실행기: 체결·미체결취소·청산
-                executor.on_tick(code_s, ts_t, px_t)
-            for alert in detector.on_tick(code_s, ts_t, px_t,
-                                          bid1=t.get("best_bid"), volume=t.get("volume"),
-                                          side=t.get("side")):
-                _emit_guarded(alert, bus, guard, poslog, executor)
+        # N-2: 한 프레임 처리 중 어떤 예외도 소켓 루프(다른 실포지션 관리)를 죽이지
+        # 못하게 감싼다. 주문 거부는 실행기 내부에서 이미 포획하지만, 파싱·판정 등
+        # 어느 단계의 예외든 방어한다.
+        try:
+            now = datetime.now()  # noqa: DTZ005 — KST naive
+            ticks, quotes, _vis = parse_real_message(msg, trade_date, seq, received_at=now)
+            for q in quotes:                      # 호가로 bid1 우선 갱신
+                detector.on_quote(str(q["code"]), q["ts"], q.get("bid1"))
+            for t in ticks:                       # 체결로 서지·매칭 판정
+                if t.get("price") is None:
+                    continue
+                code_s, ts_t, px_t = str(t["code"]), t["ts"], float(t["price"])
+                if guard is not None:             # 가드: 체결·MAE·청산 리허설
+                    guard.on_tick(code_s, ts_t, px_t)
+                if executor is not None:          # 실행기: 체결·미체결취소·청산
+                    executor.on_tick(code_s, ts_t, px_t)
+                for alert in detector.on_tick(code_s, ts_t, px_t,
+                                              bid1=t.get("best_bid"), volume=t.get("volume"),
+                                              side=t.get("side")):
+                    _emit_guarded(alert, bus, guard, poslog, executor)
+        except Exception as exc:  # noqa: BLE001 — 프레임 오류로 소켓 감지 죽지 않게
+            print(f"[감지][경보] 프레임 처리 중 예외 — 소켓 루프 계속: {exc}",
+                  file=sys.stderr, flush=True)
 
     collector = KiwoomRealtimeCollector(
         token, codes, conn=conn, dsn=(args.dsn if store else None),

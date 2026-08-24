@@ -284,6 +284,11 @@ class KiwoomOrderClient:
         self._holdings_ttl = float(holdings_ttl)
         self._holdings_cache: list[dict[str, Any]] | None = None
         self._holdings_at: float = 0.0
+        # N-1: 실시간 보유 동적 병합은 **매수(buy)에만** 적용하는 별도 집합.
+        # guard.blocklist(하드 3종목+설정)는 양방향 차단이지만, 우리가 방금 매수해
+        # 보유가 된 후속주까지 여기에 넣으면 그 종목의 **청산 매도**까지 막혀 실포지션이
+        # 무감시로 방치된다. 그래서 동적 보유분은 이 집합에 담아 매수만 차단한다.
+        self._dynamic_buy_block: frozenset[str] = frozenset()
         # 일일 주문 횟수 카운터(메모리). 날짜 바뀌면 리셋.
         self._count_day: date | None = None
         self._count_total = 0
@@ -376,20 +381,26 @@ class KiwoomOrderClient:
             held = {h["code"] for h in self.holdings()}
         except (KiwoomError, httpx.HTTPError, ValueError, KeyError) as exc:
             return f"주문 직전 잔고조회 실패 → fail-closed 로 주문 거부: {exc}"
+        # N-1: 동적 보유분은 **매수 전용** 집합에 병합(guard.blocklist 를 건드리지 않는다).
         if held:
-            self.guard = self.guard.with_blocked(held)
-        if intent.code in self.guard.blocklist:
+            self._dynamic_buy_block = self._dynamic_buy_block | {
+                normalize_code(c) for c in held if normalize_code(c)
+            }
+        if intent.code in self.guard.blocklist or intent.code in self._dynamic_buy_block:
             name = HELD_STOCK_NAMES.get(intent.code, "")
             return f"실시간 보유종목 차단{': ' + name if name else ''} — {intent.code}"
         return None
 
     def refresh_blocklist_from_account(self) -> set[str]:
-        """계좌 보유 전체를 블록리스트에 동적 병합. 보유 종목 주문 사고를 이중 차단.
+        """계좌 보유 전체를 **매수 차단** 집합에 동적 병합. 보유 종목 매수 사고를 이중 차단.
+
+        N-1: 청산 매도까지 막지 않도록 guard.blocklist(양방향) 가 아니라 매수 전용
+        집합(:attr:`_dynamic_buy_block`)에 병합한다. 하드코딩 3종목만 양방향 차단.
 
         반환: 새로 추가된 보유 코드 집합.
         """
-        held = {h["code"] for h in self.holdings()}
-        self.guard = self.guard.with_blocked(held)
+        held = {normalize_code(h["code"]) for h in self.holdings() if normalize_code(h["code"])}
+        self._dynamic_buy_block = self._dynamic_buy_block | held
         return held
 
     def current_price(self, code: str) -> int:
@@ -420,7 +431,27 @@ class KiwoomOrderClient:
         return out
 
     def is_filled(self, ord_no: str, code: str | None = None) -> bool:
-        """미체결 목록에 그 주문번호가 없으면 체결(또는 취소)로 본다."""
+        """매수 체결 확인 — **잔고에 해당 종목이 잡히면** 체결로 본다(N-3).
+
+        '미체결 목록에 없음' 만으로 체결을 단정하면 **취소·거부 주문도 체결로 오판**해
+        무보유 매도(→ 거부 → N-2 크래시)로 이어진다. 그래서 잔고조회를 1차 근거로
+        삼는다. 우리는 보유 종목을 하드 차단하므로, 대기 매수 중 잔고에 그 종목이
+        새로 잡혔다면 그것은 우리 매수의 체결이다.
+
+        * ``code`` 주어짐: 잔고에 그 종목 수량>0 이면 체결. 없으면 미체결(보수).
+          조회 실패 시 체결로 단정하지 않고 ``False``.
+        * ``code`` 없음(옛 경로): 잔고를 못 좁히므로 미체결 목록 부재로 근사하되,
+          이 경로는 취소·거부 오판 위험이 있으니 호출부는 되도록 code 를 넘길 것.
+        """
+        norm = normalize_code(code) if code else None
+        if norm:
+            try:
+                for h in self.holdings():
+                    if h["code"] == norm and int(h.get("qty") or 0) > 0:
+                        return True
+            except (KiwoomError, httpx.HTTPError, ValueError, KeyError):
+                return False   # 조회 실패 → 체결 단정 안 함(fail-safe)
+            return False       # 잔고에 없음 → 아직 미체결(취소·거부 오판 방지)
         return not any(o["ord_no"] == str(ord_no) for o in self.unfilled_orders(code))
 
     # ----- 카운터 ------------------------------------------------------------
@@ -455,10 +486,14 @@ class KiwoomOrderClient:
         code = intent.code
         if not code or len(code) != 6:
             return f"잘못된 종목코드: {code!r}"
-        # (1) 보유 3종목 하드 차단 — 최우선.
+        # (1) 보유 3종목 하드 차단 — 최우선. **매수·매도 양방향**(우리가 안 파는 종목).
         if code in g.blocklist:
             name = HELD_STOCK_NAMES.get(code, "")
             return f"블록리스트 차단(보유/금지 종목{': ' + name if name else ''}) — {code}"
+        # (1b) 동적 보유 병합 — **매수에만** 적용(N-1). 청산 매도는 막지 않는다.
+        if intent.side == "buy" and code in self._dynamic_buy_block:
+            name = HELD_STOCK_NAMES.get(code, "")
+            return f"실시간 보유종목 차단(매수){': ' + name if name else ''} — {code}"
         # (2) 화이트리스트 — 비어있지 않으면 그 외 전부 차단.
         if g.whitelist and code not in g.whitelist:
             return f"화이트리스트 외 종목 — {code} (등록 쌍 후속주만 허용)"
