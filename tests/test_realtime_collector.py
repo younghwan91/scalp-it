@@ -291,3 +291,32 @@ def test_collector_dry_run_does_not_store(conn):
     collector = asyncio.run(_run())
     assert collector.frames_seen == 1
     assert count_ticks(conn) == 0  # store=False
+
+
+def test_flush_survives_db_outage_and_preserves_batch(conn):
+    """DB 순단: insert 가 실패해도 배치를 버퍼에 보존하고 flush 는 안 죽는다.
+    재연결(dsn 없음)에 실패해도 다음 flush 에서 회복 가능해야 한다."""
+    collector = KiwoomRealtimeCollector(
+        "tok", ["005930"], conn=conn, store=True, trade_date=TDAY, log=lambda m: None,
+    )
+    # 틱 하나를 버퍼에 넣고, insert 가 터지는 죽은 커넥션으로 교체
+    from scalp_it.realtime.collector import SeqAssigner, parse_real_message
+    msg = {"trnm": "REAL", "data": [
+        {"type": "0B", "item": "005930", "values": _tick_values()}]}
+    ticks, _q, _v = parse_real_message(msg, TDAY, SeqAssigner(), received_at=datetime(2026, 8, 24, 9, 0, 1))
+    collector._tick_buf.extend(ticks)
+
+    class _DeadConn:
+        def cursor(self):
+            raise RuntimeError("server closed the connection unexpectedly")
+
+    collector._conn = _DeadConn()
+    collector._dsn = None  # 재연결 불가 — 그래도 예외 전파 없이 배치 보존
+    n = len(collector._tick_buf)
+    collector._flush()  # 예외 안 나야 함
+    assert len(collector._tick_buf) == n  # 배치 유실 없이 보존
+
+    # 커넥션 복구 후 flush 하면 저장된다
+    collector._conn = conn
+    collector._flush()
+    assert count_ticks(conn) >= 1

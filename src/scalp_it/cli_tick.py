@@ -165,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
 
         duration = parse_duration(args.duration)
         collector = KiwoomRealtimeCollector(
-            token, codes, conn=conn, types=types, url=url,
+            token, codes, conn=conn, dsn=args.dsn, types=types, url=url,
             flush_interval=args.flush_interval, trade_date=date.today(),  # noqa: DTZ011
         )
         print(f"커넥션 {collector.n_connections}개 · 종료까지 "

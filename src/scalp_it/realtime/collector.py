@@ -361,6 +361,7 @@ class KiwoomRealtimeCollector:
         codes: Sequence[str],
         *,
         conn: Any = None,
+        dsn: str | None = None,
         types: Sequence[str] = (TYPE_TRADE, TYPE_QUOTE),
         url: str = WS_URL,
         per_conn: int | None = None,
@@ -376,6 +377,7 @@ class KiwoomRealtimeCollector:
         self._types = list(types)
         self._url = url
         self._conn = conn
+        self._dsn = dsn  # DB 순단 시 재연결용
         self._store = store
         self._flush_interval = max(0.2, float(flush_interval))
         self._trade_date = trade_date or date.today()  # noqa: DTZ011 — KST naive, 프로젝트 표준
@@ -518,23 +520,47 @@ class KiwoomRealtimeCollector:
             await self._sleep_or_stop(self._flush_interval)
             self._flush()
 
+    def _reconnect_db(self) -> bool:
+        """DB 순단 후 커넥션 재생성. 실패해도 예외를 삼키고 False."""
+        if not self._dsn:
+            return False
+        from .store import connect as _db_connect
+        try:
+            self._conn = _db_connect(self._dsn)
+            return True
+        except Exception as exc:  # noqa: BLE001 — 재연결 실패는 다음 flush 에서 재시도
+            if self._log:
+                self._log(f"DB 재연결 실패: {exc}")
+            return False
+
     def _flush(self) -> None:
-        if not self._store or self._conn is None:
+        if not self._store:
             self._tick_buf.clear()
             self._quote_buf.clear()
             self._vi_buf.clear()
             return
         from .store import insert_quotes, insert_ticks, insert_vi_events
 
-        if self._tick_buf:
-            batch, self._tick_buf = self._tick_buf, []
-            self.ticks_stored += insert_ticks(self._conn, batch)
-        if self._quote_buf:
-            batch, self._quote_buf = self._quote_buf, []
-            self.quotes_stored += insert_quotes(self._conn, batch)
-        if self._vi_buf:
-            batch, self._vi_buf = self._vi_buf, []
-            self.vi_stored += insert_vi_events(self._conn, batch)
+        # DB 순단에 견딘다: insert 가 실패하면 배치를 버퍼에 되돌리고(유실 방지)
+        # 커넥션을 재생성해 다음 flush 에서 재시도한다. flush 루프는 죽지 않는다.
+        def _try(buf_attr: str, insert_fn: Any, counter: str) -> None:
+            buf = getattr(self, buf_attr)
+            if not buf or self._conn is None:
+                return
+            batch = list(buf)
+            try:
+                setattr(self, counter, getattr(self, counter) + insert_fn(self._conn, batch))
+                buf.clear()
+            except Exception as exc:  # noqa: BLE001 — DB 순단: 배치 보존 후 재연결
+                if self._log:
+                    self._log(f"insert 실패({buf_attr}), 배치 {len(batch)}건 보존·재연결 시도: {exc}")
+                self._reconnect_db()  # 버퍼는 그대로 두어 다음 flush 에서 재시도(순서 유지)
+
+        if self._conn is None:
+            self._reconnect_db()
+        _try("_tick_buf", insert_ticks, "ticks_stored")
+        _try("_quote_buf", insert_quotes, "quotes_stored")
+        _try("_vi_buf", insert_vi_events, "vi_stored")
 
     async def _sleep_or_stop(self, seconds: float) -> None:
         with contextlib.suppress(asyncio.TimeoutError):
