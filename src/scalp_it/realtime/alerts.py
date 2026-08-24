@@ -52,6 +52,13 @@ class LogFileSink:
             prefix = "\a" if self.bell else ""
             print(prefix + line, flush=True)
 
+    def notice(self, text: str) -> None:
+        """알림이 아닌 상태 메시지(킬스위치 배너 등)를 로그·stdout 에 남긴다."""
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"notice": text}, ensure_ascii=False) + "\n")
+        if self.echo:
+            print(text, flush=True)
+
 
 class DiscordSink:
     """Discord 웹훅 훅. URL 없으면 비활성(``enabled=False``)."""
@@ -78,6 +85,20 @@ class DiscordSink:
             # 알림 채널 실패가 감지 루프를 죽이면 안 된다 — 경고만.
             print(f"[알림] Discord 웹훅 실패: {exc}", file=sys.stderr, flush=True)
 
+    def notice(self, text: str) -> None:
+        """상태 메시지(킬스위치 배너 등)를 웹훅으로."""
+        if not self.enabled:
+            return
+        payload = json.dumps({"content": text}).encode("utf-8")
+        req = urllib.request.Request(
+            self.webhook_url, data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            urllib.request.urlopen(req, timeout=self.timeout)
+        except (urllib.error.URLError, OSError) as exc:
+            print(f"[알림] Discord 웹훅 실패: {exc}", file=sys.stderr, flush=True)
+
 
 class AlertBus:
     """여러 sink 를 묶어 한 번에 emit. ``dry_run`` 이면 stdout 미리보기만."""
@@ -94,6 +115,16 @@ class AlertBus:
             return
         for sink in self.sinks:
             sink.emit(alert)
+
+    def notice(self, text: str) -> None:
+        """알림이 아닌 상태 메시지를 sink 로 전달(킬스위치 배너 등)."""
+        if self.dry_run:
+            print("[dry-run] " + text, flush=True)
+            return
+        for sink in self.sinks:
+            fn = getattr(sink, "notice", None)
+            if fn is not None:
+                fn(text)
 
 
 def build_default_bus(*, log_path: str | Path = "data/pair_alerts.log",

@@ -41,12 +41,14 @@ from .intraday.store import _placeholder, connect, is_postgres
 from .realtime.alerts import AlertBus, build_default_bus
 from .realtime.pair_detector import (
     DEFAULT_WATCHLIST,
+    Alert,
     DetectorConfig,
     Pair,
     PairDetector,
     load_watchlist,
     parse_pairs_arg,
 )
+from .realtime.risk_guard import PositionLogSink, RiskGuard, RiskGuardConfig
 
 DEFAULT_WATCHLIST_PATH = "data/pair_watchlist.json"
 
@@ -90,6 +92,35 @@ def build_config(args: argparse.Namespace) -> DetectorConfig:
     return replace(cfg, **over) if over else cfg
 
 
+def _parse_loss_limit(spec: str | None) -> tuple[float, float | None]:
+    """``"20000"`` → (20000원, None) · ``"2%"`` → (0, 0.02). (원, pct)."""
+    if spec is None:
+        return 0.0, None
+    s = spec.strip()
+    if s.endswith("%"):
+        return 0.0, float(s[:-1]) / 100.0
+    return float(s), None
+
+
+def build_guard(args: argparse.Namespace) -> RiskGuard | None:
+    """가드 구성. ``--no-guard`` 면 None(기존 동작)."""
+    if args.no_guard:
+        return None
+    loss_krw, loss_pct = _parse_loss_limit(args.daily_loss_limit)
+    cfg = RiskGuardConfig(
+        daily_loss_limit=loss_krw,
+        daily_loss_limit_pct=loss_pct,
+        daily_capital=args.capital,
+        position_notional=args.position_notional,
+        max_consecutive_losses=args.max_consecutive_losses,
+        max_positions=args.max_positions,
+        fill_basis=args.fill_basis,
+        cost_rate=args.cost_rate,
+        stop_file=(None if args.no_stop_file else args.stop_file),
+    )
+    return RiskGuard(cfg)
+
+
 # --------------------------------------------------------------------- DB 읽기
 
 def _as_dt(value: Any) -> datetime:
@@ -119,35 +150,81 @@ def _fetch_ticks(conn: Any, codes: list[str], *, since: datetime | None,
     return rows
 
 
-def _feed(detector: PairDetector, bus: AlertBus, rows: list[tuple]) -> int:
+def _emit_guarded(alert: Alert, bus: AlertBus, guard: RiskGuard | None,
+                  poslog: PositionLogSink | None) -> bool:
+    """알림을 가드에 태워 통과분만 emit. 억제되면 배너·킬 로그를 남긴다. emit 여부."""
+    if guard is None:
+        bus.emit(alert)
+        return True
+    decision = guard.on_alert(alert)
+    if decision.banner:
+        bus.notice(decision.banner)
+        if poslog is not None:
+            poslog.log_kill(alert.ts, guard.kill_reason, guard.realized_krw)
+    if not decision.allowed:
+        return False
+    bus.emit(alert)
+    if poslog is not None:
+        poslog.log_open(alert)
+    return True
+
+
+def _feed(detector: PairDetector, bus: AlertBus, rows: list[tuple],
+          guard: RiskGuard | None = None,
+          poslog: PositionLogSink | None = None) -> int:
     n = 0
     for code, ts, price, volume, best_bid in rows:
         if price is None:
             continue
-        for alert in detector.on_tick(str(code), _as_dt(ts), float(price),
-                                      bid1=best_bid, volume=volume):
-            bus.emit(alert)
-            n += 1
+        t = _as_dt(ts)
+        p = float(price)
+        # 가드는 매 틱으로 열린 가상 포지션의 체결·MAE·청산을 리허설한다.
+        if guard is not None:
+            guard.on_tick(str(code), t, p)
+        for alert in detector.on_tick(str(code), t, p, bid1=best_bid, volume=volume):
+            if _emit_guarded(alert, bus, guard, poslog):
+                n += 1
     return n
+
+
+def build_poslog(args: argparse.Namespace, guard: RiskGuard | None) -> PositionLogSink | None:
+    """포지션 로그 sink 를 만들고 가드 청산 콜백에 연결한다."""
+    if guard is None or args.dry_run:
+        return None
+    poslog = PositionLogSink(args.position_log, basis=args.fill_basis)
+    guard.set_close_callback(poslog.log_close)
+    return poslog
 
 
 # --------------------------------------------------------------------- 모드
 
-def run_replay(args: argparse.Namespace, conn: Any, detector: PairDetector) -> int:
+def run_replay(args: argparse.Namespace, conn: Any, detector: PairDetector,
+               guard: RiskGuard | None) -> int:
     day = args.replay
     print(f"# 리플레이 {day} — 등록 쌍 {len(detector.pairs)}개 재현 (dry-run)", flush=True)
     bus = AlertBus(dry_run=True)
     rows = _fetch_ticks(conn, sorted(detector.codes), since=None, day=day)
     print(f"틱 {len(rows):,}건 로드. 시간순 흘림 …", flush=True)
-    n = _feed(detector, bus, rows)
-    print(f"\n감지된 짝꿍 알림 {n}건 (쌍별 쿨다운 {detector.config.cooldown:.0f}s 적용).", flush=True)
+    n = _feed(detector, bus, rows, guard=guard)
+    if guard is not None:
+        guard.flush_expired(_as_dt(rows[-1][1]) if rows else datetime.now())  # noqa: DTZ005
+        print("\n" + guard.status_line(), flush=True)
+        c = guard.closed_positions
+        filled = [p for p in c if p.status == "closed"]
+        print(f"가상 포지션 {len(c)}건(회계 {guard.config.fill_basis}): "
+              f"체결 {len(filled)} · 미체결 {len(c) - len(filled)} · "
+              f"킬스위치 {'발동(' + guard.kill_reason + ')' if guard.killed else '미발동'}.",
+              flush=True)
+    print(f"\n통과 짝꿍 알림 {n}건 (쌍별 쿨다운 {detector.config.cooldown:.0f}s 적용).", flush=True)
     return 0
 
 
-def run_realtime(args: argparse.Namespace, conn: Any, detector: PairDetector) -> int:
+def run_realtime(args: argparse.Namespace, conn: Any, detector: PairDetector,
+                 guard: RiskGuard | None) -> int:
     codes = sorted(detector.codes)
     bus = build_default_bus(log_path=args.log, bell=args.bell,
                             discord=not args.no_discord, dry_run=args.dry_run)
+    poslog = build_poslog(args, guard)
     # 워밍업: 최근 lookback 초의 틱을 먼저 먹여 롤링 창을 채운다.
     now = datetime.now()  # noqa: DTZ005 — KST 로컬
     warm_since = now.timestamp() - args.lookback
@@ -160,24 +237,29 @@ def run_realtime(args: argparse.Namespace, conn: Any, detector: PairDetector) ->
     watermark = max((_as_dt(r[1]) for r in warm), default=warm_dt)
     print(f"# 실시간 감지 시작 — 쌍 {len(detector.pairs)}개, 종목 {len(codes)}개, "
           f"폴링 {args.poll_interval}s, 로그 {args.log}"
+          + (f", 가드 {'켬' if guard else '끔'}" )
           + (" [dry-run]" if args.dry_run else ""), flush=True)
     deadline = _parse_deadline(args.duration)
     try:
         while True:
             rows = _fetch_ticks(conn, codes, since=watermark, day=None)
             if rows:
-                _feed(detector, bus, rows)
+                _feed(detector, bus, rows, guard=guard, poslog=poslog)
                 watermark = max(_as_dt(r[1]) for r in rows)
             if deadline is not None and datetime.now() >= deadline:  # noqa: DTZ005
                 break
             time.sleep(args.poll_interval)
     except KeyboardInterrupt:
         print("\n중단.", file=sys.stderr)
+    if guard is not None:
+        guard.flush_expired(datetime.now())  # noqa: DTZ005
+        print(guard.status_line(), flush=True)
     print(f"누적 알림 {bus.count}건.", flush=True)
     return 0
 
 
-def run_live(args: argparse.Namespace, detector: PairDetector) -> int:
+def run_live(args: argparse.Namespace, detector: PairDetector,
+             guard: RiskGuard | None) -> int:
     """소켓 직결 모드(실전 주경로) — 수집 데몬과 한 프로세스로, 틱 도착 즉시 판정.
 
     ``KiwoomRealtimeCollector`` 를 띄우되 ``on_frame`` 콜백에서 프레임을 파싱해 곧장
@@ -211,6 +293,7 @@ def run_live(args: argparse.Namespace, detector: PairDetector) -> int:
     store = not args.no_store and not args.dry_run
     bus = build_default_bus(log_path=args.log, bell=args.bell,
                             discord=not args.no_discord, dry_run=args.dry_run)
+    poslog = build_poslog(args, guard)
 
     conn = None
     if store:
@@ -246,9 +329,12 @@ def run_live(args: argparse.Namespace, detector: PairDetector) -> int:
         for t in ticks:                       # 체결로 서지·매칭 판정
             if t.get("price") is None:
                 continue
-            for alert in detector.on_tick(str(t["code"]), t["ts"], float(t["price"]),
+            code_s, ts_t, px_t = str(t["code"]), t["ts"], float(t["price"])
+            if guard is not None:             # 가드: 체결·MAE·청산 리허설
+                guard.on_tick(code_s, ts_t, px_t)
+            for alert in detector.on_tick(code_s, ts_t, px_t,
                                           bid1=t.get("best_bid"), volume=t.get("volume")):
-                bus.emit(alert)
+                _emit_guarded(alert, bus, guard, poslog)
 
     collector = KiwoomRealtimeCollector(
         token, codes, conn=conn, dsn=(args.dsn if store else None),
@@ -329,9 +415,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-discord", action="store_true", help="Discord 웹훅 훅 끄기")
     # 청산 모드
     mode = p.add_mutually_exclusive_group()
-    mode.add_argument("--stable", action="store_true", help="안정형(기본): +0.5%/−0.4%/90s")
+    mode.add_argument("--stable", action="store_true", help="안정형(기본): +0.5%%/−0.4%%/90s")
     mode.add_argument("--aggressive", action="store_true",
-                      help="공격형: +0.8%/일상손절없음+재난선−0.7%/90s")
+                      help="공격형: +0.8%%/일상손절없음+재난선−0.7%%/90s")
     p.add_argument("--take-profit", type=float, default=None, help="익절 비율 덮기 (예 0.008)")
     p.add_argument("--stop-loss", type=float, default=None,
                    help="일상 손절 비율 덮기 (예 -0.004, 0 = 없음)")
@@ -342,6 +428,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cooldown", type=float, default=None, help="쌍 재알림 억제 초 (기본 90)")
     p.add_argument("--min-turnover", type=float, default=None,
                    help="후속 당일 누적 체결대금 하한(원). 0 = 끔")
+    # 리스크 가드 (감사 선결조건: 일일손실한도·킬스위치·포지션추적)
+    g = p.add_argument_group("리스크 가드")
+    g.add_argument("--no-guard", action="store_true",
+                   help="가드 끄기(기존 동작 — 손실통제 없이 알림만)")
+    g.add_argument("--daily-loss-limit", default="50000",
+                   help="일일 손실한도. '50000'(원) 또는 '2%%'(자본 대비). 기본 50000원")
+    g.add_argument("--capital", type=float, default=1_000_000.0,
+                   help="%% 손실한도·기록 기준 자본(원). 기본 100만")
+    g.add_argument("--position-notional", type=float, default=100_000.0,
+                   help="가상 포지션 1건 명목(원) — 수익률→원 환산. 기본 10만")
+    g.add_argument("--max-consecutive-losses", type=int, default=3,
+                   help="연속 손절 상한(킬 트리거). 기본 3")
+    g.add_argument("--max-positions", type=int, default=2,
+                   help="동시 보유 가상 포지션 상한. 기본 2")
+    g.add_argument("--fill-basis", choices=("through", "touch"), default="through",
+                   help="가상 체결 회계 가정: through(보수·기본)|touch(낙관)")
+    g.add_argument("--cost-rate", type=float, default=0.0,
+                   help="왕복 비용률(수익률에서 차감). 0 = 끔")
+    g.add_argument("--stop-file", default="data/pair_STOP",
+                   help="존재 시 수동 킬스위치. 기본 data/pair_STOP")
+    g.add_argument("--no-stop-file", action="store_true",
+                   help="수동 정지 파일 감시 끄기")
+    g.add_argument("--position-log", default="data/pair_positions.log",
+                   help="가상 포지션 로그(MAE·지연·체결·손익). 기본 data/pair_positions.log")
     return p
 
 
@@ -351,10 +461,11 @@ def main(argv: list[str] | None = None) -> int:
     if not pairs:
         raise SystemExit("감시할 쌍이 없다. --pairs 또는 워치리스트를 확인하라.")
     detector = PairDetector(pairs, build_config(args))
+    guard = build_guard(args)
 
     # 소켓 직결 모드 — DB 폴링을 안 거친다(저장은 collector 가 담당).
     if args.live:
-        return run_live(args, detector)
+        return run_live(args, detector, guard)
 
     conn = connect(args.dsn or os.environ.get("KR_QUANT_DB"))
     # 후속주 구독 커버리지 경고 (오늘 ticks 에 후속주가 있는지).
@@ -362,8 +473,8 @@ def main(argv: list[str] | None = None) -> int:
         _warn_missing(conn, detector)
 
     if args.replay:
-        return run_replay(args, conn, detector)
-    return run_realtime(args, conn, detector)
+        return run_replay(args, conn, detector, guard)
+    return run_realtime(args, conn, detector, guard)
 
 
 def _warn_missing(conn: Any, detector: PairDetector) -> None:
