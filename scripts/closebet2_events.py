@@ -260,7 +260,7 @@ def main() -> None:
     # 등락률 분포 (상한가 근접 오염 점검용 — 수익률 아님)
     bins = [-1, 0, .05, .10, .20, .25, .295, 10]
     dist = pd.cut(sel["ret_day"], bins).value_counts().sort_index()
-    print("선택 건 당일 등락률 분포: " + " · ".join(f"{str(k)} {v}" for k, v in dist.items()) + "\n")
+    print("선택 건 당일 등락률 분포: " + " · ".join(f"{k!s} {v}" for k, v in dist.items()) + "\n")
     pool_ok = pool[~pool["limit_up"]]
     per_day = pool_ok.groupby("date").size()
     print(f"제외 후 풀 하루 건수: 중앙 {per_day.median():.0f} · p10 {per_day.quantile(.1):.0f} · p90 {per_day.quantile(.9):.0f} · "
