@@ -39,6 +39,7 @@ from typing import Any
 
 from .intraday.store import _placeholder, connect, is_postgres
 from .realtime.alerts import AlertBus, build_default_bus
+from .realtime.order_executor import OrderExecutor
 from .realtime.pair_detector import (
     DEFAULT_WATCHLIST,
     Alert,
@@ -153,27 +154,39 @@ def _fetch_ticks(conn: Any, codes: list[str], *, since: datetime | None,
 
 
 def _emit_guarded(alert: Alert, bus: AlertBus, guard: RiskGuard | None,
-                  poslog: PositionLogSink | None) -> bool:
-    """알림을 가드에 태워 통과분만 emit. 억제되면 배너·킬 로그를 남긴다. emit 여부."""
+                  poslog: PositionLogSink | None,
+                  executor: OrderExecutor | None = None) -> bool:
+    """알림을 가드에 태워 통과분만 emit. 억제되면 배너·킬 로그를 남긴다. emit 여부.
+
+    **주문 발주는 오직 가드 통과(allowed) 경로에서만** — 감사 요구(가드와 동일 게이트).
+    킬 발동 시 실행기의 대기 매수를 취소한다.
+    """
     if guard is None:
         bus.emit(alert)
+        if executor is not None:
+            executor.on_signal(alert)
         return True
     decision = guard.on_alert(alert)
     if decision.banner:
         bus.notice(decision.banner)
         if poslog is not None:
             poslog.log_kill(alert.ts, guard.kill_reason, guard.realized_krw)
+        if executor is not None:
+            executor.on_kill()
     if not decision.allowed:
         return False
     bus.emit(alert)
     if poslog is not None:
         poslog.log_open(alert)
+    if executor is not None:                 # 동일 게이트 통과분만 주문
+        executor.on_signal(alert)
     return True
 
 
 def _feed(detector: PairDetector, bus: AlertBus, rows: list[tuple],
           guard: RiskGuard | None = None,
-          poslog: PositionLogSink | None = None) -> int:
+          poslog: PositionLogSink | None = None,
+          executor: OrderExecutor | None = None) -> int:
     n = 0
     for code, ts, price, volume, best_bid, side in rows:
         if price is None:
@@ -183,11 +196,74 @@ def _feed(detector: PairDetector, bus: AlertBus, rows: list[tuple],
         # 가드는 매 틱으로 열린 가상 포지션의 체결·MAE·청산을 리허설한다.
         if guard is not None:
             guard.on_tick(str(code), t, p)
+        if executor is not None:             # 실행기: 체결·미체결취소·청산
+            executor.on_tick(str(code), t, p)
         for alert in detector.on_tick(str(code), t, p, bid1=best_bid,
                                        volume=volume, side=side):
-            if _emit_guarded(alert, bus, guard, poslog):
+            if _emit_guarded(alert, bus, guard, poslog, executor):
                 n += 1
     return n
+
+
+def build_order_executor(
+    args: argparse.Namespace, pairs: list[Pair]
+) -> OrderExecutor | None:
+    """``--live-order`` 일 때만 실계좌 주문 실행기를 만든다.
+
+    이중 안전: ``--live-order`` 는 실행기를 켤 뿐 어댑터는 **dry-run** 이라 실주문이
+    안 나간다. 진짜 발주는 ``--confirm-real`` 까지 있어야(어댑터 ``live=True``).
+    시작 시 계좌 자동조회 + 보유 전종목 블록리스트 병합(fail-closed).
+    """
+    if not args.live_order:
+        return None
+    from .adapters.kiwoom import KiwoomError, api_credentials
+    from .adapters.kiwoom_order import (
+        KIWOOM_BASE,
+        KIWOOM_MOCK_BASE,
+        KiwoomOrderClient,
+        OrderGuardConfig,
+        OrderLogSink,
+    )
+
+    whitelist = frozenset(p.follower for p in pairs)  # 등록 쌍 후속주만 허용
+    guard = OrderGuardConfig(
+        max_qty=args.qty,
+        price_band_pct=args.order_band_pct,
+        max_orders_per_code=args.max_orders_per_code,
+        max_orders_total=args.max_orders_total,
+        whitelist=whitelist,
+    )
+    # 전용 키 우선(감지 소켓과 동일 정책).
+    env = dict(os.environ)
+    if os.environ.get("PAIR_DETECT_APP_KEY"):
+        env["KIWOOM_APP_KEY"] = os.environ["PAIR_DETECT_APP_KEY"]
+        env["KIWOOM_APP_SECRET"] = os.environ.get("PAIR_DETECT_APP_SECRET", "")
+    try:
+        appkey, secret = api_credentials(env)
+    except KiwoomError as exc:
+        print(f"[주문] 인증 정보 없음 → 주문 실행기 비활성: {exc}", file=sys.stderr)
+        return None
+    base = KIWOOM_MOCK_BASE if args.mock else KIWOOM_BASE
+    log = OrderLogSink(args.order_log)
+    client = KiwoomOrderClient(appkey, secret, guard=guard, base_url=base, on_order=log.emit)
+    # 계좌 자동조회 + 실시간 보유 병합(fail-closed): 실패하면 주문 실행기를 끈다.
+    try:
+        client.account_number()
+        held = client.refresh_blocklist_from_account()
+    except KiwoomError as exc:
+        print(f"[주문] 계좌/잔고 조회 실패 → 안전상 주문 실행기 비활성(fail-closed): {exc}",
+              file=sys.stderr)
+        return None
+    real = args.confirm_real
+    mode = "🔴 실발주(LIVE)" if real else "🧪 DRY-RUN(발주 안 함)"
+    print(f"# 주문 실행기 ON — {mode} · 계좌 {client.masked_account()} · 수량 {args.qty}주 "
+          f"· 화이트리스트 {len(whitelist)}종목 · 보유차단 {len(held)}종목 "
+          f"(하드 3 + 실시간) · 가격밴드 ±{args.order_band_pct:.1%}"
+          + ("  ← --confirm-real 켜짐! 진짜 주문이 나갑니다." if real else ""),
+          file=sys.stderr, flush=True)
+    return OrderExecutor(client, qty=args.qty, live=real,
+                         unfilled_timeout=args.unfilled_timeout,
+                         notice=lambda s: print(s, flush=True))
 
 
 def build_poslog(args: argparse.Namespace, guard: RiskGuard | None) -> PositionLogSink | None:
@@ -223,7 +299,7 @@ def run_replay(args: argparse.Namespace, conn: Any, detector: PairDetector,
 
 
 def run_realtime(args: argparse.Namespace, conn: Any, detector: PairDetector,
-                 guard: RiskGuard | None) -> int:
+                 guard: RiskGuard | None, executor: OrderExecutor | None = None) -> int:
     codes = sorted(detector.codes)
     bus = build_default_bus(log_path=args.log, bell=args.bell,
                             discord=not args.no_discord, dry_run=args.dry_run)
@@ -248,7 +324,7 @@ def run_realtime(args: argparse.Namespace, conn: Any, detector: PairDetector,
         while True:
             rows = _fetch_ticks(conn, codes, since=watermark, day=None)
             if rows:
-                _feed(detector, bus, rows, guard=guard, poslog=poslog)
+                _feed(detector, bus, rows, guard=guard, poslog=poslog, executor=executor)
                 watermark = max(_as_dt(r[1]) for r in rows)
             if deadline is not None and datetime.now() >= deadline:  # noqa: DTZ005
                 break
@@ -258,12 +334,15 @@ def run_realtime(args: argparse.Namespace, conn: Any, detector: PairDetector,
     if guard is not None:
         guard.flush_expired(datetime.now())  # noqa: DTZ005
         print(guard.status_line(), flush=True)
+    if executor is not None:
+        executor.flush(datetime.now())  # noqa: DTZ005
+        print(executor.summary(), flush=True)
     print(f"누적 알림 {bus.count}건.", flush=True)
     return 0
 
 
 def run_live(args: argparse.Namespace, detector: PairDetector,
-             guard: RiskGuard | None) -> int:
+             guard: RiskGuard | None, executor: OrderExecutor | None = None) -> int:
     """소켓 직결 모드(실전 주경로) — 수집 데몬과 한 프로세스로, 틱 도착 즉시 판정.
 
     ``KiwoomRealtimeCollector`` 를 띄우되 ``on_frame`` 콜백에서 프레임을 파싱해 곧장
@@ -336,10 +415,12 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             code_s, ts_t, px_t = str(t["code"]), t["ts"], float(t["price"])
             if guard is not None:             # 가드: 체결·MAE·청산 리허설
                 guard.on_tick(code_s, ts_t, px_t)
+            if executor is not None:          # 실행기: 체결·미체결취소·청산
+                executor.on_tick(code_s, ts_t, px_t)
             for alert in detector.on_tick(code_s, ts_t, px_t,
                                           bid1=t.get("best_bid"), volume=t.get("volume"),
                                           side=t.get("side")):
-                _emit_guarded(alert, bus, guard, poslog)
+                _emit_guarded(alert, bus, guard, poslog, executor)
 
     collector = KiwoomRealtimeCollector(
         token, codes, conn=conn, dsn=(args.dsn if store else None),
@@ -365,6 +446,9 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
     finally:
         if conn is not None:
             conn.close()
+    if executor is not None:
+        executor.flush(datetime.now())  # noqa: DTZ005
+        print(executor.summary(), file=sys.stderr, flush=True)
     print(f"누적 알림 {bus.count}건 · 프레임 {collector.frames_seen:,}"
           f" · 저장 틱 {collector.ticks_stored:,}", file=sys.stderr, flush=True)
     return 0
@@ -460,6 +544,24 @@ def build_parser() -> argparse.ArgumentParser:
                    help="수동 정지 파일 감시 끄기")
     g.add_argument("--position-log", default="data/pair_positions.log",
                    help="가상 포지션 로그(MAE·지연·체결·손익). 기본 data/pair_positions.log")
+    # 실계좌 주문 실행 (이중 게이트: --live-order 만으로는 dry-run)
+    o = p.add_argument_group("실계좌 주문 (기본 꺼짐 · 이중 안전)")
+    o.add_argument("--live-order", action="store_true",
+                   help="주문 실행기 켜기. 단 이것만으론 dry-run(발주 안 함). 기본 꺼짐")
+    o.add_argument("--confirm-real", action="store_true",
+                   help="진짜 발주. --live-order 와 **둘 다** 있어야 실주문(이중 확인)")
+    o.add_argument("--qty", type=int, default=1,
+                   help="주문 수량(주). 기본 1, 어댑터 하드캡 10")
+    o.add_argument("--order-band-pct", type=float, default=0.03,
+                   help="지정가 허용 범위(참조가 대비 ±). 기본 0.03(±3%%)")
+    o.add_argument("--max-orders-per-code", type=int, default=5,
+                   help="종목당 일일 주문 횟수 상한. 기본 5")
+    o.add_argument("--max-orders-total", type=int, default=20,
+                   help="일일 총 주문 횟수 상한. 기본 20")
+    o.add_argument("--unfilled-timeout", type=float, default=15.0,
+                   help="미체결 매수 취소까지 초. 기본 15")
+    o.add_argument("--order-log", default="data/pair_orders.log",
+                   help="주문 로그(종목·수량·가격·매수매도, 비밀 없음). 기본 data/pair_orders.log")
     return p
 
 
@@ -470,10 +572,12 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("감시할 쌍이 없다. --pairs 또는 워치리스트를 확인하라.")
     detector = PairDetector(pairs, build_config(args))
     guard = build_guard(args)
+    # 주문 실행기 — 리플레이(과거 재현)에선 절대 만들지 않는다.
+    executor = None if args.replay else build_order_executor(args, pairs)
 
     # 소켓 직결 모드 — DB 폴링을 안 거친다(저장은 collector 가 담당).
     if args.live:
-        return run_live(args, detector, guard)
+        return run_live(args, detector, guard, executor)
 
     conn = connect(args.dsn or os.environ.get("KR_QUANT_DB"))
     # 후속주 구독 커버리지 경고 (오늘 ticks 에 후속주가 있는지).
@@ -482,7 +586,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.replay:
         return run_replay(args, conn, detector, guard)
-    return run_realtime(args, conn, detector, guard)
+    return run_realtime(args, conn, detector, guard, executor)
 
 
 def _warn_missing(conn: Any, detector: PairDetector) -> None:
