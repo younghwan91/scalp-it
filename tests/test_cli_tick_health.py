@@ -246,12 +246,12 @@ def test_vi_events_reported(conn):
     assert "2건" in vi.detail
 
 
-def test_vi_absent_during_market_is_warn_not_fail(conn):
+def test_vi_absent_during_market_is_ok(conn):
+    # VI 0건은 장중이라도 정상(드문 이벤트). 매번 WARN 을 내면 경보가 무의미하다.
     _healthy(conn, n=2)  # 틱·호가는 정상, VI 만 없음
     checks = H.run_checks(conn, minutes=15, expected=1, now=NOW)
     vi = _by_name(checks)["6. VI 이벤트"]
-    assert vi.status is H.Status.WARN
-    # VI 부재는 실패가 아니다 — 종료코드는 0 이어야 한다.
+    assert vi.status is H.Status.OK
     assert H.worst_status(checks) is not H.Status.FAIL
 
 

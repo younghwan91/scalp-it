@@ -459,7 +459,7 @@ def judge_price(
     return Check(name, Status.OK, f"{mode} 범위 내 {checked}종목 · best_bid≤best_ask OK")
 
 
-def judge_quotes(quote: QuoteStats, *, market: bool) -> Check:
+def judge_quotes(quote: QuoteStats, *, market: bool, now: datetime | None = None) -> Check:
     """항목 5 — 호가. bid1<ask1, 총잔량>0, 10호가, ts 갱신, vi_flag."""
     name = "5. 호가"
     if quote.n_rows == 0:
@@ -487,7 +487,7 @@ def judge_quotes(quote: QuoteStats, *, market: bool) -> Check:
     # ts 갱신: 장중이면 최신 스냅샷이 최근이어야 한다.
     latest = _parse_ts(quote.latest_ts)
     if market and latest is not None:
-        age = (datetime.now() - latest).total_seconds()  # noqa: DTZ005
+        age = ((now or datetime.now()) - latest).total_seconds()  # noqa: DTZ005
         if age > 180:
             status = max(status, Status.WARN, key=lambda s: s.rank)
             parts.append(f"최신 호가 {age:.0f}s 전 — 갱신 지연?")
@@ -512,9 +512,11 @@ def judge_vi(n_rows: int, n_codes: int, *, minutes: int, market: bool) -> Check:
         return Check(name, Status.OK, f"최근 {minutes}분 {n_rows:,}건 / {n_codes}종목")
     if not market:
         return Check(name, Status.OK, f"최근 {minutes}분 0건 — 장중 아님(정상)")
+    # 장중 0건도 정상(VI 는 드문 이벤트). WARN 을 매번 내면 경보가 무의미해지므로
+    # OK 로 두되, 1h 구독 자체가 살아있는지는 collector 로그로 별도 확인한다.
     return Check(
-        name, Status.WARN,
-        f"최근 {minutes}분 0건 — VI 는 드문 이벤트라 정상일 수 있으나 1h 구독 점검 권장",
+        name, Status.OK,
+        f"최근 {minutes}분 0건 — VI 는 드문 이벤트라 정상(발동 시 자동 기록)",
     )
 
 
@@ -540,7 +542,7 @@ def run_checks(conn: Any, *, minutes: int, expected: int, now: datetime) -> list
         judge_side_signs(tick),
         judge_strength(tick),
         judge_price(tick, ranges, ref_date, same_day),
-        judge_quotes(quote, market=market),
+        judge_quotes(quote, market=market, now=now),
         judge_vi(vi_rows, vi_codes, minutes=minutes, market=market),
     ]
 
