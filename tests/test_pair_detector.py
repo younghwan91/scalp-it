@@ -26,9 +26,9 @@ def _det(**cfg_kw) -> PairDetector:
     return PairDetector([PAIR], DetectorConfig(**cfg_kw))
 
 
-def _feed(det, code, secs, price, *, bid1=None, volume=None):
+def _feed(det, code, secs, price, *, bid1=None, volume=None, side=1):
     return det.on_tick(code, BASE + timedelta(seconds=secs), float(price),
-                       bid1=bid1, volume=volume)
+                       bid1=bid1, volume=volume, side=side)
 
 
 def _base_timeline(det, *, fol60=100.0, fol30=100.0, fol_now=100.6,
@@ -100,8 +100,8 @@ def test_cooldown_suppresses_repeat():
     a2 = _feed(det, PAIR.leader, 120, 102.0)            # 서지, 하지만 t=120 < 60+90
     assert a2 == []
     # 쿨다운 지난 뒤(t=160)엔 다시 알림
-    _feed(det, PAIR.follower, 130, 100.0, bid1=100.0)
-    _feed(det, PAIR.follower, 160, 101.0, bid1=100.0)
+    _feed(det, PAIR.follower, 130, 100.0, bid1=100.0, volume=1000)
+    _feed(det, PAIR.follower, 160, 101.0, bid1=100.0, volume=1000)
     _feed(det, PAIR.leader, 130, 100.0)
     a3 = _feed(det, PAIR.leader, 160, 102.0)
     assert len(a3) == 1
@@ -113,6 +113,63 @@ def test_min_turnover_floor():
     det = _det(min_turnover=1e9)  # 후속 누적 체결대금 10억 하한
     alerts = _base_timeline(det)  # 후속 누적 = 100*1000*3 = 30만 < 10억
     assert alerts == []
+
+
+# --------------------------------------------------------- 매수체결비율(역선택 방어)
+
+def _buyratio_timeline(det, *, s30, s60, v30=1000, v60=1000):
+    """서지+리드랙은 통과시키되 후속의 t=30·t=60 체결 side/vol 만 바꿔 매수비율을 조절.
+
+    창 [30,60] 안 체결로 매수비율 = (매수량)/(전체량) 이 결정된다.
+    """
+    _feed(det, PAIR.follower, 0, 100.0, bid1=100.0, volume=1000, side=1)
+    _feed(det, PAIR.follower, 30, 100.0, bid1=100.0, volume=v30, side=s30)
+    _feed(det, PAIR.leader, 30, 100.0, volume=1000)
+    _feed(det, PAIR.follower, 60, 100.6, bid1=100.0, volume=v60, side=s60)
+    return _feed(det, PAIR.leader, 60, 102.0, volume=1000)
+
+
+def test_buy_ratio_passes_when_buys_dominate():
+    det = _det(min_buy_ratio=0.30)
+    alerts = _buyratio_timeline(det, s30=1, s60=1)   # 매수 100%
+    assert len(alerts) == 1
+    assert alerts[0].buy_ratio == pytest.approx(1.0)
+
+
+def test_buy_ratio_blocks_when_sells_dominate():
+    det = _det(min_buy_ratio=0.30)
+    alerts = _buyratio_timeline(det, s30=-1, s60=-1)  # 매수 0% < 0.30
+    assert alerts == []
+
+
+def test_buy_ratio_threshold_boundary():
+    # 창 안 매수 1000 / 전체 4000 = 0.25 < 0.30 → 차단
+    det = _det(min_buy_ratio=0.30)
+    blocked = _buyratio_timeline(det, s30=-1, s60=1, v30=3000, v60=1000)
+    assert blocked == []
+    # 0.50 ≥ 0.30 → 통과
+    det2 = _det(min_buy_ratio=0.30)
+    ok = _buyratio_timeline(det2, s30=-1, s60=1, v30=1000, v60=1000)
+    assert len(ok) == 1
+    assert ok[0].buy_ratio == pytest.approx(0.5)
+
+
+def test_buy_ratio_warmup_skips_when_no_volume():
+    # 후속 체결에 volume 이 없어 매수비율을 못 재면(워밍업) 안전 스킵(진입 안 함).
+    det = _det(min_buy_ratio=0.30)
+    _feed(det, PAIR.follower, 0, 100.0, bid1=100.0)          # volume 없음
+    _feed(det, PAIR.follower, 30, 100.0, bid1=100.0)
+    _feed(det, PAIR.leader, 30, 100.0, volume=1000)
+    _feed(det, PAIR.follower, 60, 100.6, bid1=100.0)
+    alerts = _feed(det, PAIR.leader, 60, 102.0, volume=1000)
+    assert alerts == []
+
+
+def test_buy_ratio_toggle_off_lets_sells_through():
+    # min_buy_ratio=0 → 필터 끔: 매도 우위여도 알림(기존 동작).
+    det = _det(min_buy_ratio=0.0)
+    alerts = _buyratio_timeline(det, s30=-1, s60=-1)
+    assert len(alerts) == 1
 
 
 # --------------------------------------------------------------- 워밍업 부족

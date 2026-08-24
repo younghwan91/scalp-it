@@ -11,7 +11,10 @@
   급등(서지)한 순간, 같은 시각 후속주가 **동반 급등**(직전 30s ≥ ``cosurge_min`` +0.5%,
   대장과 같은 방향)이면서 **아직 안 뛴 것**(그 직전 30s 프리무브 ≤ ``premove_max`` +0.2%)
   이면 → 후속주 **bid1 지정가 매수** 알림. 프리무브 필터가 doc37 의 결정적 엣지다(추격이
-  아니라 선행을 산다).
+  아니라 선행을 산다). 여기에 **매수체결비율 필터**(doc39)를 AND 로 더한다: 후속주
+  직전 ``buy_ratio_window`` 초의 매수체결비율(side=+1 체결량/전체 체결량)이
+  ``min_buy_ratio``(기본 0.30) 미만이면 기각 — 실제 매수로 따라붙는 이벤트만 사서
+  가격이 내 지정가로 흘러내린 약한 역선택 fill 을 배제한다. ``min_buy_ratio=0`` 이면 끈다.
 
 * **청산(알림에 표시만, 주문은 사람이)** — 두 모드, 기본은 안정형:
   안정형 익절 +0.5% / 일상 손절 −0.4% / 90초 시간청산(세후 +0.19%·승률 71%·MDD −0.74%),
@@ -67,6 +70,13 @@ class DetectorConfig:
     cosurge_window: float = 30.0      # 후속 동반급등 관측 창(초)
     premove_max: float = 0.002        # 후속 '아직 안 뜀' 상한 (그 직전 premove_window 초 수익)
     premove_window: float = 30.0      # 후속 프리무브 관측 창(초)
+    # 역선택 방어(doc39): 후속주가 실제 매수체결로 따라붙을 때만 진입한다.
+    #   진입 순간 직전 buy_ratio_window 초의 매수체결비율(side=+1 체결량/전체 체결량)이
+    #   min_buy_ratio 미만이면 기각 — 가격이 내 지정가로 흘러내린 약한(역선택) fill 배제.
+    #   through(보수) net +0.05%→+0.31%·승률 88%. 0 = 필터 끔(기존 동작).
+    #   창에 체결 데이터가 없으면(워밍업) 안전 스킵(진입 안 함).
+    min_buy_ratio: float = 0.30       # 후속 직전30초 매수체결비율 하한. 0 = 끔
+    buy_ratio_window: float = 30.0    # 매수비율 관측 창(초)
     # 청산 — 두 모드를 한 config 로 표현한다. 기본값 = 안정형.
     #   안정형(기본): 익절 +0.5% / 일상 손절 −0.4% / 재난선 없음 / 90초.
     #                세후 +0.19%·승률 71%·MDD −0.74%. 소액·심리 편함용.
@@ -114,6 +124,7 @@ class Alert:
     disaster_line: float | None       # 재난 방지선가(공격형 −0.7%). None = 없음
     exit_ts: datetime                 # 시간청산 시각(90초) — 실질적 손절
     turnover: float                   # 후속 당일 누적 체결대금(원)
+    buy_ratio: float = -1.0           # 진입 직전30초 매수체결비율(필터 통과값). -1 = 미측정
     leader_name: str = ""
     follower_name: str = ""
 
@@ -132,9 +143,10 @@ class Alert:
             protect = f"재난선 {self.disaster_line:,.0f}(일상 손절 없음, −0.7% 관통 시만 즉시 청산)"
         else:
             protect = "손절 없음(90초 시간청산)"
+        buy = f" 매수{self.buy_ratio:.0%}" if self.buy_ratio >= 0 else ""
         return (
             f"[{self.ts:%H:%M:%S}] 짝꿍 신호  {lead}({self.leader}) +{self.leader_surge:.2%}/서지"
-            f"  →  {fol}({self.follower}) 동반+{self.cosurge:.2%} 프리무브{self.premove:+.2%}"
+            f"  →  {fol}({self.follower}) 동반+{self.cosurge:.2%} 프리무브{self.premove:+.2%}{buy}"
             f"  | bid1 지정가매수 {self.entry:,.0f}"
             f"  익절 {self.take_profit:,.0f}  {protect}"
             f"  청산 {self.exit_ts:%H:%M:%S}"
@@ -207,6 +219,8 @@ class PairDetector:
             self._codes.add(p.leader)
             self._codes.add(p.follower)
         self._prices: dict[str, deque[tuple[datetime, float]]] = defaultdict(deque)
+        # 종목별 체결 흐름 (ts, 매수체결량, 전체체결량) — 롤링 매수비율용.
+        self._flows: dict[str, deque[tuple[datetime, float, float]]] = defaultdict(deque)
         self._bid: dict[str, float] = {}
         self._turnover: dict[str, float] = defaultdict(float)
         self._last_alert: dict[tuple[str, str], datetime] = {}
@@ -237,8 +251,13 @@ class PairDetector:
         *,
         bid1: float | None = None,
         volume: float | None = None,
+        side: int | None = None,
     ) -> list[Alert]:
-        """틱 하나를 먹고 발생한 알림 목록을 돌려준다(대개 빈 리스트)."""
+        """틱 하나를 먹고 발생한 알림 목록을 돌려준다(대개 빈 리스트).
+
+        ``side`` 는 체결 방향(+1 매수/−1 매도). ``volume`` 과 함께 후속주의 롤링
+        매수체결비율(역선택 방어 필터)을 유지하는 데 쓴다.
+        """
         if code not in self._codes:
             return []
         price = float(price)
@@ -248,7 +267,12 @@ class PairDetector:
         if bid1:
             self._bid[code] = float(bid1)
         if volume:
-            self._turnover[code] += price * float(volume)
+            vol = float(volume)
+            self._turnover[code] += price * vol
+            buy = vol if (side is not None and side > 0) else 0.0
+            flow = self._flows[code]
+            flow.append((ts, buy, vol))
+            self._trim_flow(flow, ts)
 
         if code not in self._by_leader:
             return []
@@ -268,6 +292,26 @@ class PairDetector:
         cutoff = now - timedelta(seconds=self.config.history)
         while hist and hist[0][0] < cutoff:
             hist.popleft()
+
+    def _trim_flow(self, flow: deque[tuple[datetime, float, float]], now: datetime) -> None:
+        cutoff = now - timedelta(seconds=self.config.history)
+        while flow and flow[0][0] < cutoff:
+            flow.popleft()
+
+    def _buy_ratio(self, code: str, end: datetime, window: float) -> float | None:
+        """``[end-window, end]`` 구간 매수체결비율(매수량/전체량). 체결 없으면 None."""
+        flow = self._flows.get(code)
+        if not flow:
+            return None
+        start = end - timedelta(seconds=window)
+        buy = tot = 0.0
+        for ts_, b, v in flow:
+            if start <= ts_ <= end:
+                buy += b
+                tot += v
+        if tot <= 0:
+            return None
+        return buy / tot
 
     def _price_at(self, code: str, t: datetime) -> float | None:
         """``t`` 이하 마지막 체결가. 없으면 None."""
@@ -302,6 +346,12 @@ class PairDetector:
             return None                        # 대장과 같이 뛰지 않음
         if premove > cfg.premove_max:
             return None                        # 이미 뛴 것(추격) — 기각
+        buy_ratio = self._buy_ratio(fol, ts, cfg.buy_ratio_window)
+        if cfg.min_buy_ratio > 0:              # 역선택 방어(doc39)
+            if buy_ratio is None:
+                return None                    # 체결 데이터 부족(워밍업) — 안전 스킵
+            if buy_ratio < cfg.min_buy_ratio:
+                return None                    # 매수체결로 안 따라붙음(역선택 fill) — 기각
         if cfg.min_turnover > 0 and self._turnover.get(fol, 0.0) < cfg.min_turnover:
             return None
         key = (pair.leader, fol)
@@ -328,6 +378,7 @@ class PairDetector:
                            if cfg.disaster_line is not None else None),
             exit_ts=ts + timedelta(seconds=cfg.time_exit),
             turnover=self._turnover.get(fol, 0.0),
+            buy_ratio=(buy_ratio if buy_ratio is not None else -1.0),
             leader_name=pair.leader_name,
             follower_name=pair.follower_name,
         )

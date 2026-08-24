@@ -52,7 +52,7 @@ from .realtime.risk_guard import PositionLogSink, RiskGuard, RiskGuardConfig
 
 DEFAULT_WATCHLIST_PATH = "data/pair_watchlist.json"
 
-_TICK_COLS = "code, ts, price, volume, best_bid"
+_TICK_COLS = "code, ts, price, volume, best_bid, side"
 
 
 # --------------------------------------------------------------------- 쌍 로딩
@@ -87,6 +87,8 @@ def build_config(args: argparse.Namespace) -> DetectorConfig:
         over["cooldown"] = args.cooldown
     if args.min_turnover is not None:
         over["min_turnover"] = args.min_turnover
+    if args.min_buy_ratio is not None:
+        over["min_buy_ratio"] = args.min_buy_ratio
     from dataclasses import replace
 
     return replace(cfg, **over) if over else cfg
@@ -173,7 +175,7 @@ def _feed(detector: PairDetector, bus: AlertBus, rows: list[tuple],
           guard: RiskGuard | None = None,
           poslog: PositionLogSink | None = None) -> int:
     n = 0
-    for code, ts, price, volume, best_bid in rows:
+    for code, ts, price, volume, best_bid, side in rows:
         if price is None:
             continue
         t = _as_dt(ts)
@@ -181,7 +183,8 @@ def _feed(detector: PairDetector, bus: AlertBus, rows: list[tuple],
         # 가드는 매 틱으로 열린 가상 포지션의 체결·MAE·청산을 리허설한다.
         if guard is not None:
             guard.on_tick(str(code), t, p)
-        for alert in detector.on_tick(str(code), t, p, bid1=best_bid, volume=volume):
+        for alert in detector.on_tick(str(code), t, p, bid1=best_bid,
+                                       volume=volume, side=side):
             if _emit_guarded(alert, bus, guard, poslog):
                 n += 1
     return n
@@ -231,9 +234,10 @@ def run_realtime(args: argparse.Namespace, conn: Any, detector: PairDetector,
     warm_dt = datetime.fromtimestamp(warm_since)  # noqa: DTZ006
     warm = _fetch_ticks(conn, codes, since=warm_dt, day=None)
     # 워밍업은 알림을 내지 않게 조용히 상태만 채운다.
-    for code, ts, price, volume, best_bid in warm:
+    for code, ts, price, volume, best_bid, side in warm:
         if price is not None:
-            detector.on_tick(str(code), _as_dt(ts), float(price), bid1=best_bid, volume=volume)
+            detector.on_tick(str(code), _as_dt(ts), float(price), bid1=best_bid,
+                             volume=volume, side=side)
     watermark = max((_as_dt(r[1]) for r in warm), default=warm_dt)
     print(f"# 실시간 감지 시작 — 쌍 {len(detector.pairs)}개, 종목 {len(codes)}개, "
           f"폴링 {args.poll_interval}s, 로그 {args.log}"
@@ -333,7 +337,8 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             if guard is not None:             # 가드: 체결·MAE·청산 리허설
                 guard.on_tick(code_s, ts_t, px_t)
             for alert in detector.on_tick(code_s, ts_t, px_t,
-                                          bid1=t.get("best_bid"), volume=t.get("volume")):
+                                          bid1=t.get("best_bid"), volume=t.get("volume"),
+                                          side=t.get("side")):
                 _emit_guarded(alert, bus, guard, poslog)
 
     collector = KiwoomRealtimeCollector(
@@ -428,6 +433,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cooldown", type=float, default=None, help="쌍 재알림 억제 초 (기본 90)")
     p.add_argument("--min-turnover", type=float, default=None,
                    help="후속 당일 누적 체결대금 하한(원). 0 = 끔")
+    p.add_argument("--min-buy-ratio", type=float, default=None,
+                   help="후속 직전30초 매수체결비율 하한(역선택 방어, doc39). "
+                        "기본 0.30, 0 = 끔")
     # 리스크 가드 (감사 선결조건: 일일손실한도·킬스위치·포지션추적)
     g = p.add_argument_group("리스크 가드")
     g.add_argument("--no-guard", action="store_true",
