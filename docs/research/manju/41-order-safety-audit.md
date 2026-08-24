@@ -1,5 +1,9 @@
 # 주문 모듈 안전 감사 (2026-08-25)
 
+> **최종 판정: ✅ DRY-RUN 착수 안전 확정.** `--confirm-real` 없이는 실주문 POST 물리적 불가(코드 `if not live: return` 뒤). 체크리스트 (a)~(h) 전부 합격. 세 핵심질문(보유차단 우회·1주 붕괴·dry-run→live 오발동) 모두 **불가**.
+> **⚠️ 실발주(--confirm-real) 전 N-1·N-2 필수** (order-fix 수정 중). 둘 다 live 전용이라 dry-run 무관.
+> 참고: --live-order 는 dry-run 이라도 시작 시 실계좌 **조회**(계좌·잔고) POST 를 냄 — 주문 아님, fail-closed 블록리스트 구성용, 정상.
+
 > **핵심 3개 합격:** 보유3종목 차단 우회 불가(삼중), 1주 상한 붕괴 불가(하드캡·dedup·무재시도), dry-run→live 오발동 불가(독립 이중게이트 --live-order+--confirm-real).
 > **청산 경로 중대결함 3개(실발주 전 필수, dry-run 무관):**
 > N-1: 동적 보유차단이 매도에도 적용 → 내 후속주 청산 매도 차단 + _sell 이 blocked 무시하고 '청산완료' 오표기 → 1주 무감시 방치.
