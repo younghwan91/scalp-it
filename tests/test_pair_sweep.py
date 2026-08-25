@@ -62,8 +62,16 @@ def test_optional_fields_take_none_and_zero_means_off():
 
 
 def test_none_rejected_for_non_optional_field():
+    # take_profit 은 만쥬 손익 구조(상한 없음)를 위해 Optional 이 됐다 → 진짜 비-Optional
+    # 필드로 규약을 고정한다.
     with pytest.raises(ValueError, match="None"):
-        ps.parse_grid(["take_profit=none"])
+        ps.parse_grid(["surge_window=none"])
+
+
+def test_take_profit_accepts_none_meaning_no_cap():
+    """익절 상한 없음도 스윕 축이어야 한다 — 만쥬 손익 구조."""
+    axes, _ = ps.parse_grid(["take_profit=0.008,none"])
+    assert axes[0][1] == [0.008, None]
 
 
 def test_duplicate_axis_is_an_error():

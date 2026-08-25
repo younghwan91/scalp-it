@@ -75,7 +75,8 @@ def build_config(args: argparse.Namespace) -> DetectorConfig:
     cfg = DetectorConfig.aggressive() if args.aggressive else DetectorConfig.stable()
     over: dict[str, Any] = {}
     if args.take_profit is not None:
-        over["take_profit"] = args.take_profit
+        # 0 = 상한 없음. 손절·재난선과 같은 관례(만쥬: 짧게 잃고 크게 먹는다).
+        over["take_profit"] = None if args.take_profit == 0 else args.take_profit
     if args.stop_loss is not None:
         over["stop_loss"] = None if args.stop_loss == 0 else args.stop_loss
     if args.disaster_line is not None:
@@ -540,7 +541,8 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--stable", action="store_true", help="안정형(기본): +0.5%%/−0.4%%/90s")
     mode.add_argument("--aggressive", action="store_true",
                       help="공격형: +0.8%%/일상손절없음+재난선−0.7%%/90s")
-    p.add_argument("--take-profit", type=float, default=None, help="익절 비율 덮기 (예 0.008)")
+    p.add_argument("--take-profit", type=float, default=None,
+                   help="익절 비율 덮기 (예 0.008, 0 = 상한 없음 — 수익을 열어둔다)")
     p.add_argument("--stop-loss", type=float, default=None,
                    help="일상 손절 비율 덮기 (예 -0.004, 0 = 없음)")
     p.add_argument("--disaster-line", type=float, default=None,

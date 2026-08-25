@@ -446,3 +446,29 @@ def test_volume_burst_filter_accepts_volume_explosion():
     burst = [(25 + i, 100.0 + i * 0.6) for i in range(1, 6)]
     alerts = _feed_series(det, "000001", burst, vol=1000.0)     # 10배 폭발
     assert alerts and alerts[-1].follower == "000002"
+
+
+# ----- 만쥬 손익 구조 (익절 상한 없음) ----------------------------------------
+
+def test_take_profit_can_be_disabled():
+    """익절 상한을 끌 수 있어야 한다 — 만쥬 손익 구조.
+
+    원본은 "짧은 손절(−0.5%)로 방어하고 수익은 슈팅·상한가까지 열어둔다". 상한을
+    걸면 전부를 먹여살릴 우측 꼬리를 잘라낸다. 1년 240조합 스윕에서도 익절을
+    풀수록 net 이 단조 증가했다(TP 0.3% → 익절없음, hold 30 기준 +5.6bp).
+    """
+    cfg = DetectorConfig.stable(take_profit=None, stop_loss=-0.005)
+    assert cfg.take_profit is None and cfg.stop_loss == -0.005
+
+
+def test_alert_without_take_profit_renders_and_serializes():
+    """익절 없는 알림도 사람이 읽는 줄과 JSON 으로 나가야 한다."""
+    det = _accel_det(take_profit=None, stop_loss=-0.005)
+    _feed_series(det, "000002", _flat(-60, 30))
+    burst = [(25 + i, 100.0 + i * 0.6) for i in range(1, 6)]
+    alerts = _feed_series(det, "000001", _flat(-60, 25) + burst)
+    assert alerts, "익절 없음 설정에서도 알림이 나가야 한다"
+    a = alerts[-1]
+    assert a.take_profit is None
+    assert "익절 없음" in a.to_line()
+    assert a.to_dict()["take_profit"] is None

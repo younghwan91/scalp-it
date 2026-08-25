@@ -51,7 +51,7 @@ class LivePosition:
     name: str
     qty: int
     entry: int                          # 매수 지정가(bid1)
-    take_profit: float                  # 익절가(원)
+    take_profit: float | None           # 익절가(원). None = 상한 없음
     stop_loss: float | None
     disaster_line: float | None
     alert_ts: datetime
@@ -186,7 +186,7 @@ class OrderExecutor:
             return False
         # 청산: 익절 → 손절 → 재난선 → 시간청산
         reason: str | None = None
-        if price >= pos.take_profit - _EPS:
+        if pos.take_profit is not None and price >= pos.take_profit - _EPS:
             reason = "익절"
         elif pos.stop_loss is not None and price <= pos.stop_loss + _EPS:
             reason = "손절"

@@ -92,7 +92,7 @@ class DetectorConfig:
     #   공격형(옵션): 익절 +0.8% / 일상 손절 없음 / 재난선 −0.7% / 90초.
     #                세후 +0.27%·MDD −1.27%. (bid1 눌림매수라 역행이 얕아 타이트 손절이
     #                스프레드 노이즈에 튕기므로 일상 손절을 빼고 폭탄방지선만 둔다.)
-    take_profit: float = 0.005        # 익절 (+0.5% 안정형 / +0.8% 공격형)
+    take_profit: float | None = 0.005  # 익절. None/0 = 상한 없음(수익을 열어둠)
     stop_loss: float | None = -0.004  # 일상 손절 (안정형 −0.3~0.4%). None = 없음(공격형)
     disaster_line: float | None = None  # 재난 방지선 (공격형 −0.7%). None = 없음(안정형)
     time_exit: float = 90.0           # 시간청산(초) — 두 모드 공통, 실질적 손절 역할
@@ -143,7 +143,7 @@ class Alert:
     price: float                      # 후속 현재가(마지막 체결)
     bid1: float                       # 후속 최우선매수호가 = 제안 진입가
     entry: float                      # 제안 진입가(bid1 지정가)
-    take_profit: float                # 익절가
+    take_profit: float | None         # 익절가. None = 상한 없음(만쥬 손익 구조)
     stop_loss: float | None           # 일상 손절가(안정형). None = 없음
     disaster_line: float | None       # 재난 방지선가(공격형 −0.7%). None = 없음
     exit_ts: datetime                 # 시간청산 시각(90초) — 실질적 손절
@@ -172,7 +172,8 @@ class Alert:
             f"[{self.ts:%H:%M:%S}] 짝꿍 신호  {lead}({self.leader}) +{self.leader_surge:.2%}/서지"
             f"  →  {fol}({self.follower}) 동반+{self.cosurge:.2%} 프리무브{self.premove:+.2%}{buy}"
             f"  | bid1 지정가매수 {self.entry:,.0f}"
-            f"  익절 {self.take_profit:,.0f}  {protect}"
+            f"  {'익절 없음' if self.take_profit is None else f'익절 {self.take_profit:,.0f}'}"
+            f"  {protect}"
             f"  청산 {self.exit_ts:%H:%M:%S}"
         )
 
@@ -499,7 +500,8 @@ class PairDetector:
             price=cur,
             bid1=bid1,
             entry=entry,
-            take_profit=round(entry * (1 + cfg.take_profit), 4),
+            take_profit=(None if not cfg.take_profit
+                         else round(entry * (1 + cfg.take_profit), 4)),
             stop_loss=(round(entry * (1 + cfg.stop_loss), 4)
                        if cfg.stop_loss is not None else None),
             disaster_line=(round(entry * (1 + cfg.disaster_line), 4)

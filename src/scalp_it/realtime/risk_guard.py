@@ -111,7 +111,7 @@ class Position:
     leader: str
     alert_ts: datetime
     entry: float
-    take_profit: float
+    take_profit: float | None
     stop_loss: float | None
     disaster_line: float | None
     exit_ts: datetime
@@ -367,7 +367,7 @@ class RiskGuard:
         # 것이라 레벨 그대로가 맞다. 반면 손절·재난선은 하락을 확인한 뒤 스프레드를 넘어
         # 파는 시장가라 실제 트리거 틱이 실현가다 — 레벨로 계상하면 손실이 과소계상된다
         # (실측: 계상 -0.400% vs 실제 -0.4941%, 19% 과소).
-        if price >= pos.take_profit - _EPS:
+        if pos.take_profit is not None and price >= pos.take_profit - _EPS:
             self._close(pos, ts, pos.take_profit, "익절", filled=True)
             return True
         if pos.stop_loss is not None and price <= pos.stop_loss + _EPS:
