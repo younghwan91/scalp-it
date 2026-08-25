@@ -21,6 +21,12 @@
   공격형 익절 +0.8% / 일상 손절 없음 + 재난선 −0.7% / 90초(세후 +0.27%·MDD −1.27%).
   두 모드 공통: bid1 지정가 진입 · 90초 시간청산 · 트레일 없음. 값은 :class:`DetectorConfig`.
 
+* **호가단위(틱) 필터**: 브래킷이 비율 고정(+0.5%/−0.4%)이라 저가주는 손절폭이 몇 틱
+  안 된다(539원 = 1틱 0.186% → 손절 2.2틱). 그러면 스프레드 왕복 한 번, 호가 한두 칸
+  흔들림만으로 손절이 터진다 — 신호와 무관한 노이즈 청산이다. 손절폭(없으면 재난선,
+  그것도 없으면 익절폭)이 ``min_sl_ticks`` 틱 미만인 후속주는 알림하지 않고
+  :class:`FilteredSignal` 로 남긴다. ``min_sl_ticks=0`` 이면 끈다(과거 동작).
+
 * **쿨다운**: 같은 쌍은 ``cooldown`` 초(기본 90s) 안에 재알림하지 않는다.
 * **거래대금 하한**: 후속주 당일 누적 체결대금이 ``min_turnover`` 미만이면 알림하지 않는다.
 
@@ -37,10 +43,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from scalp_it.ticksize import tick_size, ticks_in
+
 __all__ = [
     "DEFAULT_WATCHLIST",
     "Alert",
     "DetectorConfig",
+    "FilteredSignal",
     "Pair",
     "PairDetector",
     "load_watchlist",
@@ -87,6 +96,10 @@ class DetectorConfig:
     stop_loss: float | None = -0.004  # 일상 손절 (안정형 −0.3~0.4%). None = 없음(공격형)
     disaster_line: float | None = None  # 재난 방지선 (공격형 −0.7%). None = 없음(안정형)
     time_exit: float = 90.0           # 시간청산(초) — 두 모드 공통, 실질적 손절 역할
+    # 호가단위 방어: 손절폭이 몇 틱 안 되면 스프레드·호가 흔들림만으로 손절이 터진다.
+    #   손절폭(없으면 재난선, 그것도 없으면 익절폭) < min_sl_ticks 틱이면 알림 안 함.
+    #   3.0 = 진입 1틱 + 왕복 스프레드 1틱 + 여유 1틱. 0 = 필터 끔(과거 동작).
+    min_sl_ticks: float = 3.0         # 손절폭 최소 호가단위 수. 0 = 끔
     cooldown: float = 90.0            # 같은 쌍 재알림 억제(초)
     min_turnover: float = 0.0         # 후속 당일 누적 체결대금 하한(원). 0 = 끔
     history: float = 240.0            # 종목별 가격 히스토리 보관(초)
@@ -150,6 +163,46 @@ class Alert:
             f"  | bid1 지정가매수 {self.entry:,.0f}"
             f"  익절 {self.take_profit:,.0f}  {protect}"
             f"  청산 {self.exit_ts:%H:%M:%S}"
+        )
+
+
+@dataclass(frozen=True)
+class FilteredSignal:
+    """다른 필터는 다 통과했는데 호가단위 때문에 버린 신호의 기록.
+
+    조용히 버리면 며칠 뒤 "몇 건이 필터로 빠졌나"를 셀 수 없다. 알림과 같은 로그에
+    한 줄로 남겨(:meth:`AlertBus.notice`) 나중에 세고, 필터가 과했는지 판단한다.
+    """
+
+    ts: datetime
+    leader: str
+    follower: str
+    price: float                      # 후속 현재가(마지막 체결)
+    entry: float                      # 제안 진입가(bid1) — 폭은 이걸 기준으로 잰다
+    tick: int                         # 그 가격대 호가단위(원)
+    width: float                      # 판정에 쓴 보호폭(원)
+    width_kind: str                   # "손절" | "재난선" | "익절" — 무엇의 폭인지
+    sl_ticks: float                   # 보호폭 ÷ 호가단위
+    min_sl_ticks: float               # 요구 하한
+    reason: str = "min_sl_ticks"
+    leader_name: str = ""
+    follower_name: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["ts"] = self.ts.isoformat(sep=" ", timespec="seconds")
+        # 알림 레코드와 같은 파일에 섞이므로 한눈에 구분되는 키를 둔다(집계용 grep 키).
+        d["filtered"] = self.reason
+        return d
+
+    def to_line(self) -> str:
+        lead = self.leader_name or self.leader
+        fol = self.follower_name or self.follower
+        return (
+            f"[{self.ts:%H:%M:%S}] 짝꿍 필터배제({self.reason})  {lead}({self.leader})"
+            f"  →  {fol}({self.follower})  진입 {self.entry:,.0f} 1틱 {self.tick:,}원"
+            f"  {self.width_kind}폭 {self.width:,.1f}원 = {self.sl_ticks:.1f}틱"
+            f" < {self.min_sl_ticks:.1f}틱 — 스프레드·호가 흔들림만으로 터질 폭"
         )
 
 
@@ -224,6 +277,9 @@ class PairDetector:
         self._bid: dict[str, float] = {}
         self._turnover: dict[str, float] = defaultdict(float)
         self._last_alert: dict[tuple[str, str], datetime] = {}
+        # 호가단위 필터로 버린 신호 — 누계(집계용)와 아직 안 알린 큐(CLI 가 비워간다).
+        self.filtered_count = 0
+        self._filtered: list[FilteredSignal] = []
 
     # ----- 구독/커버리지 확인 -------------------------------------------------
 
@@ -285,6 +341,16 @@ class PairDetector:
             if alert is not None:
                 alerts.append(alert)
         return alerts
+
+    def drain_filtered(self) -> list[FilteredSignal]:
+        """필터로 버린 신호를 꺼내고 큐를 비운다(누계 ``filtered_count`` 는 유지).
+
+        알림처럼 :meth:`on_tick` 반환값에 섞으면 호출부가 "알림"으로 오해해 주문까지
+        갈 수 있다. 그래서 별도 큐로 빼고, CLI 가 ``bus.notice`` 로 흘린다.
+        """
+        out = self._filtered
+        self._filtered = []
+        return out
 
     # ----- 내부 --------------------------------------------------------------
 
@@ -361,6 +427,11 @@ class PairDetector:
         self._last_alert[key] = ts
         bid1 = self._bid.get(fol, cur)
         entry = bid1
+        # 호가단위 필터는 마지막 관문 — 쿨다운을 이미 소비한 자리에 둔다. 가격대가
+        # 같으면 틱 폭도 같아 어차피 90초 안엔 다시 통과할 수 없고, 그래야 서지 한
+        # 번에 배제 기록이 수십 줄 쌓이지 않는다(알림과 같은 빈도로 한 줄).
+        if not self._tick_width_ok(pair, ts, cur, entry):
+            return None
         return Alert(
             ts=ts,
             leader=pair.leader,
@@ -382,3 +453,39 @@ class PairDetector:
             leader_name=pair.leader_name,
             follower_name=pair.follower_name,
         )
+
+    def _tick_width_ok(self, pair: Pair, ts: datetime, cur: float, entry: float) -> bool:
+        """보호폭이 ``min_sl_ticks`` 틱 이상인가. 아니면 기록을 남기고 False."""
+        cfg = self.config
+        if cfg.min_sl_ticks <= 0:
+            return True                        # 필터 끔(과거 동작 재현)
+        # 일상 손절 → 없으면 재난선 → 그것도 없으면 익절폭. 잴 게 없으면 막지 않는다.
+        if cfg.stop_loss is not None:
+            width, kind = abs(cfg.stop_loss) * entry, "손절"
+        elif cfg.disaster_line is not None:
+            width, kind = abs(cfg.disaster_line) * entry, "재난선"
+        elif cfg.take_profit:
+            width, kind = abs(cfg.take_profit) * entry, "익절"
+        else:
+            return True
+        if width <= 0:
+            return True
+        n = ticks_in(width, entry)
+        if n >= cfg.min_sl_ticks:
+            return True
+        self.filtered_count += 1
+        self._filtered.append(FilteredSignal(
+            ts=ts,
+            leader=pair.leader,
+            follower=pair.follower,
+            price=cur,
+            entry=entry,
+            tick=tick_size(entry),
+            width=width,
+            width_kind=kind,
+            sl_ticks=n,
+            min_sl_ticks=cfg.min_sl_ticks,
+            leader_name=pair.leader_name,
+            follower_name=pair.follower_name,
+        ))
+        return False

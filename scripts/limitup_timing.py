@@ -53,6 +53,7 @@ from scalp_it.cli_cbet_watch import (
 from scalp_it.closebet import close_bet_features, close_bet_labels, select_close_bet
 from scalp_it.intraday.loader import available_codes, load_minute_bars
 from scalp_it.intraday.store import connect
+from scalp_it.ticksize import tick_size  # 정의는 한 곳에만 — 값은 그대로다
 
 #: 일봉 근사 상한가 판정 문턱 (수정주가라 정확한 호가단위 내림이 불가능).
 DAILY_LIMIT_RATIO = 1.295
@@ -86,23 +87,6 @@ def _load_env(path: str = "/home/young/Documents/git/kr-quant/.env") -> None:
             continue
         k, v = line.split("=", 1)
         os.environ.setdefault(k.strip(), v.strip().strip("\"'"))
-
-
-def tick_size(price: float) -> int:
-    """KRX 호가단위 (2023-01-25 이후 코스피·코스닥 공통)."""
-    if price < 2_000:
-        return 1
-    if price < 5_000:
-        return 5
-    if price < 20_000:
-        return 10
-    if price < 50_000:
-        return 50
-    if price < 200_000:
-        return 100
-    if price < 500_000:
-        return 500
-    return 1_000
 
 
 def limit_up_price(prev_close: float) -> float:

@@ -73,6 +73,10 @@ KILL_MANUAL = "manual_stop"
 _EPS = 1e-9
 
 
+def _opposite_basis(basis: str) -> str:
+    return "touch" if basis == "through" else "through"
+
+
 # --------------------------------------------------------------------- config
 
 @dataclass(frozen=True)
@@ -86,6 +90,7 @@ class RiskGuardConfig:
     max_consecutive_losses: int = 3           # 연속 손절 상한(킬 트리거 b)
     max_positions: int = 2                    # 동시 보유 가상 포지션 상한
     fill_basis: str = "through"               # 'through'(보수·기본) | 'touch'(낙관)
+    track_shadow_fill: bool = True            # 반대 가정을 그림자로 병행 추적(로그 전용)
     cost_rate: float = 0.0                    # 왕복 비용률(수익률에서 차감). 0 = 끔
     stop_file: str | None = "data/pair_STOP"  # 존재 시 수동 킬(트리거 c). None = 끔
 
@@ -112,9 +117,12 @@ class Position:
     exit_ts: datetime
     notional: float
     follower_name: str = ""
+    basis: str = "through"                    # 이 포지션이 굴러가는 체결 가정
+    shadow: bool = False                      # True 면 회계 밖(로그 전용) 그림자
     # 체결(두 가정 병기)
     touch_fill_ts: datetime | None = None
     through_fill_ts: datetime | None = None
+    last_price: float | None = None           # 마지막으로 관측한 체결가(flush 계상용)
     manual: bool = False                      # 사용자가 실제 체결로 표시
     manual_entry: float | None = None
     manual_ts: datetime | None = None
@@ -145,8 +153,9 @@ class Position:
     def eff_entry(self) -> float:
         return self.manual_entry if (self.manual and self.manual_entry) else self.entry
 
-    def to_record(self, basis: str, event: str) -> dict[str, Any]:
-        """포지션 로그 한 줄(감사 요구: MAE·지연·체결여부·손익, through 병기)."""
+    def to_record(self, basis: str | None = None, event: str = "close") -> dict[str, Any]:
+        """포지션 로그 한 줄(감사 요구: MAE·지연·체결여부·손익, 가정별 한 줄씩)."""
+        basis = basis or self.basis
         rec: dict[str, Any] = {
             "ts": (self.exit_ts_actual or self.alert_ts).isoformat(sep=" ", timespec="seconds"),
             "event": event,
@@ -205,6 +214,10 @@ class RiskGuard:
         self._banner_shown: bool = False
         self.open_positions: list[Position] = []
         self.closed_positions: list[Position] = []
+        # 반대 체결 가정의 그림자 — 로그·집계 전용. 회계(realized_krw·연속손절·킬·상한)에
+        # 절대 끼어들지 않는다. 실전 회계는 보수 기준 하나여야 하기 때문.
+        self.shadow_positions: list[Position] = []
+        self.closed_shadows: list[Position] = []
         self._on_close = None                 # 콜백(Position) — 로깅용
 
     def set_close_callback(self, fn: Any) -> None:
@@ -229,6 +242,7 @@ class RiskGuard:
             self.kill_reason = ""
             self._banner_shown = False
             self.open_positions.clear()
+            self.shadow_positions.clear()
 
     # ----- 킬스위치 판정 ------------------------------------------------------
 
@@ -279,7 +293,18 @@ class RiskGuard:
         if len(self.open_positions) >= self.config.max_positions:
             return Decision(allowed=False, reason="max_positions")
         # 통과 — 가상 포지션 등록
-        self.open_positions.append(Position(
+        basis = self.config.fill_basis
+        self.open_positions.append(self._new_position(alert, basis, shadow=False))
+        # 반대 가정은 **독립 수명**으로 굴린다: 자기 체결 시점부터 자기 MAE/MFE 를 재고
+        # 자기 청산 판정을 한다. 하나의 수명으로 두 가정을 병기하면 through ⊆ touch 라
+        # 낙관 시나리오가 영영 측정되지 않는다(실물 033340 사례).
+        if self.config.track_shadow_fill:
+            self.shadow_positions.append(
+                self._new_position(alert, _opposite_basis(basis), shadow=True))
+        return Decision(allowed=True)
+
+    def _new_position(self, alert: Alert, basis: str, *, shadow: bool) -> Position:
+        return Position(
             follower=alert.follower,
             leader=alert.leader,
             alert_ts=alert.ts,
@@ -290,31 +315,33 @@ class RiskGuard:
             exit_ts=alert.exit_ts,
             notional=self.config.position_notional,
             follower_name=alert.follower_name,
-        ))
-        return Decision(allowed=True)
+            basis=basis,
+            shadow=shadow,
+        )
 
     # ----- 틱 진입점(리허설 체결·청산) ---------------------------------------
 
     def on_tick(self, code: str, ts: datetime, price: float) -> None:
         """후속주 틱으로 열린 포지션의 체결·MAE·청산을 리허설 규칙대로 진행한다."""
         self._observe_date(ts)
-        if not self.open_positions:
+        if not self.open_positions and not self.shadow_positions:
             return
-        basis = self.config.fill_basis
+        self.open_positions = self._advance_all(self.open_positions, code, ts, price)
+        self.shadow_positions = self._advance_all(self.shadow_positions, code, ts, price)
+
+    def _advance_all(self, positions: list[Position], code: str, ts: datetime,
+                     price: float) -> list[Position]:
         still_open: list[Position] = []
-        for pos in self.open_positions:
-            if pos.follower != code:
+        for pos in positions:
+            if pos.follower != code or not self._advance(pos, ts, price, pos.basis):
                 still_open.append(pos)
-                continue
-            closed = self._advance(pos, ts, price, basis)
-            if not closed:
-                still_open.append(pos)
-        self.open_positions = still_open
+        return still_open
 
     def _advance(self, pos: Position, ts: datetime, price: float, basis: str) -> bool:
         """포지션 하나에 틱 하나 적용. 청산되면 True."""
         if ts < pos.alert_ts:
             return False
+        pos.last_price = price
         # 체결 판정(두 가정 병기) — 알림 시각 이후 첫 조건 충족
         if pos.touch_fill_ts is None and price <= pos.entry + _EPS:
             pos.touch_fill_ts = ts
@@ -336,14 +363,18 @@ class RiskGuard:
         pos.mfe = max(pos.mfe, ret)
 
         # 청산 규칙: 익절 → 손절 → 재난선 → 시간청산
+        # 청산가는 **주문 유형**에 맞춘다. 익절은 익절가에 미리 걸어둔 지정가가 채워지는
+        # 것이라 레벨 그대로가 맞다. 반면 손절·재난선은 하락을 확인한 뒤 스프레드를 넘어
+        # 파는 시장가라 실제 트리거 틱이 실현가다 — 레벨로 계상하면 손실이 과소계상된다
+        # (실측: 계상 -0.400% vs 실제 -0.4941%, 19% 과소).
         if price >= pos.take_profit - _EPS:
             self._close(pos, ts, pos.take_profit, "익절", filled=True)
             return True
         if pos.stop_loss is not None and price <= pos.stop_loss + _EPS:
-            self._close(pos, ts, pos.stop_loss, "손절", filled=True)
+            self._close(pos, ts, price, "손절", filled=True)
             return True
         if pos.disaster_line is not None and price <= pos.disaster_line + _EPS:
-            self._close(pos, ts, pos.disaster_line, "재난선", filled=True)
+            self._close(pos, ts, price, "재난선", filled=True)
             return True
         if ts >= pos.exit_ts:
             self._close(pos, ts, price, "시간청산", filled=True)
@@ -361,15 +392,18 @@ class RiskGuard:
             gross = price / entry - 1.0
             pos.pnl = gross - self.config.cost_rate
             pos.pnl_krw = pos.pnl * pos.notional
-            self.realized_krw += pos.pnl_krw
-            if pos.pnl < -_EPS:
-                self.losses += 1
-                self.consecutive_losses += 1
-            else:
-                self.wins += 1
-                self.consecutive_losses = 0
-            self._refresh_kill()
-        self.closed_positions.append(pos)
+            # 그림자 손익은 기록만 한다 — 실현손익·승패·연속손절·킬스위치는 회계 기준
+            # 포지션 하나로만 굴러야 두 가정이 리스크 통제를 오염시키지 않는다.
+            if not pos.shadow:
+                self.realized_krw += pos.pnl_krw
+                if pos.pnl < -_EPS:
+                    self.losses += 1
+                    self.consecutive_losses += 1
+                else:
+                    self.wins += 1
+                    self.consecutive_losses = 0
+                self._refresh_kill()
+        (self.closed_shadows if pos.shadow else self.closed_positions).append(pos)
         if self._on_close is not None:
             self._on_close(pos)
 
@@ -383,6 +417,10 @@ class RiskGuard:
                 pos.manual = True
                 pos.manual_ts = ts or pos.alert_ts
                 pos.manual_entry = entry
+                # 실제 체결이 확인되면 체결 가정 자체가 무의미하다 → 그림자 폐기.
+                self.shadow_positions = [
+                    p for p in self.shadow_positions
+                    if not (p.follower == follower and p.alert_ts == pos.alert_ts)]
                 return True
         return False
 
@@ -393,18 +431,25 @@ class RiskGuard:
     def flush_expired(self, now: datetime) -> None:
         """청산시각이 지난 열린 포지션을 마지막 상태로 정리(장 마감·틱 공백 대비)."""
         self._observe_date(now)
+        self.open_positions = self._flush(self.open_positions, now)
+        self.shadow_positions = self._flush(self.shadow_positions, now)
+
+    def _flush(self, positions: list[Position], now: datetime) -> list[Position]:
         still: list[Position] = []
-        for pos in self.open_positions:
+        for pos in positions:
             if now >= pos.exit_ts:
-                if pos.is_filled(self.config.fill_basis):
+                if pos.is_filled(pos.basis):
                     entry = pos.eff_entry()
-                    px = round(entry * (1 + pos.mfe), 4)  # 마지막 관측 근사
+                    # 마지막으로 **본** 가격으로 계상한다. 예전엔 entry*(1+mfe) 를 썼는데
+                    # MFE 는 그 포지션이 본 최고가라, flush 를 타는 모든 건(틱 공백·장
+                    # 마감)의 손익이 체계적으로 부풀려졌다.
+                    px = round(pos.last_price if pos.last_price is not None else entry, 4)
                     self._close(pos, now, px, "시간청산", filled=True)
                 else:
                     self._close(pos, now, None, "미체결", filled=False)
             else:
                 still.append(pos)
-        self.open_positions = still
+        return still
 
     # ----- 상태 요약 ----------------------------------------------------------
 
@@ -453,7 +498,10 @@ class PositionLogSink:
         })
 
     def log_close(self, pos: Position) -> None:
-        self._write(pos.to_record(self.basis, "close"))
+        # 미체결은 청산이 아니다 — 별도 이벤트로 갈라야 집계의 "청산 N건"·MAE/MFE 중앙값에
+        # 초기값 0.0 이 섞이지 않는다(체결률은 unfilled 건수로 따로 본다).
+        event = "unfilled" if pos.status == "unfilled" else "close"
+        self._write(pos.to_record(pos.basis or self.basis, event))
 
     def log_kill(self, when: datetime, reason: str, realized_krw: float) -> None:
         self._write({

@@ -83,8 +83,8 @@ def test_stop_loss_counts_as_loss():
 # --------------------------------------------------------------- 일일 손실한도
 
 def test_daily_loss_limit_triggers_killswitch():
-    # 손절 1회 = -0.4% * 10만 = -400원. 한도 1000원 → 3회째에 도달.
-    g = _guard(daily_loss_limit=1000.0)
+    # 손절 1회 = 실제 트리거 틱 99.5 → -0.5% * 10만 = -500원. 한도 1400원 → 3회째에 도달.
+    g = _guard(daily_loss_limit=1400.0)
     for i in range(3):
         _settle_loss(g, i * 100, follower=FOL)
     assert g.killed is True
@@ -241,3 +241,240 @@ def test_position_log_records_metrics(tmp_path):
     assert "mae" in close and "latency_through_s" in close
     assert close["filled"] is True
     assert close["pnl"] < 0
+
+
+# ------------------------------------------------- D-1 그림자 포지션(두 가정 독립)
+
+def test_shadow_position_runs_opposite_assumption_independently():
+    """회계는 through 인데 touch 가정도 **독립 수명**으로 굴려야 한다.
+
+    실물 재현(2026-08-25 033340): 지정가 539 를 09:02:00 에 터치 → 09:02:02 에 542 로
+    익절선(541.695) 돌파 → touch 가정이면 익절. 그러나 through 체결은 09:02:22(538 관통)
+    이라 그 상승을 못 보고 09:02:24 에 536 으로 손절. 두 결과가 **달라야** 한다.
+    """
+    g = _guard(fill_basis="through")
+    a = _alert(0, entry=539.0, tp=541.695, sl=536.844, hold=90)
+    g.on_alert(a)
+    g.on_tick(FOL, BASE + timedelta(seconds=0), 539.0)   # touch 체결(관통 아님)
+    g.on_tick(FOL, BASE + timedelta(seconds=2), 542.0)   # touch 가정 → 익절
+    g.on_tick(FOL, BASE + timedelta(seconds=22), 538.0)  # through 체결
+    g.on_tick(FOL, BASE + timedelta(seconds=24), 536.0)  # through 가정 → 손절
+
+    real = g.closed_positions[0]
+    assert real.basis == "through"
+    assert real.exit_reason == "손절"
+    assert real.pnl < 0
+
+    shadow = g.closed_shadows[0]
+    assert shadow.basis == "touch"
+    assert shadow.exit_reason == "익절"
+    assert shadow.pnl > 0
+    # 그림자는 자기 체결 시점부터 자기 MFE 를 잰다(회계 포지션과 다른 값)
+    assert shadow.mfe > 0.0
+    assert real.mfe == 0.0
+
+
+def test_shadow_never_touches_accounting():
+    """그림자 손익은 realized_krw·승패·연속손절·킬스위치에 절대 반영되지 않는다."""
+    g = _guard(max_consecutive_losses=1, fill_basis="through")
+    a = _alert(0, entry=539.0, tp=541.695, sl=536.844, hold=90)
+    g.on_alert(a)
+    g.on_tick(FOL, BASE + timedelta(seconds=0), 539.0)
+    g.on_tick(FOL, BASE + timedelta(seconds=2), 542.0)   # 그림자 익절(+)
+    assert g.realized_krw == 0.0
+    assert g.wins == 0 and g.losses == 0
+    g.on_tick(FOL, BASE + timedelta(seconds=22), 538.0)
+    g.on_tick(FOL, BASE + timedelta(seconds=24), 536.0)  # 회계 손절(-)
+    assert g.realized_krw < 0
+    assert g.losses == 1 and g.wins == 0
+    assert g.killed is True                              # 회계 손절만 킬을 만든다
+
+
+def test_shadow_not_counted_in_max_positions():
+    g = _guard(max_positions=1)
+    assert g.on_alert(_alert(0, follower="000002")).allowed is True
+    assert len(g.open_positions) == 1                    # 그림자는 상한 계산 밖
+
+
+def test_shadow_close_logged_with_own_basis(tmp_path):
+    log = tmp_path / "positions.log"
+    sink = PositionLogSink(log, basis="through")
+    g = _guard(fill_basis="through")
+    g.set_close_callback(sink.log_close)
+    g.on_alert(_alert(0, entry=539.0, tp=541.695, sl=536.844, hold=90))
+    g.on_tick(FOL, BASE + timedelta(seconds=0), 539.0)
+    g.on_tick(FOL, BASE + timedelta(seconds=2), 542.0)
+    g.on_tick(FOL, BASE + timedelta(seconds=22), 538.0)
+    g.on_tick(FOL, BASE + timedelta(seconds=24), 536.0)
+    rows = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    by_basis = {r["fill_basis"]: r for r in rows if r["event"] == "close"}
+    assert set(by_basis) == {"through", "touch"}
+    assert by_basis["touch"]["exit_reason"] == "익절"
+    assert by_basis["through"]["exit_reason"] == "손절"
+
+
+# ------------------------------------------------- D-3 청산가 계상(주문 유형별)
+
+def test_stop_loss_uses_actual_trigger_tick():
+    """손절은 하락을 확인하고 스프레드를 넘어 파는 것 — 브래킷 레벨이 아니라 실제 틱."""
+    g = _guard()
+    g.on_alert(_alert(0))                                  # entry 100, sl 99.6
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)
+    g.on_tick(FOL, BASE + timedelta(seconds=2), 99.4)      # 손절선 아래로 관통
+    pos = g.closed_positions[0]
+    assert pos.exit_price == 99.4
+    assert abs(pos.pnl - (99.4 / 100.0 - 1.0)) < 1e-9
+
+
+def test_disaster_line_uses_actual_trigger_tick():
+    g = _guard()
+    g.on_alert(_alert(0, sl=None, disaster=99.0))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)
+    g.on_tick(FOL, BASE + timedelta(seconds=2), 98.5)
+    pos = g.closed_positions[0]
+    assert pos.exit_reason == "재난선"
+    assert pos.exit_price == 98.5
+
+
+def test_take_profit_uses_bracket_level():
+    """익절은 익절가에 미리 걸어둔 지정가가 체결되는 것 — 레벨 그대로."""
+    g = _guard()
+    g.on_alert(_alert(0))                                  # tp 100.5
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)
+    g.on_tick(FOL, BASE + timedelta(seconds=2), 101.2)     # 훌쩍 넘어가도
+    pos = g.closed_positions[0]
+    assert pos.exit_price == 100.5
+
+
+# ------------------------------------------------- D-4 미체결은 청산이 아니다
+
+def test_unfilled_logged_as_separate_event(tmp_path):
+    log = tmp_path / "positions.log"
+    sink = PositionLogSink(log, basis="through")
+    g = _guard(fill_basis="through")
+    g.set_close_callback(sink.log_close)
+    g.on_alert(_alert(0))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 100.0)     # 관통 아님 → through 미체결
+    g.on_tick(FOL, BASE + timedelta(seconds=95), 100.6)    # 청산시각 경과
+    rows = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    through = next(r for r in rows if r.get("fill_basis") == "through")
+    assert through["event"] == "unfilled"
+    assert through["status"] == "unfilled"
+    assert all(r["event"] != "close" for r in rows if r.get("fill_basis") == "through")
+
+
+# ------------------------------------------------- D-5 일일 집계(가정별·중복·비용)
+
+def _summary_mod(tmp_path):
+    """scripts/pair_daily_summary.py 를 로드하고 입출력 경로를 tmp 로 돌린다."""
+    import importlib.util
+    from pathlib import Path
+    src = Path(__file__).resolve().parents[1] / "scripts" / "pair_daily_summary.py"
+    spec = importlib.util.spec_from_file_location("pair_daily_summary", src)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.POS_LOG = tmp_path / "positions.log"
+    mod.TXT_LOG = tmp_path / "summary.log"
+    mod.JSONL = tmp_path / "summary.jsonl"
+    return mod
+
+
+def _run_summary(tmp_path, guard_setup) -> tuple:
+    mod = _summary_mod(tmp_path)
+    sink = PositionLogSink(mod.POS_LOG, basis="through")
+    g = _guard(fill_basis="through")
+    g.set_close_callback(sink.log_close)
+    guard_setup(g)
+    import sys
+    argv = sys.argv
+    sys.argv = ["pair_daily_summary.py", "2026-08-24"]
+    try:
+        assert mod.main() == 0
+    finally:
+        sys.argv = argv
+    recs = [json.loads(x) for x in mod.JSONL.read_text(encoding="utf-8").splitlines()]
+    return mod, recs[-1]
+
+
+def test_summary_groups_by_fill_basis_not_boolean(tmp_path):
+    """033340 재현: 같은 알림이 touch 는 익절, through 는 손절로 **다르게** 잡혀야 한다."""
+    def setup(g):
+        g.on_alert(_alert(0, entry=539.0, tp=541.695, sl=536.844, hold=90))
+        g.on_tick(FOL, BASE + timedelta(seconds=0), 539.0)
+        g.on_tick(FOL, BASE + timedelta(seconds=2), 542.0)
+        g.on_tick(FOL, BASE + timedelta(seconds=22), 538.0)
+        g.on_tick(FOL, BASE + timedelta(seconds=24), 536.0)
+
+    _, rec = _run_summary(tmp_path, setup)
+    thr, tch = rec["by_basis"]["through"], rec["by_basis"]["touch"]
+    assert thr["gross"]["total_krw"] < 0
+    assert tch["gross"]["total_krw"] > 0            # 낙관 시나리오가 드디어 측정된다
+    assert thr["exit_reasons"] == {"손절": 1}
+    assert tch["exit_reasons"] == {"익절": 1}
+
+
+def test_summary_excludes_unfilled_from_close_stats(tmp_path):
+    """미체결은 청산 건수·MAE/MFE 중앙값에서 빠지고 별도 항목으로만 보고된다."""
+    def setup(g):
+        _settle_loss(g, 0)                                   # 체결 후 손절
+        g.on_alert(_alert(200, follower="000003"))
+        g.on_tick("000003", BASE + timedelta(seconds=201), 100.0)   # 관통 없음
+        g.on_tick("000003", BASE + timedelta(seconds=295), 100.0)   # 미체결 만료
+
+    _, rec = _run_summary(tmp_path, setup)
+    thr = rec["by_basis"]["through"]
+    assert thr["n_closed"] == 1
+    assert thr["n_unfilled"] == 1
+    assert thr["fill_rate_pct"] == 50.0
+    assert thr["median_mae_pct"] < -0.1                      # 0.0 이 섞이면 희석된다
+    assert thr["gross"]["n"] == 1
+
+
+def test_summary_upserts_instead_of_appending(tmp_path):
+    def setup(g):
+        _settle_loss(g, 0)
+
+    mod, _ = _run_summary(tmp_path, setup)
+    import sys
+    argv = sys.argv
+    sys.argv = ["pair_daily_summary.py", "2026-08-24"]
+    try:
+        mod.main()
+        mod.main()
+    finally:
+        sys.argv = argv
+    assert len(mod.JSONL.read_text(encoding="utf-8").splitlines()) == 1
+    assert len(mod.TXT_LOG.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_summary_reports_three_cost_scenarios(tmp_path):
+    def setup(g):
+        _settle_loss(g, 0)
+
+    _, rec = _run_summary(tmp_path, setup)
+    thr = rec["by_basis"]["through"]
+    assert set(thr["net"]) == {"net34", "net64", "net94"}
+    for key, cost in rec["cost_scenarios"].items():
+        expected = thr["gross"]["mean_pct"] - cost * 100
+        assert abs(thr["net"][key]["mean_pct"] - expected) < 1e-6
+
+
+def test_flush_time_exit_uses_last_price_not_best_price():
+    """flush 시간청산은 **마지막 관측가**로 계상해야 한다 — 최고가가 아니라.
+
+    기존 구현은 entry*(1+mfe) 를 썼는데 MFE 는 그 포지션이 본 최고가다. 틱 공백·장
+    마감으로 flush 를 타는 모든 건의 손익이 체계적으로 부풀려진다(낙관 편향).
+    """
+    g = _guard()
+    a = _alert(entry=100.0, tp=100.5, sl=None, hold=90.0)
+    g.on_alert(a)
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.0)    # 체결(관통)
+    g.on_tick(FOL, BASE + timedelta(seconds=10), 100.4)  # 고점(MFE) — 익절선 미달
+    g.on_tick(FOL, BASE + timedelta(seconds=20), 99.2)   # 마지막 관측가
+    g.flush_expired(BASE + timedelta(seconds=200))       # 청산시각 지남
+
+    closed = [p for p in g.closed_positions if not p.shadow]
+    assert closed and closed[-1].exit_reason == "시간청산"
+    assert closed[-1].exit_price == 99.2, (
+        f"마지막 관측가 99.2 로 계상돼야 하는데 {closed[-1].exit_price}"
+    )

@@ -90,6 +90,8 @@ def build_config(args: argparse.Namespace) -> DetectorConfig:
         over["min_turnover"] = args.min_turnover
     if args.min_buy_ratio is not None:
         over["min_buy_ratio"] = args.min_buy_ratio
+    if args.min_sl_ticks is not None:
+        over["min_sl_ticks"] = args.min_sl_ticks
     from dataclasses import replace
 
     return replace(cfg, **over) if over else cfg
@@ -153,6 +155,16 @@ def _fetch_ticks(conn: Any, codes: list[str], *, since: datetime | None,
     return rows
 
 
+def _drain_filtered(detector: PairDetector, bus: AlertBus) -> None:
+    """호가단위 필터로 버린 신호를 알림 로그에 남긴다.
+
+    조용히 버리면 며칠 뒤 "필터가 과했나"를 셀 수 없다. 알림이 아니므로 ``notice``
+    로 흘려 주문 경로에는 절대 닿지 않게 한다.
+    """
+    for rec in detector.drain_filtered():
+        bus.notice(rec.to_line())
+
+
 def _emit_guarded(alert: Alert, bus: AlertBus, guard: RiskGuard | None,
                   poslog: PositionLogSink | None,
                   executor: OrderExecutor | None = None) -> bool:
@@ -202,6 +214,7 @@ def _feed(detector: PairDetector, bus: AlertBus, rows: list[tuple],
                                        volume=volume, side=side):
             if _emit_guarded(alert, bus, guard, poslog, executor):
                 n += 1
+        _drain_filtered(detector, bus)
     return n
 
 
@@ -263,6 +276,7 @@ def build_order_executor(
           file=sys.stderr, flush=True)
     return OrderExecutor(client, qty=args.qty, live=real,
                          unfilled_timeout=args.unfilled_timeout,
+                         fill_basis=args.fill_basis,   # 가드 회계와 같은 체결 가정
                          notice=lambda s: print(s, flush=True))
 
 
@@ -431,6 +445,7 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
                                               bid1=t.get("best_bid"), volume=t.get("volume"),
                                               side=t.get("side")):
                     _emit_guarded(alert, bus, guard, poslog, executor)
+                _drain_filtered(detector, bus)
         except Exception as exc:  # noqa: BLE001 — 프레임 오류로 소켓 감지 죽지 않게
             print(f"[감지][경보] 프레임 처리 중 예외 — 소켓 루프 계속: {exc}",
                   file=sys.stderr, flush=True)
@@ -462,7 +477,8 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
     if executor is not None:
         executor.flush(datetime.now())  # noqa: DTZ005
         print(executor.summary(), file=sys.stderr, flush=True)
-    print(f"누적 알림 {bus.count}건 · 프레임 {collector.frames_seen:,}"
+    print(f"누적 알림 {bus.count}건 · 틱필터 배제 {detector.filtered_count}건"
+          f" · 프레임 {collector.frames_seen:,}"
           f" · 저장 틱 {collector.ticks_stored:,}", file=sys.stderr, flush=True)
     return 0
 
@@ -530,6 +546,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cooldown", type=float, default=None, help="쌍 재알림 억제 초 (기본 90)")
     p.add_argument("--min-turnover", type=float, default=None,
                    help="후속 당일 누적 체결대금 하한(원). 0 = 끔")
+    p.add_argument("--min-sl-ticks", type=float, default=None,
+                   help="손절폭 최소 호가단위 수(저가주 노이즈 청산 방어). "
+                        "기본 3.0, 0 = 끔")
     p.add_argument("--min-buy-ratio", type=float, default=None,
                    help="후속 직전30초 매수체결비율 하한(역선택 방어, doc39). "
                         "기본 0.30, 0 = 끔")
@@ -549,8 +568,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="동시 보유 가상 포지션 상한. 기본 2")
     g.add_argument("--fill-basis", choices=("through", "touch"), default="through",
                    help="가상 체결 회계 가정: through(보수·기본)|touch(낙관)")
-    g.add_argument("--cost-rate", type=float, default=0.0,
-                   help="왕복 비용률(수익률에서 차감). 0 = 끔")
+    g.add_argument("--cost-rate", type=float, default=0.0064,
+                   help="왕복 비용률(수익률에서 차감). 기본 0.0064 = 왕복 34bp + "
+                        "슬리피지 왕복 30bp(레포 기본 가정, scripts/verify_pair.py). "
+                        "0 = 끔(세전)")
     g.add_argument("--stop-file", default="data/pair_STOP",
                    help="존재 시 수동 킬스위치. 기본 data/pair_STOP")
     g.add_argument("--no-stop-file", action="store_true",

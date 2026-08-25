@@ -23,6 +23,13 @@ PAIR = Pair(leader="000001", follower="000002", leader_name="대장", follower_n
 
 
 def _det(**cfg_kw) -> PairDetector:
+    """기존 시나리오용 감지기. 100원짜리 가짜 가격이라 호가단위 필터는 꺼 둔다.
+
+    (100원이면 1틱 1원 = 1%, 손절폭 −0.4% 는 0.4틱이라 실전이면 당연히 배제된다.
+    이 헬퍼의 관심사는 서지·프리무브·쿨다운이므로 필터를 빼고 본다. 필터 자체는
+    아래 '호가단위(틱) 손절폭 필터' 절에서 실제 가격대로 검증한다.)
+    """
+    cfg_kw.setdefault("min_sl_ticks", 0.0)
     return PairDetector([PAIR], DetectorConfig(**cfg_kw))
 
 
@@ -199,7 +206,7 @@ def test_stable_vs_aggressive_config():
 
 
 def test_aggressive_alert_has_disaster_line():
-    det = PairDetector([PAIR], DetectorConfig.aggressive())
+    det = PairDetector([PAIR], DetectorConfig.aggressive(min_sl_ticks=0.0))  # 100원 가짜가라 필터 끔
     a = _base_timeline(det)[0]
     assert a.stop_loss is None
     assert a.disaster_line == pytest.approx(99.3)   # −0.7% of 100
@@ -259,3 +266,107 @@ def test_dry_run_bus_writes_nothing(tmp_path):
     bus.emit(alert)
     assert not log.exists()
     assert bus.count == 1
+
+
+# ------------------------------------------------- 호가단위(틱) 손절폭 필터
+
+def test_tick_size_boundaries():
+    """KRX 호가단위 — 경계값. scripts/limitup_timing.py 의 기존 정의와 값이 같아야 한다."""
+    from scalp_it.ticksize import tick_size
+    assert tick_size(1) == 1
+    assert tick_size(1_999) == 1
+    assert tick_size(2_000) == 5
+    assert tick_size(4_999) == 5
+    assert tick_size(5_000) == 10
+    assert tick_size(19_999) == 10
+    assert tick_size(20_000) == 50
+    assert tick_size(49_999) == 50
+    assert tick_size(50_000) == 100
+    assert tick_size(199_999) == 100
+    assert tick_size(200_000) == 500
+    assert tick_size(499_999) == 500
+    assert tick_size(500_000) == 1_000
+    assert tick_size(1_000_000) == 1_000
+
+
+def test_tick_size_matches_limitup_timing():
+    """위임 후에도 반환값이 완전히 동일해야 한다(verify_* 재현성)."""
+    import importlib.util
+
+    from scalp_it.ticksize import tick_size
+    spec = importlib.util.spec_from_file_location(
+        "_limitup_timing", "scripts/limitup_timing.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for px in [1, 500, 539, 1_999, 2_000, 4_999, 5_000, 6_230, 15_760, 19_999,
+               20_000, 49_999, 50_000, 199_999, 200_000, 499_999, 500_000, 1_234_567]:
+        assert mod.tick_size(px) == tick_size(px), px
+
+
+def _fires_with_price(px, **cfg_kw) -> bool:
+    """후속주 가격대만 바꿔 알림이 나오는지. cosurge/premove 는 비율이라 동일."""
+    det = PairDetector([PAIR], DetectorConfig(**cfg_kw))   # 기본 min_sl_ticks=3.0 그대로
+    alerts = _base_timeline(det, fol60=px, fol30=px, fol_now=px * 1.006, fol_bid=px)
+    return bool(alerts)
+
+
+def test_low_price_stock_filtered_by_tick_width():
+    """539원: 1틱 1원 = 0.186%, 손절폭 −0.4% = 2.16틱 < 3틱 → 배제(노이즈 청산)."""
+    assert not _fires_with_price(539.0)
+
+
+def test_mid_price_stock_filtered_by_tick_width():
+    """6230원: 1틱 10원, 손절폭 24.9원 = 2.49틱 < 3틱 → 배제."""
+    assert not _fires_with_price(6230.0)
+
+
+def test_high_tick_ratio_stock_passes():
+    """15760원: 1틱 10원, 손절폭 63.0원 = 6.3틱 ≥ 3틱 → 통과."""
+    assert _fires_with_price(15760.0)
+
+
+def test_min_sl_ticks_zero_disables_filter():
+    """0 이면 과거 동작 그대로 — 539원도 알림."""
+    assert _fires_with_price(539.0, min_sl_ticks=0.0)
+
+
+def test_aggressive_mode_uses_disaster_line_width():
+    """일상 손절이 없으면 재난선(−0.7%) 폭으로 판정한다."""
+    # 539원 × 0.7% = 3.77원 = 3.77틱 ≥ 3 → 통과
+    assert _fires_with_price(539.0, take_profit=0.008, stop_loss=None, disaster_line=-0.007)
+    # 3000원 × 0.7% = 21원, 1틱 5원 → 4.2틱 통과 / min 5틱이면 배제
+    assert not _fires_with_price(539.0, take_profit=0.008, stop_loss=None,
+                                 disaster_line=-0.007, min_sl_ticks=5.0)
+
+
+def test_no_stop_falls_back_to_take_profit_width():
+    """손절·재난선 둘 다 없으면 익절폭으로 판정."""
+    # 539원 × 0.5% = 2.7원 = 2.7틱 < 3 → 배제
+    assert not _fires_with_price(539.0, stop_loss=None, disaster_line=None)
+    # 익절폭도 0 이면 잴 게 없으니 막지 않는다.
+    assert _fires_with_price(539.0, stop_loss=None, disaster_line=None, take_profit=0.0)
+
+
+def test_min_sl_ticks_default_is_three():
+    assert DetectorConfig().min_sl_ticks == 3.0
+
+
+def test_filtered_signal_is_recorded_not_silently_dropped():
+    """배제 건은 세고, 왜 걸렀는지(가격·틱·손절폭 틱수) 남긴다."""
+    det = PairDetector([PAIR], DetectorConfig())
+    assert not _base_timeline(det, fol60=539.0, fol30=539.0, fol_now=539.0 * 1.006,
+                              fol_bid=539.0)
+    assert det.filtered_count == 1
+    recs = det.drain_filtered()
+    assert len(recs) == 1
+    r = recs[0]
+    assert r.follower == "000002"
+    assert r.reason == "min_sl_ticks"
+    assert r.tick == 1
+    assert r.sl_ticks == pytest.approx(539.0 * 0.004, abs=0.01)
+    assert r.min_sl_ticks == 3.0
+    d = r.to_dict()
+    assert d["filtered"] == "min_sl_ticks"
+    assert "2.2틱" in r.to_line() and "000002" in r.to_line()
+    assert det.drain_filtered() == []      # 비운 뒤엔 다시 안 나온다
+    assert det.filtered_count == 1         # 누계는 유지(며칠 뒤 집계용)
