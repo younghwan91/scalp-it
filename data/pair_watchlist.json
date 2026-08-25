@@ -1,9 +1,33 @@
 {
-  "_comment": "짝꿍 감시 쌍 — 사람이 큐레이션한다. 대장(강한 급등) → 알려진 소형 후속. 종목코드 6자리. 쌍을 추가/삭제해 감시 대상을 바꾼다. 주의: 두 종목 다 그날 수집(--auto) 유니버스에 들어와야 감시된다.",
+  "_comment": "짝꿍 감시 쌍 — 장중 추종(리드-랙) 감시 대상. 종목코드 6자리. 주의: 두 종목 다 그날 수집(--auto) 유니버스에 들어와야 감시된다. 선정은 눈이 아니라 1년 분봉 검증으로 한다 — premove 필터 포함 랭킹, 역방향 EDGE 비대칭 확인, 일클러스터 t와 승률 병행(docs/research/manju/38).",
   "pairs": [
-    {"leader": "014990", "follower": "033340", "leader_name": "인디에프", "follower_name": "좋은사람들"},
-    {"leader": "462860", "follower": "094480", "leader_name": "더즌", "follower_name": "갤럭시아머니트리"},
-    {"leader": "124500", "follower": "294570", "leader_name": "아이티센글로벌", "follower_name": "쿠콘"},
-    {"leader": "001210", "follower": "002990", "leader_name": "금호전기", "follower_name": "금호건설"}
+    {
+      "leader": "014990",
+      "follower": "033340",
+      "leader_name": "인디에프",
+      "follower_name": "좋은사람들"
+    },
+    {
+      "leader": "462860",
+      "follower": "094480",
+      "leader_name": "더즌",
+      "follower_name": "갤럭시아머니트리"
+    },
+    {
+      "leader": "124500",
+      "follower": "294570",
+      "leader_name": "아이티센글로벌",
+      "follower_name": "쿠콘"
+    }
+  ],
+  "_removed": [
+    {
+      "leader": "001210",
+      "follower": "002990",
+      "leader_name": "금호전기",
+      "follower_name": "금호건설",
+      "removed_on": "2026-08-25",
+      "reason": "장중 추종 부적합. 1년 분봉 premove 필터 후 가짜쌍 47개 중 37위 · EDGE -0.020% · 승률 28%(n=152·71일). 대장 서지 시점에 후속주가 이미 오른 비율 73~86% — 리드-랙이 아니라 동시 동조. 역방향(금호건설→금호전기 +3분 +0.505%)이 정방향(+0.112%)보다 강해 지금 감시는 잘못된 방향으로 신호를 만든다. 일봉 동조 자체는 실재하므로 페어 관계는 유효 — 일간 홀딩 전략의 후보로는 남는다."
+    }
   ]
 }

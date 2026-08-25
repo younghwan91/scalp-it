@@ -100,6 +100,17 @@ class DetectorConfig:
     #   손절폭(없으면 재난선, 그것도 없으면 익절폭) < min_sl_ticks 틱이면 알림 안 함.
     #   3.0 = 진입 1틱 + 왕복 스프레드 1틱 + 여유 1틱. 0 = 필터 끔(과거 동작).
     min_sl_ticks: float = 3.0         # 손절폭 최소 호가단위 수. 0 = 끔
+    # 가속도 방어 — 프로그램매매성 급등만 고른다. 둘 다 0 = 끔(기존 동작).
+    #   같은 +1.5% 라도 30초에 걸쳐 야금야금 오른 것과 마지막 3초에 튄 것은 다르다.
+    #   전자는 감지 시점에 이미 짝꿍이 반응을 끝냈을 공산이 크다(진입이 늦다).
+    #   accel_min_ratio: 대장 서지창의 뒤 절반 수익률 / 앞 절반 수익률. 1보다 크면
+    #     "뒤로 갈수록 빨라지는" 상승만 통과. 앞 절반이 0 이하인데 뒤가 양이면 통과.
+    #   volume_burst_ratio: 대장의 최근 volume_burst_window 초 체결량률 ÷ 그 직전
+    #     volume_burst_base 초 체결량률. 프로그램매매는 가격보다 체결량에 먼저 찍힌다.
+    accel_min_ratio: float = 0.0      # 가격 가속 하한(배). 0 = 끔
+    volume_burst_ratio: float = 0.0   # 거래량 폭발 하한(배). 0 = 끔
+    volume_burst_window: float = 10.0  # 폭발 관측 창(초)
+    volume_burst_base: float = 30.0   # 폭발 비교 기준 창(초, 그 직전 구간)
     cooldown: float = 90.0            # 같은 쌍 재알림 억제(초)
     min_turnover: float = 0.0         # 후속 당일 누적 체결대금 하한(원). 0 = 끔
     history: float = 240.0            # 종목별 가격 히스토리 보관(초)
@@ -335,6 +346,10 @@ class PairDetector:
         surge = self._ret(code, ts, self.config.surge_window)
         if surge is None or surge < self.config.surge_ret:
             return []
+        # 가속도 관문은 **대장**에 건다 — 프로그램 매수가 때리는 건 대장이고, 짝꿍이
+        # 끌려오는 것도 그 순간이다. 쌍을 돌기 전에 한 번만 판정하면 되므로 여기 둔다.
+        if not self._accel_ok(code, ts):
+            return []
         alerts: list[Alert] = []
         for pair in self._by_leader[code]:
             alert = self._check_follower(pair, ts, surge)
@@ -396,6 +411,48 @@ class PairDetector:
         if cur is None or ref is None or ref <= 0:
             return None
         return cur / ref - 1.0
+
+    def _accel_ok(self, code: str, ts: datetime) -> bool:
+        """대장의 상승이 '가속 중'인가. 두 필터 다 꺼져 있으면 항상 True."""
+        cfg = self.config
+        if cfg.accel_min_ratio > 0 and not self._price_accel_ok(code, ts):
+            return False
+        return not (cfg.volume_burst_ratio > 0 and not self._volume_burst_ok(code, ts))
+
+    def _price_accel_ok(self, code: str, ts: datetime) -> bool:
+        """서지창을 반으로 갈라 뒤 절반이 앞 절반보다 가파른지."""
+        half = self.config.surge_window / 2.0
+        recent = self._ret(code, ts, half)
+        prior = self._ret(code, ts - timedelta(seconds=half), half)
+        if recent is None or prior is None or recent <= 0:
+            return False                       # 히스토리 부족·상승 아님 — 안전 기각
+        if prior <= 0:
+            return True                        # 앞은 잠잠, 뒤만 튐 = 가장 뚜렷한 가속
+        return recent / prior >= self.config.accel_min_ratio
+
+    def _volume_burst_ok(self, code: str, ts: datetime) -> bool:
+        """최근 구간 체결량률이 그 직전 기준 구간의 몇 배인지."""
+        cfg = self.config
+        w, base_w = cfg.volume_burst_window, cfg.volume_burst_base
+        recent = self._volume_rate(code, ts - timedelta(seconds=w), ts)
+        base = self._volume_rate(code, ts - timedelta(seconds=w + base_w),
+                                 ts - timedelta(seconds=w))
+        if recent is None or base is None:
+            return False                       # 워밍업 — 안전 기각
+        if base <= 0:
+            return recent > 0                  # 직전에 거래가 없었다면 폭발로 본다
+        return recent / base >= cfg.volume_burst_ratio
+
+    def _volume_rate(self, code: str, start: datetime, end: datetime) -> float | None:
+        """``[start, end]`` 구간 초당 체결량. 흐름 기록이 없으면 None."""
+        flow = self._flows.get(code)
+        if not flow:
+            return None
+        span = (end - start).total_seconds()
+        if span <= 0:
+            return None
+        tot = sum(v for ts_, _b, v in flow if start <= ts_ <= end)
+        return tot / span
 
     def _check_follower(self, pair: Pair, ts: datetime, surge: float) -> Alert | None:
         cfg = self.config

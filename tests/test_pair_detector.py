@@ -370,3 +370,79 @@ def test_filtered_signal_is_recorded_not_silently_dropped():
     assert "2.2틱" in r.to_line() and "000002" in r.to_line()
     assert det.drain_filtered() == []      # 비운 뒤엔 다시 안 나온다
     assert det.filtered_count == 1         # 누계는 유지(며칠 뒤 집계용)
+
+
+# ----- 가속도 필터 (프로그램매매성 급등만 잡기) --------------------------------
+#
+# 감지기는 워밍업을 요구한다 — 대장은 surge_window(30s), 짝꿍은 cosurge+premove(60s)
+# 만큼의 과거 가격이 있어야 판정이 돈다. 그래서 모든 시나리오는 BASE-60 부터 먹인다.
+
+def _accel_det(**kw):
+    """가속도 필터 검증용 — 다른 관문은 다 열어두고 가속만 본다."""
+    cfg = DetectorConfig.stable(
+        cosurge_min=0.0, premove_max=1.0, min_buy_ratio=0.0, min_sl_ticks=0.0,
+        surge_window=30.0, surge_ret=0.015, **kw)
+    return PairDetector([Pair(leader="000001", follower="000002")], cfg)
+
+
+def _feed_series(det, code, series, *, vol=100.0):
+    """``series`` = [(초, 가격)] 을 순서대로 흘리고 발생한 알림을 모아 돌려준다."""
+    out = []
+    for sec, px in series:
+        out += det.on_tick(code, BASE + timedelta(seconds=sec), px,
+                           bid1=px, volume=vol, side=1)
+    return out
+
+
+def _flat(lo, hi, px=100.0):
+    return [(s, px) for s in range(lo, hi + 1)]
+
+
+def _linear(lo, hi, *, start=100.0, per_sec=0.0533):
+    """전 구간 같은 기울기 — 가속이 없는 상승."""
+    return [(s, start + (s - lo) * per_sec) for s in range(lo, hi + 1)]
+
+
+def test_accel_filter_rejects_steady_climb():
+    """고르게 오른 대장은 가속이 없어 기각된다(30초에 걸친 야금야금 상승)."""
+    det = _accel_det(accel_min_ratio=1.5)
+    _feed_series(det, "000002", _flat(-60, 30))
+    alerts = _feed_series(det, "000001", _linear(-60, 30))
+    assert alerts == []
+
+
+def test_accel_filter_accepts_late_burst():
+    """잠잠하다가 마지막에 확 튀는 대장은 통과한다(프로그램매매 지문)."""
+    det = _accel_det(accel_min_ratio=1.5)
+    _feed_series(det, "000002", _flat(-60, 30))
+    burst = [(25 + i, 100.0 + i * 0.6) for i in range(1, 6)]   # +3% 를 5초에
+    alerts = _feed_series(det, "000001", _flat(-60, 25) + burst)
+    assert alerts and alerts[-1].follower == "000002"
+
+
+def test_accel_filter_off_by_default_keeps_old_behaviour():
+    """기본값 0 이면 필터가 없다 — 고른 상승도 그대로 알림(기존 동작 보존)."""
+    det = _accel_det()
+    assert det.config.accel_min_ratio == 0.0 and det.config.volume_burst_ratio == 0.0
+    _feed_series(det, "000002", _flat(-60, 30))
+    alerts = _feed_series(det, "000001", _linear(-60, 30))
+    assert alerts
+
+
+def test_volume_burst_filter_rejects_thin_surge():
+    """가격은 튀었지만 체결량이 안 늘면 기각(얇은 급등)."""
+    det = _accel_det(volume_burst_ratio=3.0)
+    _feed_series(det, "000002", _flat(-60, 30))
+    burst = [(25 + i, 100.0 + i * 0.6) for i in range(1, 6)]
+    alerts = _feed_series(det, "000001", _flat(-60, 25) + burst, vol=100.0)
+    assert alerts == []
+
+
+def test_volume_burst_filter_accepts_volume_explosion():
+    """같은 급등이어도 체결량이 쏟아지면 통과."""
+    det = _accel_det(volume_burst_ratio=3.0)
+    _feed_series(det, "000002", _flat(-60, 30))
+    _feed_series(det, "000001", _flat(-60, 25), vol=100.0)      # 평소 체결량
+    burst = [(25 + i, 100.0 + i * 0.6) for i in range(1, 6)]
+    alerts = _feed_series(det, "000001", burst, vol=1000.0)     # 10배 폭발
+    assert alerts and alerts[-1].follower == "000002"

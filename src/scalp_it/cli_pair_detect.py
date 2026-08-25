@@ -92,6 +92,10 @@ def build_config(args: argparse.Namespace) -> DetectorConfig:
         over["min_buy_ratio"] = args.min_buy_ratio
     if args.min_sl_ticks is not None:
         over["min_sl_ticks"] = args.min_sl_ticks
+    if args.accel is not None:
+        over["accel_min_ratio"] = args.accel
+    if args.volume_burst is not None:
+        over["volume_burst_ratio"] = args.volume_burst
     from dataclasses import replace
 
     return replace(cfg, **over) if over else cfg
@@ -546,6 +550,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cooldown", type=float, default=None, help="쌍 재알림 억제 초 (기본 90)")
     p.add_argument("--min-turnover", type=float, default=None,
                    help="후속 당일 누적 체결대금 하한(원). 0 = 끔")
+    p.add_argument("--accel", type=float, default=None,
+                   help="대장 가격 가속 하한(배) — 서지창 뒤 절반 수익률 / 앞 절반. "
+                        "기본 0(끔). 예 1.5 = 뒤가 앞보다 1.5배 가파른 상승만")
+    p.add_argument("--volume-burst", type=float, default=None,
+                   help="대장 거래량 폭발 하한(배) — 최근 10초 체결량률 / 직전 30초. "
+                        "기본 0(끔). 프로그램매매는 가격보다 체결량에 먼저 찍힌다")
     p.add_argument("--min-sl-ticks", type=float, default=None,
                    help="손절폭 최소 호가단위 수(저가주 노이즈 청산 방어). "
                         "기본 3.0, 0 = 끔")
