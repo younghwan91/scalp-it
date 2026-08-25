@@ -103,6 +103,8 @@ def build_config(args: argparse.Namespace) -> DetectorConfig:
         over["limitup_near_pct"] = args.limitup_near
     if args.limitup_lock is not None:
         over["limitup_lock_secs"] = args.limitup_lock
+    if args.limitup_require_surge:
+        over["limitup_require_surge"] = True
     if args.max_roundtrip_bp is not None:
         over["max_roundtrip_bp"] = args.max_roundtrip_bp
     if args.order_krw is not None:
@@ -671,6 +673,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="상한가 터치를 방아쇠로 (만쥬 §5-1)")
     p.add_argument("--limitup-near", type=float, default=None,
                    help="상한가까지 이 비율 이내면 발동 (예 0.04 = 4%%p). 0 = 끔")
+    p.add_argument("--limitup-require-surge", action="store_true",
+                   help="상한가 방아쇠에 서지 조건까지 AND — 상한가 근처에서 정체된 "
+                        "종목에 발동하는 걸 막는다(원본 presurge 는 +25% 교차 AND "
+                        "그 분 +1%% 모멘텀이었다)")
     p.add_argument("--limitup-lock", type=float, default=None,
                    help="상한가를 이 초만큼 연속 유지하면 발동(잠김). 0 = 끔")
     p.add_argument("--max-roundtrip-bp", type=float, default=None,
