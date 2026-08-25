@@ -31,6 +31,11 @@
 
 * **동시 보유 상한**: 열린 포지션이 ``max_positions`` 이상이면 신규 알림 스킵(킬 아님).
 
+* **대장 조건부 청산**(만쥬 §5-3): 포지션마다 그 포지션을 만든 **대장 코드**가 붙어 있고,
+  감지기가 :meth:`RiskGuard.on_leader_state` 로 대장의 상한가 유지/이탈을 통보한다.
+  이탈이면 그 대장으로 연 포지션을 **손익 무관 즉시** 청산한다(사유 ``대장이탈``).
+  이 모듈은 상한가를 스스로 계산하지 않는다 — 판정은 감지기 몫이다.
+
 * **일일 리셋**: 날짜가 바뀌면 손실·연속손절 카운터와 킬 상태를 리셋한다.
 
 안전 제약(불변)
@@ -58,6 +63,8 @@ __all__ = [
     "KILL_CONSECUTIVE",
     "KILL_DAILY_LOSS",
     "KILL_MANUAL",
+    "LEADER_HOLDING",
+    "LEADER_LOST",
     "Decision",
     "Position",
     "PositionLogSink",
@@ -69,6 +76,11 @@ __all__ = [
 KILL_DAILY_LOSS = "daily_loss"
 KILL_CONSECUTIVE = "consecutive_losses"
 KILL_MANUAL = "manual_stop"
+
+# 대장 상태(만쥬 §5-3) — **감지기가 판정해 넘겨준다**. 이 모듈은 DB·시계를 모르므로
+# 상한가 여부를 스스로 계산하지 않는다. 여기 오는 건 이미 내려진 판정뿐이다.
+LEADER_HOLDING = "holding"   # 상한가를 말고 있음(유지 중)
+LEADER_LOST = "lost"         # 상한가를 못 말거나 풀리고 꺾임 = 매수 이유 상실
 
 _EPS = 1e-9
 
@@ -92,6 +104,8 @@ class RiskGuardConfig:
     fill_basis: str = "through"               # 'through'(보수·기본) | 'touch'(낙관)
     track_shadow_fill: bool = True            # 반대 가정을 그림자로 병행 추적(로그 전용)
     cost_rate: float = 0.0                    # 왕복 비용률(수익률에서 차감). 0 = 끔
+    # 대장 조건부 청산(만쥬 §5-3). 켜 두어도 대장 상태를 안 먹이면 아무 일도 없다.
+    leader_exit: bool = True
     stop_file: str | None = "data/pair_STOP"  # 존재 시 수동 킬(트리거 c). None = 끔
 
     def loss_limit_krw(self) -> float:
@@ -119,6 +133,7 @@ class Position:
     follower_name: str = ""
     basis: str = "through"                    # 이 포지션이 굴러가는 체결 가정
     shadow: bool = False                      # True 면 회계 밖(로그 전용) 그림자
+    leader_lost: bool = False                 # 대장이 상한가를 놓쳤다고 통보받았는가
     # 체결(두 가정 병기)
     touch_fill_ts: datetime | None = None
     through_fill_ts: datetime | None = None
@@ -166,6 +181,7 @@ class Position:
             "entry": round(self.eff_entry(), 4),
             "status": self.status,
             "exit_reason": self.exit_reason,
+            "leader_lost": self.leader_lost,
             "manual": self.manual,
             # 체결 여부·지연 — 두 가정 병기
             "fill_basis": basis,
@@ -362,7 +378,9 @@ class RiskGuard:
         pos.mae = min(pos.mae, ret)
         pos.mfe = max(pos.mfe, ret)
 
-        # 청산 규칙: 익절 → 손절 → 재난선 → 시간청산
+        # 청산 규칙: 익절 → (대장이탈) → 손절 → 재난선 → 시간청산
+        # 대장이탈은 틱이 아니라 :meth:`on_leader_state` 로 들어와 그 자리에서 즉시
+        # 청산되므로 여기 분기가 없다. 우선순위 근거는 그 메서드 주석에 적었다.
         # 청산가는 **주문 유형**에 맞춘다. 익절은 익절가에 미리 걸어둔 지정가가 채워지는
         # 것이라 레벨 그대로가 맞다. 반면 손절·재난선은 하락을 확인한 뒤 스프레드를 넘어
         # 파는 시장가라 실제 트리거 틱이 실현가다 — 레벨로 계상하면 손실이 과소계상된다
@@ -406,6 +424,55 @@ class RiskGuard:
         (self.closed_shadows if pos.shadow else self.closed_positions).append(pos)
         if self._on_close is not None:
             self._on_close(pos)
+
+    # ----- 대장 상태(만쥬 §5-3) ----------------------------------------------
+
+    def on_leader_state(self, leader_code: str, ts: datetime, state: str) -> None:
+        """감지기가 판정한 대장 상태를 먹인다. 이탈이면 그 대장으로 연 포지션 전량 청산.
+
+        만쥬 §5-3 원문: **"대장주가 상한가를 말지 못하거나 상한가가 풀리고 꺾이는 순간,
+        현재 수익률에 상관없이 즉시 탈출."** 우리 청산은 지금까지 후속주의 ±% 만 봤다 —
+        정보가 있는 쪽(대장)을 안 보고 있었다. 1년 분봉 예비검증(753건)에서 이 축
+        하나가 세전 −0.024% → +0.192% 로 21.6bp 를 움직였다.
+
+        **우선순위 — 익절 > 대장이탈 > 손절 > 재난선 > 시간청산.**
+        원문은 "손익 무관 즉시"라 손절·시간청산보다 무조건 앞이다. 익절만 예외로 앞에
+        두는데, 익절은 미리 걸어둔 지정가라 그 레벨을 찍은 틱이면 대장 통보가 오기 전에
+        이미 체결됐다고 보는 게 실제에 가깝기 때문이다. 여기서는 청산선을 이미 넘긴
+        포지션이 열려 있을 수 없으므로(틱 경로가 먼저 닫는다) 사유는 항상 대장이탈이다.
+        시간청산과 같은 순간에 겹쳐도 대장이탈로 기록한다 — 나간 이유가 그쪽이다.
+
+        ``state`` 는 :data:`LEADER_HOLDING` / :data:`LEADER_LOST`. 유지 중은 무동작이고
+        모르는 값도 무시한다(하위호환: 한 번도 안 먹이면 기존 동작 그대로).
+        """
+        if state != LEADER_LOST or not self.config.leader_exit:
+            return
+        self._observe_date(ts)
+        if not self.open_positions and not self.shadow_positions:
+            return
+        # 그림자(반대 체결가정)에도 똑같이 적용한다 — 한쪽만 대장 규칙으로 나가면
+        # touch/through 이중회계가 서로 다른 전략을 재는 꼴이 된다.
+        self.open_positions = self._leader_exit(self.open_positions, leader_code, ts)
+        self.shadow_positions = self._leader_exit(self.shadow_positions, leader_code, ts)
+
+    def _leader_exit(self, positions: list[Position], leader_code: str,
+                     ts: datetime) -> list[Position]:
+        still: list[Position] = []
+        for pos in positions:
+            if pos.leader != leader_code or ts < pos.alert_ts:
+                still.append(pos)
+                continue
+            pos.leader_lost = True
+            if not pos.is_filled(pos.basis):
+                # 아직 안 붙은 지정가 — 살 이유가 사라졌으니 그대로 소멸시킨다.
+                self._close(pos, ts, None, "미체결(대장이탈)", filled=False)
+                continue
+            # 마지막으로 **본** 가격으로 계상한다(flush 와 같은 원칙). 대장 통보는
+            # 후속주 틱과 별개로 오므로 그 순간의 후속주 가격을 우리는 모른다.
+            entry = pos.eff_entry()
+            px = round(pos.last_price if pos.last_price is not None else entry, 4)
+            self._close(pos, ts, px, "대장이탈", filled=True)
+        return still
 
     # ----- 수동 마킹·정지 -----------------------------------------------------
 

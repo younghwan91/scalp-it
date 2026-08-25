@@ -27,6 +27,33 @@
   그것도 없으면 익절폭)이 ``min_sl_ticks`` 틱 미만인 후속주는 알림하지 않고
   :class:`FilteredSignal` 로 남긴다. ``min_sl_ticks=0`` 이면 끈다(과거 동작).
 
+* **상한가 방아쇠**(문서 44 §5-1, 기본 꺼짐): 만쥬의 실제 방아쇠는 서지가 아니라
+  "대장이 상한가에 안착하거나 상한가 직전 급등"이다. 원자료가 터치인지 잠김인지
+  확정되지 않아(§11 #4) ``limitup_touch``/``limitup_near_pct``/``limitup_lock_secs``
+  셋을 각각 켤 수 있게 두고 OR 로 판정한다. 상한가는 주입받은 **전일 종가**로만
+  계산하고(:func:`limit_up_price`), 전일 종가가 없는 종목은 방아쇠가 없다(안전 스킵).
+
+* **동적 대장/후속**(문서 44 §3·§4-2, 기본 꺼짐): ``universe`` + ``sectors`` 를 주면
+  방아쇠가 터진 종목을 그날의 대장으로 삼고, 같은 섹터에서 그 시점 당일등락률
+  ``follower_rank_min~max`` 위(기본 2~3)를 후속으로 고른다. 만쥬는 쌍을 매일 새로
+  고르기 때문이다. 사람이 큐레이션한 고정 쌍 모드는 그대로 함께 돈다.
+
+* **호가 두께 필터**(문서 44 §4-1 — 만쥬가 **최우선**이라 한 필터): ``order_krw`` 원을
+  시장가로 왕복 칠 때의 충격(:func:`roundtrip_bp`)이 ``max_roundtrip_bp`` (기본 20bp)를
+  넘거나 10호가로 금액을 못 채우면 배제한다. 실측(2026-08-24, 80종목)에서 1000만원
+  왕복충격이 종목별로 39배(5.1~195.9bp) 벌어졌고 두께 5분위 충격후 손익이
+  Q1 −22bp vs Q5 −219bp 였다. 10호가 스냅샷을 안 주면 잴 수 없으므로 통과시킨다.
+  ``min_sl_ticks`` 와는 성격이 다른 필터라 둘 다 남아 있고, **두께를 먼저** 본다.
+
+* **순간 체결량**(문서 44 §5-1, 기본 꺼짐): 대장에 ``big_trade_krw``(5천만원) 이상
+  체결이 ``big_trade_window`` 초 안에 ``min_big_trades`` 건 이상 있어야 통과.
+
+* **대장 이탈 통보**(문서 44 §5-3 — 짝꿍의 진짜 청산 규칙): "대장이 상한가를 못 말거나
+  풀리는 순간 손익 무관 전량 매도". 상한가를 계산할 수 있는 건 전일 종가를 주입받은
+  이 감지기뿐이라 **판정은 여기서 내리고** :meth:`PairDetector.drain_leader_events` 로
+  ``(대장코드, 시각, holding|lost)`` 를 내보낸다(가드·실행기는 결론만 받는다).
+  상태가 **바뀔 때만** 한 번씩 넣고, 알림 반환값에는 절대 섞지 않는다.
+
 * **쿨다운**: 같은 쌍은 ``cooldown`` 초(기본 90s) 안에 재알림하지 않는다.
 * **거래대금 하한**: 후속주 당일 누적 체결대금이 ``min_turnover`` 미만이면 알림하지 않는다.
 
@@ -37,7 +64,9 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import defaultdict, deque
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -47,14 +76,84 @@ from scalp_it.ticksize import tick_size, ticks_in
 
 __all__ = [
     "DEFAULT_WATCHLIST",
+    "LEADER_HOLDING",
+    "LEADER_LOST",
     "Alert",
     "DetectorConfig",
     "FilteredSignal",
     "Pair",
     "PairDetector",
+    "limit_up_price",
     "load_watchlist",
     "parse_pairs_arg",
+    "roundtrip_bp",
 ]
+
+
+#: 호가 한 단계 = (가격, 잔량).
+Level = tuple[float, float]
+
+#: 대장 상태 — :meth:`PairDetector.drain_leader_events` 가 내보내는 값.
+#: ``scalp_it.realtime.risk_guard`` 의 동명 상수와 **글자까지 같아야** 한다(테스트로 고정).
+#: 여기서 import 하지 않는 이유: 감지기는 순수 계산부라 가드·실행기에 의존하지 않는다.
+LEADER_HOLDING = "holding"   # 상한가를 말고 있음(유지 중)
+LEADER_LOST = "lost"         # 상한가를 못 말거나 풀리고 꺾임 = 매수 이유 상실
+
+
+def limit_up_price(prev_close: float) -> float:
+    """전일종가 × 1.3 을 그 가격대 호가단위로 **내림** = 상한가.
+
+    ``scripts/limitup_timing.py::limit_up_price`` 와 값이 한 치도 달라지면 안 된다 —
+    그 스크립트로 뽑은 상한가 검증 결과와 실시간 판정이 어긋나면 백테스트가 무의미해진다.
+    스크립트는 pandas·DB 어댑터를 끌고 들어와 실시간 감지기에서 import 할 수 없으므로
+    식만 여기 옮겼고, **동일성은 테스트가 스크립트를 직접 로드해 고정한다**.
+    """
+    raw = float(prev_close) * 1.3
+    tick = tick_size(raw)
+    return math.floor(raw / tick + 1e-9) * tick
+
+
+def _sweep_vwap(levels: Sequence[Level], krw: float) -> float | None:
+    """``krw`` 원을 호가 단계별로 순서대로 소진했을 때의 체결 VWAP.
+
+    잔량을 다 긁어도 금액을 못 채우면 None — 그 종목은 시장가로 치면 호가가 튄다
+    (만쥬 §4-1: "상하 10호가를 합쳐도 소화 못 하면 재료가 좋아도 즉시 제외").
+    """
+    if krw <= 0:
+        return None
+    remain, shares = krw, 0.0
+    for px, qty in levels:
+        px, qty = float(px), float(qty)
+        if px <= 0 or qty <= 0:
+            continue
+        take = min(px * qty, remain)
+        shares += take / px
+        remain -= take
+        if remain <= 0:
+            break
+    if remain > 0 or shares <= 0:
+        return None
+    return krw / shares
+
+
+def roundtrip_bp(bids: Sequence[Level], asks: Sequence[Level], krw: float) -> float | None:
+    """``krw`` 원 시장가 **왕복** 충격(bp). 10호가로 못 채우면 ``inf``, 호가가 없으면 None.
+
+    매수는 ask1→ask10, 매도는 bid1→bid10 을 순서대로 소진한 VWAP 을 쓰고
+    ``(VWAP_buy − VWAP_sell) / mid × 10⁴`` 로 잰다. 실측(2026-08-24, 80종목)에서
+    1000만원 기준 중앙 왕복충격이 5.1bp(LG전자)~195.9bp(인디에프)로 39배 벌어졌고,
+    두께 5분위 충격후 손익이 Q1 −22bp vs Q5 −219bp 였다 — 두께가 곧 손익이다.
+    """
+    if not bids or not asks:
+        return None
+    mid = (float(bids[0][0]) + float(asks[0][0])) / 2.0
+    if mid <= 0:
+        return None
+    buy = _sweep_vwap(asks, krw)
+    sell = _sweep_vwap(bids, krw)
+    if buy is None or sell is None:
+        return math.inf                   # 10호가로도 못 채움 = 호가 튐 → 즉시 배제
+    return (buy - sell) / mid * 1e4
 
 
 # --------------------------------------------------------------------- 데이터
@@ -111,6 +210,35 @@ class DetectorConfig:
     volume_burst_ratio: float = 0.0   # 거래량 폭발 하한(배). 0 = 끔
     volume_burst_window: float = 10.0  # 폭발 관측 창(초)
     volume_burst_base: float = 30.0   # 폭발 비교 기준 창(초, 그 직전 구간)
+    # 만쥬 상한가 방아쇠(문서 44 §5-1) — 서지(+1.5%/30s)를 **대체**한다.
+    #   원자료가 터치인지 잠김인지 확정되지 않아(§11 #4) 셋을 각각 켤 수 있게 뒀다.
+    #   셋 다 꺼짐(기본) = 기존 서지 방아쇠 그대로. 하나라도 켜면 OR 로 판정하고
+    #   서지는 limitup_require_surge=True 일 때만 AND 로 더한다.
+    #   전일종가를 모르는 종목은 상한가를 계산할 수 없으므로 **방아쇠 없음**(안전 스킵).
+    limitup_touch: bool = False       # 현재가 ≥ 상한가
+    limitup_near_pct: float = 0.0     # 상한가까지 이 비율 이내면 발동. 0.04 = 4%p. 0 = 끔
+    limitup_lock_secs: float = 0.0    # 상한가를 이 초만큼 연속 유지(잠김 근사). 0 = 끔
+    limitup_require_surge: bool = False  # 상한가 방아쇠에 서지 조건까지 AND 로 요구
+    # 동적 대장/후속 선정(문서 44 §3·§4-2) — universe·sectors 를 주입했을 때만 돈다.
+    #   대장 = 방아쇠가 터진 종목, 후속 = 같은 섹터 당일등락률 2~3위(대장 제외).
+    follower_rank_min: int = 2        # 후속 후보 순위 하한(1 = 대장 자리)
+    follower_rank_max: int = 3        # 후속 후보 순위 상한
+    # 호가 두께 — 만쥬가 **최우선**이라 한 필터(§4-1).
+    #   order_krw 원을 시장가로 왕복 칠 때의 충격(bp)이 max_roundtrip_bp 를 넘으면 배제.
+    #   10호가 스냅샷이 없으면(기존 호출부) 잴 수 없으므로 통과 — 기존 동작 보존.
+    order_krw: float = 10_000_000     # 왕복 충격을 재는 주문금액(원)
+    max_roundtrip_bp: float = 20.0    # 왕복 충격 상한(bp). 0 = 끔
+    # 순간 체결량(§5-1 수급 확인) — 대장에 대량 자금이 몰려 상한가를 굳히는지.
+    big_trade_krw: float = 50_000_000  # '대량 체결' 한 건의 금액 기준(원)
+    min_big_trades: int = 0           # 관측창 안 대량체결 최소 건수. 0 = 끔
+    big_trade_window: float = 30.0    # 대량체결 관측 창(초)
+    # 대장 이탈 통보(문서 44 §5-3): "대장이 상한가를 못 말거나 풀리는 순간 = 손익 무관
+    #   전량 매도". 그 판정은 상한가를 아는 감지기만 내릴 수 있어 여기서 내고
+    #   drain_leader_events() 로 밖에 알린다(가드·실행기는 판정만 받는다).
+    #   확인 구간: 상한가 아래로 내려온 뒤 이 초만큼 지나서도 아래면 이탈로 본다.
+    #   기본 0 = 첫 틱 즉시("풀리는 순간"). 상한가 매수벽에 체결이 한 틱 스치는 노이즈가
+    #   실측으로 확인되면 1~2초를 주면 된다 — 늦추는 만큼 청산이 늦는다는 게 비용이다.
+    leader_lost_confirm_secs: float = 0.0
     cooldown: float = 90.0            # 같은 쌍 재알림 억제(초)
     min_turnover: float = 0.0         # 후속 당일 누적 체결대금 하한(원). 0 = 끔
     history: float = 240.0            # 종목별 가격 히스토리 보관(초)
@@ -149,6 +277,11 @@ class Alert:
     exit_ts: datetime                 # 시간청산 시각(90초) — 실질적 손절
     turnover: float                   # 후속 당일 누적 체결대금(원)
     buy_ratio: float = -1.0           # 진입 직전30초 매수체결비율(필터 통과값). -1 = 미측정
+    trigger: str = "surge"            # 방아쇠 종류: surge|touch|near|locked
+    leader_ret: float = 0.0           # 대장 당일등락률(전일종가 대비). 0 = 미측정
+    leader_limit: float = 0.0         # 대장 상한가(원). 0 = 미측정
+    rt_bp: float = -1.0               # 후속 왕복 충격(bp, 필터 통과값). -1 = 미측정
+    big_trades: int = -1              # 대장 관측창 대량체결 건수. -1 = 미측정
     leader_name: str = ""
     follower_name: str = ""
 
@@ -168,8 +301,14 @@ class Alert:
         else:
             protect = "손절 없음(90초 시간청산)"
         buy = f" 매수{self.buy_ratio:.0%}" if self.buy_ratio >= 0 else ""
+        # 방아쇠가 무엇이었는지 한눈에 — 상한가 방아쇠는 당일등락률이 서지보다 정보가 많다.
+        if self.trigger == "surge":
+            head = f"+{self.leader_surge:.2%}/서지"
+        else:
+            kind = {"touch": "상한가터치", "near": "상한가근접", "locked": "상한가잠김"}
+            head = f"{self.leader_ret:+.1%}/{kind.get(self.trigger, self.trigger)}"
         return (
-            f"[{self.ts:%H:%M:%S}] 짝꿍 신호  {lead}({self.leader}) +{self.leader_surge:.2%}/서지"
+            f"[{self.ts:%H:%M:%S}] 짝꿍 신호  {lead}({self.leader}) {head}"
             f"  →  {fol}({self.follower}) 동반+{self.cosurge:.2%} 프리무브{self.premove:+.2%}{buy}"
             f"  | bid1 지정가매수 {self.entry:,.0f}"
             f"  {'익절 없음' if self.take_profit is None else f'익절 {self.take_profit:,.0f}'}"
@@ -180,10 +319,16 @@ class Alert:
 
 @dataclass(frozen=True)
 class FilteredSignal:
-    """다른 필터는 다 통과했는데 호가단위 때문에 버린 신호의 기록.
+    """다른 필터는 다 통과했는데 마지막 관문에서 버린 신호의 기록.
 
     조용히 버리면 며칠 뒤 "몇 건이 필터로 빠졌나"를 셀 수 없다. 알림과 같은 로그에
     한 줄로 남겨(:meth:`AlertBus.notice`) 나중에 세고, 필터가 과했는지 판단한다.
+
+    ``reason`` 으로 어느 필터인지 구분한다:
+
+    * ``min_sl_ticks`` — 보호폭이 몇 틱 안 됨(노이즈 청산 위험).
+    * ``roundtrip_bp`` — 10호가 왕복 충격이 상한 초과(호가가 얇음).
+    * ``depth_short``  — 10호가를 다 긁어도 주문금액을 못 채움(만쥬 §4-1 즉시 제외).
     """
 
     ts: datetime
@@ -191,11 +336,14 @@ class FilteredSignal:
     follower: str
     price: float                      # 후속 현재가(마지막 체결)
     entry: float                      # 제안 진입가(bid1) — 폭은 이걸 기준으로 잰다
-    tick: int                         # 그 가격대 호가단위(원)
-    width: float                      # 판정에 쓴 보호폭(원)
-    width_kind: str                   # "손절" | "재난선" | "익절" — 무엇의 폭인지
-    sl_ticks: float                   # 보호폭 ÷ 호가단위
-    min_sl_ticks: float               # 요구 하한
+    tick: int = 0                     # 그 가격대 호가단위(원)
+    width: float = 0.0                # 판정에 쓴 보호폭(원)
+    width_kind: str = ""              # "손절" | "재난선" | "익절" — 무엇의 폭인지
+    sl_ticks: float = 0.0             # 보호폭 ÷ 호가단위
+    min_sl_ticks: float = 0.0         # 요구 하한
+    rt_bp: float = -1.0               # 왕복 충격(bp). inf = 10호가로 못 채움
+    order_krw: float = 0.0            # 충격을 잰 주문금액(원)
+    max_roundtrip_bp: float = 0.0     # 왕복 충격 상한(bp)
     reason: str = "min_sl_ticks"
     leader_name: str = ""
     follower_name: str = ""
@@ -210,9 +358,16 @@ class FilteredSignal:
     def to_line(self) -> str:
         lead = self.leader_name or self.leader
         fol = self.follower_name or self.follower
+        head = (f"[{self.ts:%H:%M:%S}] 짝꿍 필터배제({self.reason})  {lead}({self.leader})"
+                f"  →  {fol}({self.follower})  진입 {self.entry:,.0f}")
+        if self.reason == "depth_short":
+            return (f"{head}  10호가를 다 긁어도 {self.order_krw:,.0f}원을 못 채움"
+                    f" — 시장가로 치면 호가가 튄다(만쥬 최우선 배제)")
+        if self.reason == "roundtrip_bp":
+            return (f"{head}  {self.order_krw:,.0f}원 왕복충격 {self.rt_bp:.1f}bp"
+                    f" > {self.max_roundtrip_bp:.1f}bp — 호가가 얇아 충격이 수익을 먹는다")
         return (
-            f"[{self.ts:%H:%M:%S}] 짝꿍 필터배제({self.reason})  {lead}({self.leader})"
-            f"  →  {fol}({self.follower})  진입 {self.entry:,.0f} 1틱 {self.tick:,}원"
+            f"{head} 1틱 {self.tick:,}원"
             f"  {self.width_kind}폭 {self.width:,.1f}원 = {self.sl_ticks:.1f}틱"
             f" < {self.min_sl_ticks:.1f}틱 — 스프레드·호가 흔들림만으로 터질 폭"
         )
@@ -274,7 +429,25 @@ class PairDetector:
     또는 틱의 ``best_bid`` 로 갱신된다.
     """
 
-    def __init__(self, pairs: list[Pair], config: DetectorConfig | None = None) -> None:
+    def __init__(
+        self,
+        pairs: list[Pair],
+        config: DetectorConfig | None = None,
+        *,
+        prev_close: Mapping[str, float] | None = None,
+        sectors: Mapping[str, str] | None = None,
+        universe: Iterable[str] | None = None,
+        names: Mapping[str, str] | None = None,
+    ) -> None:
+        """``pairs`` 는 사람이 큐레이션한 고정 쌍(기존 모드).
+
+        ``universe`` + ``sectors`` 를 함께 주면 **동적 모드**가 켜진다 — 그날 섹터에서
+        방아쇠가 터진 종목을 대장으로 삼고 같은 섹터 등락률 2~3위를 후속으로 고른다
+        (만쥬는 쌍을 매일 새로 고른다, 문서 44 §3·§4-2). 두 모드는 공존한다.
+
+        ``prev_close`` 는 상한가·당일등락률 계산의 유일한 입력이다. 이 모듈은 DB 도
+        시계도 모르므로 전일종가·섹터·유니버스는 전부 **주입받는다**.
+        """
         self.config = config or DetectorConfig()
         self.pairs = list(pairs)
         self._by_leader: dict[str, list[Pair]] = defaultdict(list)
@@ -283,13 +456,45 @@ class PairDetector:
             self._by_leader[p.leader].append(p)
             self._codes.add(p.leader)
             self._codes.add(p.follower)
+        self._prev_close: dict[str, float] = {
+            str(k): float(v) for k, v in (prev_close or {}).items() if v}
+        self._sectors: dict[str, str] = {
+            str(k): str(v) for k, v in (sectors or {}).items() if v}
+        self._names: dict[str, str] = {str(k): str(v) for k, v in (names or {}).items()}
+        self._universe: set[str] = {str(c) for c in (universe or ())}
+        # 동적 모드는 유니버스와 섹터가 **둘 다** 있어야 성립한다. 하나만 오면 고정 쌍만 돈다.
+        self._dynamic = bool(self._universe and self._sectors)
+        if self._dynamic:
+            self._codes |= self._universe
+            self._by_sector: dict[str, list[str]] = defaultdict(list)
+            for code in sorted(self._universe):
+                sec = self._sectors.get(code)
+                if sec:
+                    self._by_sector[sec].append(code)
+        else:
+            self._by_sector = defaultdict(list)
+        # 대장 상태를 추적할 종목 — 고정 쌍의 대장 + (동적 모드면) 유니버스 전부.
+        # 후속주만인 종목까지 통보하면 가드가 쓰지도 않을 이벤트를 받는다.
+        self._leader_codes: set[str] = set(self._by_leader)
+        if self._dynamic:
+            self._leader_codes |= self._universe
         self._prices: dict[str, deque[tuple[datetime, float]]] = defaultdict(deque)
         # 종목별 체결 흐름 (ts, 매수체결량, 전체체결량) — 롤링 매수비율용.
         self._flows: dict[str, deque[tuple[datetime, float, float]]] = defaultdict(deque)
+        # 종목별 대량체결 시각 — 순간 체결량 필터(만쥬 §5-1 수급 확인).
+        self._big: dict[str, deque[datetime]] = defaultdict(deque)
         self._bid: dict[str, float] = {}
+        # 종목별 10호가 스냅샷 (매수단계, 매도단계) — 왕복 충격 계산용.
+        self._book: dict[str, tuple[list[Level], list[Level]]] = {}
+        # 상한가를 연속으로 유지한 시작 시각(잠김 근사). 이탈하면 지운다.
+        self._lock_since: dict[str, datetime] = {}
+        # 대장 상태 기계 — 종목별 마지막으로 내보낸 상태와, 상한가 아래로 처음 내려온 시각.
+        self._leader_state: dict[str, str] = {}
+        self._below_since: dict[str, datetime] = {}
+        self._leader_events: list[tuple[str, datetime, str]] = []
         self._turnover: dict[str, float] = defaultdict(float)
         self._last_alert: dict[tuple[str, str], datetime] = {}
-        # 호가단위 필터로 버린 신호 — 누계(집계용)와 아직 안 알린 큐(CLI 가 비워간다).
+        # 필터로 버린 신호 — 누계(집계용)와 아직 안 알린 큐(CLI 가 비워간다).
         self.filtered_count = 0
         self._filtered: list[FilteredSignal] = []
 
@@ -306,9 +511,29 @@ class PairDetector:
 
     # ----- 입력 ---------------------------------------------------------------
 
-    def on_quote(self, code: str, ts: datetime, bid1: float | None) -> None:
-        """호가 스냅샷으로 bid1 갱신(틱의 best_bid 보다 우선)."""
-        if code in self._codes and bid1:
+    def on_quote(
+        self,
+        code: str,
+        ts: datetime,
+        bid1: float | None = None,
+        *,
+        bids: Sequence[Level] | None = None,
+        asks: Sequence[Level] | None = None,
+    ) -> None:
+        """호가 스냅샷으로 bid1 과 10호가 잔량을 갱신(틱의 best_bid 보다 우선).
+
+        ``bids``/``asks`` 는 우선순위 순서의 ``(가격, 잔량)`` 목록(보통 10단계)이다.
+        주지 않으면 두께 필터는 잴 수 없어 통과시킨다 — 기존 호출부가 안 깨지도록.
+        """
+        if code not in self._codes:
+            return
+        if bids or asks:
+            b = [(float(p), float(q)) for p, q in (bids or ()) if p and q]
+            a = [(float(p), float(q)) for p, q in (asks or ()) if p and q]
+            self._book[code] = (b, a)
+            if not bid1 and b:
+                bid1 = b[0][0]
+        if bid1:
             self._bid[code] = float(bid1)
 
     def on_tick(
@@ -341,22 +566,151 @@ class PairDetector:
             flow = self._flows[code]
             flow.append((ts, buy, vol))
             self._trim_flow(flow, ts)
+            if price * vol >= self.config.big_trade_krw:
+                big = self._big[code]
+                big.append(ts)
+                self._trim_big(big, ts)
+        # 상한가 잠김은 틱마다 갱신해야 한다(방아쇠 판정 시점에 되돌아볼 수 없다).
+        self._update_lock(code, ts, price)
 
-        if code not in self._by_leader:
+        is_fixed_leader = code in self._by_leader
+        if not is_fixed_leader and not (self._dynamic and code in self._universe):
             return []
-        surge = self._ret(code, ts, self.config.surge_window)
-        if surge is None or surge < self.config.surge_ret:
+        fired = self._leader_trigger(code, ts, price)
+        if fired is None:
             return []
-        # 가속도 관문은 **대장**에 건다 — 프로그램 매수가 때리는 건 대장이고, 짝꿍이
-        # 끌려오는 것도 그 순간이다. 쌍을 돌기 전에 한 번만 판정하면 되므로 여기 둔다.
-        if not self._accel_ok(code, ts):
-            return []
+        kind, surge = fired
+        pairs = list(self._by_leader[code]) if is_fixed_leader else []
+        if self._dynamic and code in self._universe:
+            pairs += self._dynamic_pairs(code, ts)
         alerts: list[Alert] = []
-        for pair in self._by_leader[code]:
-            alert = self._check_follower(pair, ts, surge)
+        for pair in pairs:
+            alert = self._check_follower(pair, ts, surge, trigger=kind)
             if alert is not None:
                 alerts.append(alert)
         return alerts
+
+    # ----- 대장 방아쇠 --------------------------------------------------------
+
+    @property
+    def _limitup_on(self) -> bool:
+        cfg = self.config
+        return bool(cfg.limitup_touch or cfg.limitup_near_pct > 0 or cfg.limitup_lock_secs > 0)
+
+    def limit_up(self, code: str) -> float | None:
+        """그 종목의 상한가. 전일종가를 주입받지 못했으면 None(억지 추정 금지)."""
+        prev = self._prev_close.get(code)
+        return limit_up_price(prev) if prev else None
+
+    def day_return(self, code: str, ts: datetime) -> float | None:
+        """당일등락률 = 현재가/전일종가 − 1. 전일종가나 가격이 없으면 None."""
+        prev = self._prev_close.get(code)
+        cur = self._price_at(code, ts)
+        if not prev or cur is None:
+            return None
+        return cur / prev - 1.0
+
+    def _update_lock(self, code: str, ts: datetime, price: float) -> None:
+        """상한가 유지/이탈 상태를 갱신하고, **상태가 바뀔 때만** 이벤트를 큐에 넣는다.
+
+        만쥬 §5-3 이 짝꿍의 진짜 청산 규칙이다 — "대장이 상한가를 못 말거나 풀리는
+        순간 손익 무관 전량 매도". 상한가를 계산할 수 있는 건 전일종가를 주입받은
+        이 감지기뿐이라 판정은 여기서 내리고, 가드·실행기는 결론만 받는다.
+
+        전이할 때 한 번씩만 넣는다 — 매 틱 ``lost`` 를 쏟으면 로그도 주문도 폭주한다.
+        """
+        limit = self.limit_up(code)
+        if limit is None:
+            return                             # 전일종가 미주입 — 상한가를 모르니 통보 없음
+        if price >= limit:
+            self._lock_since.setdefault(code, ts)
+            self._below_since.pop(code, None)
+            if code in self._leader_codes and self._leader_state.get(code) != LEADER_HOLDING:
+                # 처음 닿은 순간, 그리고 풀렸다 다시 붙는 재잠김에서도 알린다.
+                self._leader_state[code] = LEADER_HOLDING
+                self._leader_events.append((code, ts, LEADER_HOLDING))
+            return
+        self._lock_since.pop(code, None)
+        if self._leader_state.get(code) != LEADER_HOLDING:
+            return                             # 애초에 상한가에 닿은 적 없음 — 이탈도 없다
+        since = self._below_since.setdefault(code, ts)
+        if (ts - since).total_seconds() < self.config.leader_lost_confirm_secs:
+            return                             # 확인 구간(기본 0초 = 즉시) 안 — 아직 보류
+        self._leader_state[code] = LEADER_LOST
+        self._below_since.pop(code, None)
+        self._leader_events.append((code, ts, LEADER_LOST))
+
+    def _limitup_kind(self, code: str, ts: datetime, price: float) -> str | None:
+        """발동한 상한가 방아쇠 이름. 구체적인 것(잠김)부터 본다. 없으면 None."""
+        cfg = self.config
+        limit = self.limit_up(code)
+        if limit is None or limit <= 0:
+            return None                        # 전일종가 미주입 — 안전 스킵
+        if cfg.limitup_lock_secs > 0:
+            since = self._lock_since.get(code)
+            if since is not None and (ts - since).total_seconds() >= cfg.limitup_lock_secs:
+                return "locked"
+        if cfg.limitup_touch and price >= limit:
+            return "touch"
+        # "20%대 중후반에서 상한가로 치고 들어가는" 구간 — 상한가까지 N% 이내.
+        if cfg.limitup_near_pct > 0 and price >= limit * (1.0 - cfg.limitup_near_pct):
+            return "near"
+        return None
+
+    def _leader_trigger(
+        self, code: str, ts: datetime, price: float
+    ) -> tuple[str, float] | None:
+        """대장 방아쇠 판정. ``(방아쇠이름, 서지수익률)`` 또는 None."""
+        cfg = self.config
+        surge = self._ret(code, ts, cfg.surge_window)
+        if self._limitup_on:
+            kind = self._limitup_kind(code, ts, price)
+            if kind is None:
+                return None
+            if cfg.limitup_require_surge and (surge is None or surge < cfg.surge_ret):
+                return None
+        else:
+            if surge is None or surge < cfg.surge_ret:
+                return None
+            kind = "surge"
+        # 가속도·순간체결량 관문은 **대장**에 건다 — 프로그램 매수가 때리는 건 대장이고,
+        # 짝꿍이 끌려오는 것도 그 순간이다. 쌍을 돌기 전에 한 번만 판정하면 된다.
+        if not self._accel_ok(code, ts):
+            return None
+        if cfg.min_big_trades > 0 and self._big_trade_count(code, ts) < cfg.min_big_trades:
+            return None                        # 대량 자금이 안 붙음 — 상한가를 못 굳힌다
+        return kind, (surge if surge is not None else 0.0)
+
+    def _big_trade_count(self, code: str, ts: datetime) -> int:
+        """최근 ``big_trade_window`` 초 안의 대량체결(≥ ``big_trade_krw``) 건수."""
+        start = ts - timedelta(seconds=self.config.big_trade_window)
+        return sum(1 for t in self._big.get(code, ()) if start <= t <= ts)
+
+    def _dynamic_pairs(self, leader: str, ts: datetime) -> list[Pair]:
+        """대장과 같은 섹터에서 당일등락률 ``follower_rank_min~max`` 위를 후속으로.
+
+        순위는 대장을 **포함해** 매기고(대장이 1위인 게 보통이다) 대장 자신만 뺀다 —
+        그래야 "2~3등주"라는 말이 만쥬의 관심종목 창 정렬과 같은 뜻이 된다.
+        """
+        cfg = self.config
+        sec = self._sectors.get(leader)
+        if not sec:
+            return []
+        ranked: list[tuple[float, str]] = []
+        for code in self._by_sector.get(sec, ()):
+            ret = self.day_return(code, ts)
+            if ret is not None:
+                ranked.append((ret, code))
+        # 등락률 내림차순, 동률은 코드 오름차순으로 고정(재현 가능한 순위).
+        ranked.sort(key=lambda x: (-x[0], x[1]))
+        out: list[Pair] = []
+        for rank, (_ret, code) in enumerate(ranked, start=1):
+            if code == leader or rank < cfg.follower_rank_min or rank > cfg.follower_rank_max:
+                continue
+            out.append(Pair(leader=leader, follower=code,
+                            leader_name=self._names.get(leader, ""),
+                            follower_name=self._names.get(code, "")))
+        return out
 
     def drain_filtered(self) -> list[FilteredSignal]:
         """필터로 버린 신호를 꺼내고 큐를 비운다(누계 ``filtered_count`` 는 유지).
@@ -366,6 +720,19 @@ class PairDetector:
         """
         out = self._filtered
         self._filtered = []
+        return out
+
+    def drain_leader_events(self) -> list[tuple[str, datetime, str]]:
+        """대장 상태 **전이**를 꺼내고 큐를 비운다 — ``(대장코드, 시각, 상태)``.
+
+        상태는 :data:`LEADER_HOLDING` / :data:`LEADER_LOST`. 호출부는 이걸
+        ``guard.on_leader_state`` · ``executor.on_leader_state`` 로 그대로 흘리면 된다.
+
+        :meth:`on_tick` 반환값(알림)에 섞지 않는 이유는 :meth:`drain_filtered` 와 같다 —
+        호출부가 진입 신호로 오해해 주문까지 갈 수 있다. 여긴 **청산** 통보다.
+        """
+        out = self._leader_events
+        self._leader_events = []
         return out
 
     # ----- 내부 --------------------------------------------------------------
@@ -379,6 +746,11 @@ class PairDetector:
         cutoff = now - timedelta(seconds=self.config.history)
         while flow and flow[0][0] < cutoff:
             flow.popleft()
+
+    def _trim_big(self, big: deque[datetime], now: datetime) -> None:
+        cutoff = now - timedelta(seconds=self.config.history)
+        while big and big[0] < cutoff:
+            big.popleft()
 
     def _buy_ratio(self, code: str, end: datetime, window: float) -> float | None:
         """``[end-window, end]`` 구간 매수체결비율(매수량/전체량). 체결 없으면 None."""
@@ -455,7 +827,8 @@ class PairDetector:
         tot = sum(v for ts_, _b, v in flow if start <= ts_ <= end)
         return tot / span
 
-    def _check_follower(self, pair: Pair, ts: datetime, surge: float) -> Alert | None:
+    def _check_follower(self, pair: Pair, ts: datetime, surge: float,
+                        *, trigger: str = "surge") -> Alert | None:
         cfg = self.config
         fol = pair.follower
         cw, pw = cfg.cosurge_window, cfg.premove_window
@@ -485,9 +858,16 @@ class PairDetector:
         self._last_alert[key] = ts
         bid1 = self._bid.get(fol, cur)
         entry = bid1
-        # 호가단위 필터는 마지막 관문 — 쿨다운을 이미 소비한 자리에 둔다. 가격대가
-        # 같으면 틱 폭도 같아 어차피 90초 안엔 다시 통과할 수 없고, 그래야 서지 한
-        # 번에 배제 기록이 수십 줄 쌓이지 않는다(알림과 같은 빈도로 한 줄).
+        # 마지막 두 관문은 쿨다운을 이미 소비한 자리에 둔다. 가격대·호가 두께는 90초
+        # 안에 크게 안 변해 어차피 다시 통과 못 하고, 그래야 서지 한 번에 배제 기록이
+        # 수십 줄 쌓이지 않는다(알림과 같은 빈도로 한 줄).
+        #
+        # 순서: **호가 두께 먼저**, 그 다음 호가단위. 만쥬가 최우선이라 한 필터가
+        # 두께이고("호가가 튀면 재료가 좋아도 즉시 제외"), 두 필터가 동시에 걸리는
+        # 신호는 두께 쪽 이유로 기록된다.
+        rt_bp = self._roundtrip_ok(pair, ts, cur, entry)
+        if rt_bp is False:
+            return None
         if not self._tick_width_ok(pair, ts, cur, entry):
             return None
         return Alert(
@@ -509,9 +889,50 @@ class PairDetector:
             exit_ts=ts + timedelta(seconds=cfg.time_exit),
             turnover=self._turnover.get(fol, 0.0),
             buy_ratio=(buy_ratio if buy_ratio is not None else -1.0),
+            trigger=trigger,
+            leader_ret=(self.day_return(pair.leader, ts) or 0.0),
+            leader_limit=(self.limit_up(pair.leader) or 0.0),
+            rt_bp=(rt_bp if isinstance(rt_bp, float) else -1.0),
+            big_trades=(self._big_trade_count(pair.leader, ts)
+                        if cfg.min_big_trades > 0 else -1),
             leader_name=pair.leader_name,
             follower_name=pair.follower_name,
         )
+
+    def _roundtrip_ok(self, pair: Pair, ts: datetime, cur: float,
+                      entry: float) -> float | bool:
+        """호가 두께 관문(만쥬 최우선). 통과면 측정한 왕복충격(bp), 배제면 ``False``.
+
+        10호가 스냅샷이 없으면 잴 수 없으므로 ``-1.0`` 을 돌려 통과시킨다 —
+        호가를 안 넣어주던 기존 호출부의 동작을 그대로 보존하기 위해서다.
+        """
+        cfg = self.config
+        if cfg.max_roundtrip_bp <= 0:
+            return -1.0                        # 필터 끔
+        book = self._book.get(pair.follower)
+        if not book:
+            return -1.0                        # 10호가 미주입 — 잴 수 없으니 막지 않는다
+        bids, asks = book
+        bp = roundtrip_bp(bids, asks, cfg.order_krw)
+        if bp is None:
+            return -1.0
+        if bp <= cfg.max_roundtrip_bp:
+            return bp
+        self.filtered_count += 1
+        self._filtered.append(FilteredSignal(
+            ts=ts,
+            leader=pair.leader,
+            follower=pair.follower,
+            price=cur,
+            entry=entry,
+            rt_bp=bp,
+            order_krw=cfg.order_krw,
+            max_roundtrip_bp=cfg.max_roundtrip_bp,
+            reason=("depth_short" if math.isinf(bp) else "roundtrip_bp"),
+            leader_name=pair.leader_name,
+            follower_name=pair.follower_name,
+        ))
+        return False
 
     def _tick_width_ok(self, pair: Pair, ts: datetime, cur: float, entry: float) -> bool:
         """보호폭이 ``min_sl_ticks`` 틱 이상인가. 아니면 기록을 남기고 False."""

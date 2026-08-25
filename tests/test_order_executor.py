@@ -8,7 +8,11 @@ from datetime import datetime, timedelta
 
 from scalp_it.adapters.kiwoom import KiwoomError
 from scalp_it.adapters.kiwoom_order import OrderIntent, OrderResult
-from scalp_it.realtime.order_executor import OrderExecutor
+from scalp_it.realtime.order_executor import (
+    LEADER_HOLDING,
+    LEADER_LOST,
+    OrderExecutor,
+)
 from scalp_it.realtime.pair_detector import Alert
 
 
@@ -56,10 +60,10 @@ class FakeClient:
 
 
 def _alert(code="294570", ts=None, entry=10000, tp=10050, sl=9960,
-           disaster=None, exit_after=90):
+           disaster=None, exit_after=90, leader="124500"):
     t = ts or datetime(2026, 8, 25, 9, 30, 0)
     return Alert(
-        ts=t, leader="124500", follower=code, leader_surge=0.02, cosurge=0.006,
+        ts=t, leader=leader, follower=code, leader_surge=0.02, cosurge=0.006,
         premove=0.001, price=float(entry), bid1=float(entry), entry=float(entry),
         take_profit=float(tp), stop_loss=(None if sl is None else float(sl)),
         disaster_line=(None if disaster is None else float(disaster)),
@@ -574,3 +578,136 @@ def test_flush_cancels_pending_even_before_deadline():
     ex.flush(t0 + timedelta(seconds=5))                        # deadline(+15s) 전
     assert c.cancels and ex.positions == []
     assert ex.history[-1].status == "cancelled"
+
+
+# ----------------------------------------- 대장 조건부 청산(만쥬 §5-3) — 실행기
+
+class _BlockOneSell(FakeClient):
+    """첫 매도만 거부하고 그 다음부터는 정상 접수하는 대역."""
+
+    def __init__(self):
+        super().__init__()
+        self._blocked_once = False
+
+    def sell_limit(self, code, qty, price, *, live=False, ref_price=None, exchange="KRX"):
+        self.sells.append((code, qty, price, live))
+        intent = OrderIntent(side="sell", code=code, qty=qty, price=price)
+        if not self._blocked_once:
+            self._blocked_once = True
+            return OrderResult(intent=intent, dry_run=not live, submitted=False,
+                               blocked=True, blocked_reason="일시거부")
+        return OrderResult(intent=intent, dry_run=not live, submitted=live, ord_no="S1",
+                           return_code=(0 if live else None))
+
+
+def test_leader_lost_sells_filled_position_regardless_of_pnl():
+    """대장 이탈 → 손익 무관 즉시 매도 접수. 접수는 청산이 아니므로 selling."""
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=10050))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)     # 매수 체결
+    ex.on_tick("294570", t0 + timedelta(seconds=4), 10020)    # 익절·손절 아님
+    ex.on_leader_state("124500", t0 + timedelta(seconds=5), LEADER_LOST)
+    assert c.sells and c.sells[-1][:3] == ("294570", 1, 10020)
+    pos = ex.positions[0]
+    assert pos.status == "selling" and pos.exit_reason == "대장이탈"
+    # 체결 확인 후에만 exited (C-1 회귀 방지)
+    ex.on_tick("294570", t0 + timedelta(seconds=7), 10021)
+    assert ex.history[-1].status == "exited"
+
+
+def test_leader_lost_cancels_pending_buy():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0))
+    ex.on_leader_state("124500", t0 + timedelta(seconds=3), LEADER_LOST)
+    assert c.cancels and c.cancels[-1][0] == "B1"
+    assert ex.positions == []
+    assert ex.history[-1].status == "cancelled"
+    assert ex.history[-1].exit_reason == "대장이탈취소"
+
+
+def test_leader_lost_cancel_rejection_keeps_pending_and_retries():
+    """C-2: 취소 거부를 성공으로 오판하지 않는다. 다음 틱에 재시도."""
+    c = FakeClient(cancel_rc=-1)
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0))
+    ex.on_leader_state("124500", t0 + timedelta(seconds=3), LEADER_LOST)
+    assert ex.positions and ex.positions[0].status == "pending"
+    ex.on_tick("294570", t0 + timedelta(seconds=4), 10001)    # 체결 안 되는 가격
+    assert len(c.cancels) == 2                                 # 재시도했다
+
+
+def test_leader_lost_only_affects_positions_of_that_leader():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(code="294570", ts=t0, leader="124500"))
+    ex.on_signal(_alert(code="333333", ts=t0, leader="999999"))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)
+    ex.on_tick("333333", t0 + timedelta(seconds=2), 9999)
+    ex.on_leader_state("124500", t0 + timedelta(seconds=3), LEADER_LOST)
+    assert [p.code for p in ex.positions if p.status == "selling"] == ["294570"]
+    assert [p.code for p in ex.positions if p.status == "filled"] == ["333333"]
+
+
+def test_leader_holding_state_is_noop():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)
+    ex.on_leader_state("124500", t0 + timedelta(seconds=3), LEADER_HOLDING)
+    assert c.sells == [] and ex.positions[0].status == "filled"
+
+
+def test_leader_lost_sell_failure_retries_on_next_tick():
+    """매도 미성사면 포지션을 버리지 않고 다음 틱에 다시 청산 시도(N-1)."""
+    c = _BlockOneSell()
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=10050))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)
+    ex.on_leader_state("124500", t0 + timedelta(seconds=3), LEADER_LOST)
+    assert ex.positions[0].status == "filled"                  # 접수 실패 → 유지
+    ex.on_tick("294570", t0 + timedelta(seconds=4), 10020)     # 어느 선도 아님
+    assert ex.positions[0].status == "selling"
+    assert ex.positions[0].exit_reason == "대장이탈"
+
+
+def test_take_profit_wins_over_leader_lost_on_same_tick():
+    """이미 익절선을 넘긴 틱이면 익절이 유리하다 — 익절 > 대장이탈."""
+    c = _BlockOneSell()
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=10050))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)
+    ex.on_leader_state("124500", t0 + timedelta(seconds=3), LEADER_LOST)  # 접수 거부
+    ex.on_tick("294570", t0 + timedelta(seconds=4), 10050)
+    assert ex.positions[0].exit_reason == "익절"
+
+
+def test_leader_lost_beats_stop_loss_and_time_exit():
+    """손절·시간청산보다는 대장이탈이 앞선다(손익 무관 즉시)."""
+    c = _BlockOneSell()
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=10050, sl=9960, exit_after=10))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)
+    ex.on_leader_state("124500", t0 + timedelta(seconds=3), LEADER_LOST)
+    ex.on_tick("294570", t0 + timedelta(seconds=20), 9950)     # 손절선·청산시각 동시 충족
+    assert ex.positions[0].exit_reason == "대장이탈"
+
+
+def test_leader_state_never_fed_keeps_legacy_time_exit():
+    """하위호환 — 대장 상태를 안 먹이면 기존 시간청산 그대로."""
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, exit_after=10))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)
+    ex.on_tick("294570", t0 + timedelta(seconds=20), 10000)
+    assert _last(ex).exit_reason == "시간청산"

@@ -12,6 +12,8 @@ from scalp_it.realtime.risk_guard import (
     KILL_CONSECUTIVE,
     KILL_DAILY_LOSS,
     KILL_MANUAL,
+    LEADER_HOLDING,
+    LEADER_LOST,
     PositionLogSink,
     RiskGuard,
     RiskGuardConfig,
@@ -478,3 +480,106 @@ def test_flush_time_exit_uses_last_price_not_best_price():
     assert closed[-1].exit_price == 99.2, (
         f"마지막 관측가 99.2 로 계상돼야 하는데 {closed[-1].exit_price}"
     )
+
+
+# ------------------------------------------------- 대장 조건부 청산(만쥬 §5-3)
+
+def _leader_alert(secs: float = 0.0, *, leader: str = "000001", follower: str = FOL,
+                  entry: float = 100.0, tp: float | None = 100.5,
+                  sl: float | None = 99.6, hold: float = 90.0) -> Alert:
+    ts = BASE + timedelta(seconds=secs)
+    return Alert(
+        ts=ts, leader=leader, follower=follower,
+        leader_surge=0.02, cosurge=0.006, premove=0.0,
+        price=entry, bid1=entry, entry=entry,
+        take_profit=tp, stop_loss=sl, disaster_line=None,
+        exit_ts=ts + timedelta(seconds=hold), turnover=1e9,
+        leader_name="대장", follower_name="후속",
+    )
+
+
+def test_leader_lost_exits_filled_position_regardless_of_pnl():
+    """대장이 상한가를 놓치면 손익 무관 즉시 청산(익절선·손절선 사이여도)."""
+    g = _guard()
+    g.on_alert(_leader_alert())
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)     # through 체결
+    g.on_tick(FOL, BASE + timedelta(seconds=2), 100.2)    # 익절·손절 어느 선도 아님
+    assert len(g.open_positions) == 1
+    g.on_leader_state("000001", BASE + timedelta(seconds=3), LEADER_LOST)
+    assert g.open_positions == []
+    pos = g.closed_positions[-1]
+    assert pos.exit_reason == "대장이탈"
+    assert pos.status == "closed"
+    assert pos.exit_price == 100.2                        # 마지막으로 본 가격에 청산
+    assert pos.pnl is not None and pos.pnl > 0            # 수익 중이어도 나간다
+
+
+def test_leader_holding_is_noop():
+    """'유지 중' 상태는 아무것도 하지 않는다."""
+    g = _guard()
+    g.on_alert(_leader_alert())
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)
+    g.on_leader_state("000001", BASE + timedelta(seconds=2), LEADER_HOLDING)
+    assert len(g.open_positions) == 1
+
+
+def test_leader_lost_only_touches_that_leader():
+    g = _guard()
+    g.on_alert(_leader_alert(follower="000002", leader="000001"))
+    g.on_alert(_leader_alert(follower="000003", leader="000009"))
+    g.on_tick("000002", BASE + timedelta(seconds=1), 99.9)
+    g.on_tick("000003", BASE + timedelta(seconds=1), 99.9)
+    g.on_leader_state("000001", BASE + timedelta(seconds=2), LEADER_LOST)
+    assert [p.follower for p in g.open_positions] == ["000003"]
+
+
+def test_leader_lost_applies_to_shadow_positions():
+    """그림자(반대 체결가정)도 같은 대장 사유로 나가야 이중회계가 어긋나지 않는다."""
+    g = _guard(track_shadow_fill=True, fill_basis="through")
+    g.on_alert(_leader_alert())
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 100.0)    # touch 만 체결
+    g.on_leader_state("000001", BASE + timedelta(seconds=2), LEADER_LOST)
+    assert g.open_positions == [] and g.shadow_positions == []
+    shadow = g.closed_shadows[-1]
+    assert shadow.exit_reason == "대장이탈" and shadow.status == "closed"
+
+
+def test_leader_lost_unfilled_position_expires_as_unfilled():
+    """미체결 상태에서 대장이 이탈하면 살 이유가 없다 → 미체결로 정리(손익 없음)."""
+    g = _guard()
+    g.on_alert(_leader_alert())
+    g.on_leader_state("000001", BASE + timedelta(seconds=2), LEADER_LOST)
+    assert g.open_positions == []
+    pos = g.closed_positions[-1]
+    assert pos.status == "unfilled"
+    assert pos.pnl is None
+    assert "대장이탈" in pos.exit_reason
+
+
+def test_leader_lost_beats_time_exit_on_same_instant():
+    """같은 순간에 시간청산과 겹치면 대장이탈로 기록한다(만쥬: 근거 상실이 절대 기준)."""
+    g = _guard()
+    g.on_alert(_leader_alert(hold=10.0))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)
+    g.on_leader_state("000001", BASE + timedelta(seconds=10), LEADER_LOST)
+    assert g.closed_positions[-1].exit_reason == "대장이탈"
+
+
+def test_leader_state_never_fed_keeps_legacy_behaviour():
+    """하위호환 — 대장 상태를 한 번도 안 먹이면 시간청산 그대로."""
+    g = _guard()
+    g.on_alert(_leader_alert(hold=10.0))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)
+    g.on_tick(FOL, BASE + timedelta(seconds=11), 100.1)
+    assert g.closed_positions[-1].exit_reason == "시간청산"
+
+
+def test_leader_lost_counts_into_kill_switch_accounting():
+    """대장이탈 손실도 연속손절·실현손익에 정상 반영된다."""
+    g = _guard(max_consecutive_losses=1)
+    g.on_alert(_leader_alert(sl=None))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)
+    g.on_tick(FOL, BASE + timedelta(seconds=2), 99.7)
+    g.on_leader_state("000001", BASE + timedelta(seconds=3), LEADER_LOST)
+    assert g.realized_krw < 0
+    assert g.killed and g.kill_reason == KILL_CONSECUTIVE

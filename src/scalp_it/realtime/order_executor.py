@@ -19,6 +19,9 @@
   ``OrderResult`` 를 직접 검사한다(C-2). 거부면 포지션을 버리지 않고 유지·재시도한다.
 * **마감 청산.** :meth:`flush` 는 대기 매수뿐 아니라 **체결·매도대기분도 정리**한다
   (C-3). 오버나이트로 넘어가면 다음 날 인수할 코드가 없다.
+* **대장 조건부 청산.** 포지션마다 그 포지션을 만든 대장 코드를 달고, 감지기가
+  :meth:`on_leader_state` 로 대장의 상한가 이탈을 통보하면 그 대장으로 연 포지션을
+  손익 무관 즉시 매도 접수한다(만쥬 §5-3). 대기 매수는 취소한다.
 * **킬스위치 연동.** 가드 킬 발동 시 :meth:`on_kill` 로 대기 매수를 전부 취소.
 * **live 는 클라이언트가 판단.** 실행기는 ``live`` 플래그를 클라이언트 ``submit`` 에
   넘길 뿐, 실제 POST 여부는 어댑터의 dry-run/live 이중 안전에 달렸다.
@@ -34,11 +37,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from .risk_guard import LEADER_HOLDING, LEADER_LOST
+
 if TYPE_CHECKING:
     from ..adapters.kiwoom_order import KiwoomOrderClient, OrderResult
     from .pair_detector import Alert
 
-__all__ = ["LivePosition", "OrderExecutor"]
+__all__ = ["LEADER_HOLDING", "LEADER_LOST", "LivePosition", "OrderExecutor"]
 
 _EPS = 1e-9
 
@@ -57,6 +62,8 @@ class LivePosition:
     alert_ts: datetime
     exit_ts: datetime                   # 시간청산 시각
     cancel_deadline: datetime           # 미체결 취소 시각
+    leader: str = ""                    # 이 포지션을 만든 대장 코드(대장 조건부 청산용)
+    leader_lost: bool = False           # 대장이 상한가를 놓쳤다고 통보받았는가
     buy_ord_no: str | None = None
     # selling = 청산 매도 접수됨·체결확인 대기(C-1). exited 는 체결 확인 후에만.
     status: str = "pending"             # pending | filled | selling | exited | cancelled | blocked
@@ -83,6 +90,7 @@ class OrderExecutor:
         unfilled_timeout: float = 15.0,
         max_sell_chases: int = 3,
         fill_basis: str = "through",
+        leader_exit: bool = True,
         notice: Callable[[str], None] | None = None,
     ) -> None:
         self._client = client
@@ -92,6 +100,8 @@ class OrderExecutor:
         # 청산 매도 재호가 상한 — 무한 추격(가격을 쫓아 계속 내리는 것)을 막는다.
         self._max_sell_chases = max(0, int(max_sell_chases))
         self._fill_basis = fill_basis if fill_basis in ("through", "touch") else "through"
+        # 대장 조건부 청산(만쥬 §5-3). 켜 두어도 대장 상태를 안 먹이면 아무 일도 없다.
+        self._leader_exit = bool(leader_exit)
         self._notice = notice or (lambda _s: None)
         self.positions: list[LivePosition] = []
         self.history: list[LivePosition] = []
@@ -135,6 +145,7 @@ class OrderExecutor:
             alert_ts=alert.ts,
             exit_ts=alert.exit_ts,
             cancel_deadline=alert.ts + timedelta(seconds=self._unfilled_timeout),
+            leader=alert.leader,
             buy_ord_no=result.ord_no,
         )
         if result.blocked:
@@ -170,13 +181,14 @@ class OrderExecutor:
         if pos.status == "pending":
             filled = self._check_fill(pos, ts, price)
             if not filled:
-                # 미체결 취소 시각 도달 → 취소.
-                if ts >= pos.cancel_deadline:
-                    if not self._try_cancel(pos, "미체결취소"):
+                # 미체결 취소 시각 도달 또는 대장 이탈(살 이유 상실) → 취소.
+                if ts >= pos.cancel_deadline or pos.leader_lost:
+                    why = "대장이탈취소" if pos.leader_lost else "미체결취소"
+                    if not self._try_cancel(pos, why):
                         return False   # 취소 실패 → pending 유지, 다음 틱 재시도
                     pos.status = "cancelled"
-                    pos.exit_reason = "미체결취소"
-                    self._notice(f"[주문] 미체결 취소 — {pos.name}({pos.code})")
+                    pos.exit_reason = why
+                    self._notice(f"[주문] {why} — {pos.name}({pos.code})")
                     return True
                 return False
             # 방금 체결됨 → 아래 청산 판정으로 진행
@@ -184,10 +196,17 @@ class OrderExecutor:
             return self._advance_selling(pos, ts, price)
         if pos.status != "filled":
             return False
-        # 청산: 익절 → 손절 → 재난선 → 시간청산
+        # 청산: 익절 → 대장이탈 → 손절 → 재난선 → 시간청산
+        # 대장이탈이 손절·재난선·시간청산보다 앞인 이유는 만쥬 §5-3 "손익 무관 즉시"다.
+        # 익절만 그 앞에 두는데, 익절은 미리 걸어둔 지정가라 그 레벨을 찍은 틱이면
+        # 대장 통보보다 먼저 붙었다고 보는 게 실제에 가깝기 때문이다.
+        # 여기 대장이탈 분기는 :meth:`on_leader_state` 의 즉시 매도가 **미성사**했을 때
+        # 다음 틱에 다시 타는 경로다(무감시 방지).
         reason: str | None = None
         if pos.take_profit is not None and price >= pos.take_profit - _EPS:
             reason = "익절"
+        elif pos.leader_lost:
+            reason = "대장이탈"
         elif pos.stop_loss is not None and price <= pos.stop_loss + _EPS:
             reason = "손절"
         elif pos.disaster_line is not None and price <= pos.disaster_line + _EPS:
@@ -369,6 +388,54 @@ class OrderExecutor:
             )
             return False
         return True
+
+    # ----- 대장 상태(만쥬 §5-3) ----------------------------------------------
+
+    def on_leader_state(self, leader_code: str, ts: datetime, state: str) -> None:
+        """감지기가 판정한 대장 상태를 먹인다. 이탈이면 그 대장 포지션을 즉시 청산.
+
+        만쥬 §5-3: **"대장주가 상한가를 말지 못하거나 풀리고 꺾이는 순간, 손익과 무관하게
+        즉시 전량 매도."** 실행기는 상한가를 스스로 계산하지 않는다 — 판정은 감지기 몫이고
+        여기 오는 건 결론뿐이다.
+
+        안전 원칙은 그대로다: 매도는 **접수까지만**(``selling``), 체결이 확인돼야
+        ``exited``(C-1). 접수 실패면 포지션을 버리지 않고 ``filled`` 로 유지해 다음 틱에
+        재시도한다(N-1). 이미 매도가 나가 있는 ``selling`` 은 손대지 않는다 — 취소 없이
+        재발주하면 이중 매도가 되어 무보유 매도로 이어진다.
+        """
+        if state != LEADER_LOST or not self._leader_exit:
+            return
+        for pos in self.positions:
+            if pos.leader != leader_code or pos.status not in ("pending", "filled"):
+                continue
+            pos.leader_lost = True
+        # pending 취소·filled 매도는 상태를 옮기므로 목록을 따로 훑는다.
+        still: list[LivePosition] = []
+        for pos in self.positions:
+            if not (pos.leader_lost and pos.leader == leader_code):
+                still.append(pos)
+                continue
+            if pos.status == "pending":
+                if not self._try_cancel(pos, "대장이탈취소"):
+                    still.append(pos)      # 취소 거부 → pending 유지, 다음 틱 재시도
+                    continue
+                pos.status = "cancelled"
+                pos.exit_reason = "대장이탈취소"
+                self._notice(f"[주문] 대장이탈취소 — {pos.name}({pos.code}) 대기 매수 취소")
+                self.history.append(pos)
+                continue
+            if pos.status == "filled":
+                if pos.last_price is None:
+                    # 체결 직후 틱을 못 받아 호가를 모른다. 플래그는 남았으니 다음 틱에
+                    # 청산규칙이 대장이탈로 탄다.
+                    self._notice(
+                        f"[주문][경보] 대장이탈 즉시청산 보류 — {pos.name}({pos.code}): "
+                        f"청산가를 모른다(틱 없음) · 다음 틱에 즉시 청산"
+                    )
+                else:
+                    self._sell(pos, ts, round(pos.last_price), "대장이탈")
+            still.append(pos)
+        self.positions = still
 
     # ----- 킬/마감 -----------------------------------------------------------
 

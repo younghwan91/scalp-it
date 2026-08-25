@@ -97,6 +97,16 @@ def build_config(args: argparse.Namespace) -> DetectorConfig:
         over["accel_min_ratio"] = args.accel
     if args.volume_burst is not None:
         over["volume_burst_ratio"] = args.volume_burst
+    if args.limitup_touch:
+        over["limitup_touch"] = True
+    if args.limitup_near is not None:
+        over["limitup_near_pct"] = args.limitup_near
+    if args.limitup_lock is not None:
+        over["limitup_lock_secs"] = args.limitup_lock
+    if args.max_roundtrip_bp is not None:
+        over["max_roundtrip_bp"] = args.max_roundtrip_bp
+    if args.order_krw is not None:
+        over["order_krw"] = args.order_krw
     from dataclasses import replace
 
     return replace(cfg, **over) if over else cfg
@@ -126,6 +136,7 @@ def build_guard(args: argparse.Namespace) -> RiskGuard | None:
         max_positions=args.max_positions,
         fill_basis=args.fill_basis,
         cost_rate=args.cost_rate,
+        leader_exit=not args.no_leader_exit,
         stop_file=(None if args.no_stop_file else args.stop_file),
     )
     return RiskGuard(cfg)
@@ -158,6 +169,101 @@ def _fetch_ticks(conn: Any, codes: list[str], *, since: datetime | None,
     rows = cur.fetchall()
     cur.close()
     return rows
+
+
+def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
+    """만쥬 동적 모드 입력(유니버스·섹터·전일종가)을 만든다. **실패해도 죽지 않는다.**
+
+    08:55 에 이게 예외로 죽으면 그날을 통째로 날린다. 그래서 어떤 실패든 잡아
+    빈 dict 를 돌려주고, 호출부는 기존 워치리스트 고정 쌍으로 폴백한다 — 만쥬
+    손익 구조(익절 없음·약손절·타임아웃)는 폴백에서도 그대로 적용된다.
+    """
+    if args.no_universe:
+        return {}
+    conn = None
+    try:
+        from .market_regime import evaluate_gate, previous_session
+        from .universe import UniverseConfig, build_universe
+
+        # 감지기 생성 시점엔 아직 커넥션이 없다(live 모드는 run_live 가 따로 연다).
+        # 유니버스는 장전 1회만 읽으면 되므로 짧게 열고 닫는다.
+        conn = connect(args.dsn or os.environ.get("KR_QUANT_DB"))
+
+        today = date.today()  # noqa: DTZ011 — KST naive, 프로젝트 표준
+        prev = previous_session(conn, today)
+        if prev is None:
+            print("[경고] 직전 영업일을 못 찾음 — 고정 쌍으로 폴백", file=sys.stderr)
+            return {}
+        # 시황 게이트는 **판정만 하고 막지 않는다.** dry-run 은 만쥬가 쉬라고 한
+        # 국면의 데이터도 필요하다(활황/침체 성과 차이를 실측할 재료). 실발주로
+        # 갈 때 이 판정을 강제로 바꿔야 한다.
+        try:
+            gate = evaluate_gate(conn, prev, target=today)
+            print(f"# 시황 — {gate.asof} 코스닥 {gate.turnover_jo:.2f}조 · {gate.regime}"
+                  f" · 매매권고 {'예' if gate.tradable else '아니오'}"
+                  f" · 비중배수 {gate.size_multiplier:g}", file=sys.stderr)
+            print(f"#   {gate.note}", file=sys.stderr)
+            if not gate.tradable:
+                print("#   ↑ 만쥬 기준으론 쉬는 날이다. dry-run 이라 계속 진행하되, "
+                      "이 결과는 '쉬라고 한 국면'의 것으로 해석해야 한다.", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001 — 게이트 실패로 매매를 막지 않는다
+            print(f"[경고] 시황 판정 실패(계속 진행): {exc}", file=sys.stderr)
+        uni = build_universe(conn, prev, UniverseConfig(limit=args.universe_size))
+        if not uni.codes:
+            print("[경고] 유니버스가 비었다 — 고정 쌍으로 폴백", file=sys.stderr)
+            return {}
+        print(f"# 유니버스 {len(uni.codes)}종목(기준일 {uni.asof}) · "
+              f"짝꿍성립 {len(uni.pairable_codes)} · 섹터 {len(uni.sector_counts)}개",
+              file=sys.stderr)
+        return {"universe": uni.pairable_codes,
+                "sectors": uni.sector_by_code,
+                "prev_close": uni.prev_close_by_code}
+    except Exception as exc:  # noqa: BLE001 — 하루를 날리느니 폴백한다
+        print(f"[경고] 유니버스 선정 실패({exc}) — 고정 쌍으로 폴백", file=sys.stderr)
+        return {}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001, S110 — 닫기 실패로 기동을 막지 않는다
+                pass
+
+
+def _cap_codes_for_single_key(codes: list[str], types: list[str], *, dedicated: bool) -> list[str]:
+    """전용 키가 없으면 커넥션 1개에 담기는 만큼으로 자른다.
+
+    키움 WebSocket 은 App key 당 동시 세션 1개다. 등록 한도(≈100건 = 종목×type)를
+    넘으면 수집기가 커넥션을 쪼개는데, 같은 키로 두 개를 열면 서로 kick 하며 죽는다.
+    2026-08-24 에 실제로 80종목 중 **30종목이 10:58 에 끊겨** 하루의 3분의 2를 잃었다
+    (둘째 커넥션이 통째로 사망). 조용히 반쪽 데이터를 받느니 처음부터 받을 수 있는
+    만큼만 구독하는 게 낫다.
+    """
+    from .realtime.collector import codes_per_connection
+
+    if dedicated:
+        return codes                      # 전용 키가 있으면 다커넥션이 안전하다
+    cap = codes_per_connection(types)
+    if len(codes) <= cap:
+        return codes
+    print(f"[경고] 종목 {len(codes)}개 > 단일 키 한도 {cap}개(type {len(types)}종) — "
+          f"앞의 {cap}개만 구독한다. 2026-08-24 에 이 한도를 넘겨 30종목이 10:58 에 "
+          f"끊긴 전례가 있다. 전 종목이 필요하면 PAIR_DETECT_APP_KEY 를 두라.",
+          file=sys.stderr, flush=True)
+    return codes[:cap]
+
+
+def _drain_leader_events(detector: PairDetector, guard: RiskGuard | None,
+                         executor: OrderExecutor | None) -> None:
+    """감지기가 판정한 대장 상태 전이를 가드·실행기로 흘린다(만쥬 §5-3).
+
+    이게 없으면 만쥬 방식의 절반만 돈다 — 남는 절반은 이미 기각된 고정 % 청산이다.
+    가드와 실행기에 **같은 값**을 먹여야 회계와 실주문이 갈리지 않는다.
+    """
+    for code, ts, state in detector.drain_leader_events():
+        if guard is not None:
+            guard.on_leader_state(code, ts, state)
+        if executor is not None:
+            executor.on_leader_state(code, ts, state)
 
 
 def _drain_filtered(detector: PairDetector, bus: AlertBus) -> None:
@@ -219,6 +325,7 @@ def _feed(detector: PairDetector, bus: AlertBus, rows: list[tuple],
                                        volume=volume, side=side):
             if _emit_guarded(alert, bus, guard, poslog, executor):
                 n += 1
+        _drain_leader_events(detector, guard, executor)
         _drain_filtered(detector, bus)
     return n
 
@@ -282,6 +389,7 @@ def build_order_executor(
     return OrderExecutor(client, qty=args.qty, live=real,
                          unfilled_timeout=args.unfilled_timeout,
                          fill_basis=args.fill_basis,   # 가드 회계와 같은 체결 가정
+                         leader_exit=not args.no_leader_exit,
                          notice=lambda s: print(s, flush=True))
 
 
@@ -395,9 +503,11 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
     )
     from .realtime.store import init_realtime_tables
 
-    codes = sorted(detector.codes)
     url = WS_URL_MOCK if args.mock else WS_URL
     types = [TYPE_TRADE, TYPE_QUOTE]
+    codes = _cap_codes_for_single_key(
+        sorted(detector.codes), types,
+        dedicated=bool(os.environ.get("PAIR_DETECT_APP_KEY")))
     store = not args.no_store and not args.dry_run
     bus = build_default_bus(log_path=args.log, bell=args.bell,
                             discord=not args.no_discord, dry_run=args.dry_run)
@@ -450,6 +560,7 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
                                               bid1=t.get("best_bid"), volume=t.get("volume"),
                                               side=t.get("side")):
                     _emit_guarded(alert, bus, guard, poslog, executor)
+                _drain_leader_events(detector, guard, executor)
                 _drain_filtered(detector, bus)
         except Exception as exc:  # noqa: BLE001 — 프레임 오류로 소켓 감지 죽지 않게
             print(f"[감지][경보] 프레임 처리 중 예외 — 소켓 루프 계속: {exc}",
@@ -552,6 +663,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cooldown", type=float, default=None, help="쌍 재알림 억제 초 (기본 90)")
     p.add_argument("--min-turnover", type=float, default=None,
                    help="후속 당일 누적 체결대금 하한(원). 0 = 끔")
+    p.add_argument("--no-universe", action="store_true",
+                   help="만쥬 동적 모드 끄기 — 그날 유니버스 대신 고정 워치리스트 사용")
+    p.add_argument("--universe-size", type=int, default=45,
+                   help="그날 유니버스 종목 수. 단일 앱키 한도가 50이라 기본 45")
+    p.add_argument("--limitup-touch", action="store_true",
+                   help="상한가 터치를 방아쇠로 (만쥬 §5-1)")
+    p.add_argument("--limitup-near", type=float, default=None,
+                   help="상한가까지 이 비율 이내면 발동 (예 0.04 = 4%%p). 0 = 끔")
+    p.add_argument("--limitup-lock", type=float, default=None,
+                   help="상한가를 이 초만큼 연속 유지하면 발동(잠김). 0 = 끔")
+    p.add_argument("--max-roundtrip-bp", type=float, default=None,
+                   help="10호가 왕복 충격 상한(bp) — 만쥬 최우선 필터. 0 = 끔")
+    p.add_argument("--order-krw", type=float, default=None,
+                   help="왕복 충격을 재는 주문금액(원). 기본 1000만")
     p.add_argument("--accel", type=float, default=None,
                    help="대장 가격 가속 하한(배) — 서지창 뒤 절반 수익률 / 앞 절반. "
                         "기본 0(끔). 예 1.5 = 뒤가 앞보다 1.5배 가파른 상승만")
@@ -584,6 +709,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="왕복 비용률(수익률에서 차감). 기본 0.0064 = 왕복 34bp + "
                         "슬리피지 왕복 30bp(레포 기본 가정, scripts/verify_pair.py). "
                         "0 = 끔(세전)")
+    g.add_argument("--no-leader-exit", action="store_true",
+                   help="대장 조건부 청산 끄기 — 만쥬 §5-3 의 핵심 축이라 기본은 켬. "
+                        "대장이 상한가를 놓치면 손익 무관 즉시 청산한다")
     g.add_argument("--stop-file", default="data/pair_STOP",
                    help="존재 시 수동 킬스위치. 기본 data/pair_STOP")
     g.add_argument("--no-stop-file", action="store_true",
@@ -616,7 +744,8 @@ def main(argv: list[str] | None = None) -> int:
     pairs = resolve_pairs(args)
     if not pairs:
         raise SystemExit("감시할 쌍이 없다. --pairs 또는 워치리스트를 확인하라.")
-    detector = PairDetector(pairs, build_config(args))
+    detector = PairDetector(pairs, build_config(args),
+                            **build_universe_inputs(args))
     guard = build_guard(args)
     # 주문 실행기 — 리플레이(과거 재현)에선 절대 만들지 않는다.
     executor = None if args.replay else build_order_executor(args, pairs)

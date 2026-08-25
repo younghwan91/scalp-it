@@ -11,6 +11,7 @@ import pytest
 
 from scalp_it.realtime.alerts import AlertBus, LogFileSink
 from scalp_it.realtime.pair_detector import (
+    Alert,
     DetectorConfig,
     Pair,
     PairDetector,
@@ -472,3 +473,468 @@ def test_alert_without_take_profit_renders_and_serializes():
     assert a.take_profit is None
     assert "익절 없음" in a.to_line()
     assert a.to_dict()["take_profit"] is None
+
+
+# ----- 상한가 방아쇠 (만쥬 문서 44 §5-1) --------------------------------------
+#
+# 원자료가 터치인지 잠김인지 확정되지 않아(§11 #4) 셋을 각각 켜고 끌 수 있어야 한다.
+
+def test_limit_up_price_matches_limitup_timing():
+    """상한가 계산은 scripts/limitup_timing.py 와 **값이 한 치도** 달라선 안 된다.
+
+    그 스크립트로 뽑은 상한가 검증 결과와 실시간 판정이 어긋나면 백테스트가 무의미하다.
+    """
+    import importlib.util
+
+    from scalp_it.realtime.pair_detector import limit_up_price
+    spec = importlib.util.spec_from_file_location(
+        "_limitup_timing", "scripts/limitup_timing.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for prev in [100, 539, 1_000, 1_538, 1_539, 2_000, 3_846, 6_230, 15_760, 19_999,
+                 20_000, 38_461, 49_999, 50_000, 153_846, 199_999, 384_615, 1_234_567]:
+        assert limit_up_price(prev) == mod.limit_up_price(prev), prev
+
+
+def _limit_det(prev=10_000.0, **cfg_kw):
+    """대장 전일종가 1만원(상한가 12,990원) 짜리 감지기. 다른 관문은 다 열어둔다."""
+    cfg_kw.setdefault("min_sl_ticks", 0.0)
+    cfg_kw.setdefault("cosurge_min", 0.0)
+    cfg_kw.setdefault("premove_max", 1.0)
+    cfg_kw.setdefault("min_buy_ratio", 0.0)
+    return PairDetector([PAIR], DetectorConfig(**cfg_kw),
+                        prev_close={PAIR.leader: prev, PAIR.follower: 100.0})
+
+
+def _limit_timeline(det, lead_now, *, lead30=12_000.0):
+    """후속 히스토리를 채우고 대장의 마지막 틱(가격 ``lead_now``)이 낸 알림을 준다."""
+    _feed(det, PAIR.follower, 0, 100.0, bid1=100.0, volume=1000)
+    _feed(det, PAIR.follower, 30, 100.0, bid1=100.0, volume=1000)
+    _feed(det, PAIR.leader, 30, lead30, volume=1000)
+    _feed(det, PAIR.follower, 60, 100.6, bid1=100.0, volume=1000)
+    return _feed(det, PAIR.leader, 60, lead_now, volume=1000)
+
+
+def test_limit_up_price_value():
+    from scalp_it.realtime.pair_detector import limit_up_price
+    assert limit_up_price(10_000) == 13_000        # 13,000 은 1틱 10원의 배수
+    assert limit_up_price(539) == 700              # 700.7 → 1틱 1원 내림
+    assert limit_up_price(1_539) == 2_000          # 2000.7 → 1틱 5원 내림(경계)
+
+
+def test_touch_trigger_fires_without_surge():
+    """상한가에 닿으면 서지(+1.5%/30s) 없이도 방아쇠 — 서지를 '대체'한다."""
+    det = _limit_det(limitup_touch=True)
+    # 12,990 → 12,990: 30초 수익률 0% 라 기존 서지 방아쇠로는 절대 안 터진다.
+    alerts = _limit_timeline(det, 13_000.0, lead30=13_000.0)
+    assert len(alerts) == 1
+    assert alerts[0].trigger == "touch"
+    assert alerts[0].leader_limit == pytest.approx(13_000.0)
+    assert alerts[0].leader_ret == pytest.approx(0.30, abs=1e-4)
+
+
+def test_touch_trigger_not_fired_below_limit():
+    det = _limit_det(limitup_touch=True)
+    assert _limit_timeline(det, 12_990.0, lead30=12_990.0) == []
+
+
+def test_near_trigger_fires_in_run_up_zone():
+    """'20%대 중후반에서 치고 들어가는' 구간 — 상한가까지 4% 이내."""
+    det = _limit_det(limitup_near_pct=0.04)
+    # 12,500 / 12,990 = 상한가의 96.2% → 4% 이내 → 발동
+    a = _limit_timeline(det, 12_500.0, lead30=12_500.0)
+    assert len(a) == 1 and a[0].trigger == "near"
+    # 12,400 = 상한가의 95.5% → 4% 밖 → 미발동
+    assert _limit_timeline(_limit_det(limitup_near_pct=0.04), 12_400.0,
+                           lead30=12_400.0) == []
+
+
+def test_locked_trigger_needs_continuous_hold():
+    """상한가 M초 연속 유지(잠김 근사) — 중간에 풀리면 시계가 되감긴다."""
+    det = _limit_det(limitup_lock_secs=20.0)
+    _feed(det, PAIR.follower, 0, 100.0, bid1=100.0, volume=1000)
+    _feed(det, PAIR.follower, 30, 100.0, bid1=100.0, volume=1000)
+    _feed(det, PAIR.follower, 60, 100.6, bid1=100.0, volume=1000)
+    _feed(det, PAIR.leader, 30, 13_000.0, volume=1000)     # 잠김 시작
+    assert _feed(det, PAIR.leader, 45, 13_000.0, volume=1000) == []   # 15초 < 20초
+    assert _feed(det, PAIR.leader, 46, 12_990.0, volume=1000) == []   # 풀림 — 되감기
+    assert _feed(det, PAIR.leader, 47, 13_000.0, volume=1000) == []   # 다시 시작
+    assert _feed(det, PAIR.leader, 60, 13_000.0, volume=1000) == []   # 13초 < 20초
+    a = _feed(det, PAIR.leader, 68, 13_000.0, volume=1000)            # 21초 ≥ 20초
+    assert len(a) == 1 and a[0].trigger == "locked"
+
+
+def test_limitup_skips_stock_without_prev_close():
+    """전일종가를 못 받은 종목은 상한가를 모른다 — 억지 추정 없이 안전 스킵."""
+    det = PairDetector([PAIR], DetectorConfig(
+        limitup_touch=True, min_sl_ticks=0.0, cosurge_min=0.0,
+        premove_max=1.0, min_buy_ratio=0.0))            # prev_close 미주입
+    assert _limit_timeline(det, 13_000.0, lead30=13_000.0) == []
+
+
+def test_limitup_require_surge_adds_surge_condition():
+    """옵션을 켜면 상한가 방아쇠에 서지까지 AND 로 요구한다."""
+    flat = _limit_det(limitup_touch=True, limitup_require_surge=True)
+    assert _limit_timeline(flat, 13_000.0, lead30=13_000.0) == []      # 30초 수익 0%
+    rush = _limit_det(limitup_touch=True, limitup_require_surge=True)
+    assert len(_limit_timeline(rush, 13_000.0, lead30=12_000.0)) == 1  # +8.25%
+
+
+def test_limitup_off_by_default_keeps_surge_trigger():
+    """기본값은 셋 다 꺼짐 = 기존 서지 방아쇠 그대로(하위호환)."""
+    cfg = DetectorConfig()
+    assert cfg.limitup_touch is False
+    assert cfg.limitup_near_pct == 0.0 and cfg.limitup_lock_secs == 0.0
+    det = _det()
+    assert len(_base_timeline(det)) == 1
+    assert _base_timeline(_det(), lead_now=100.5) == []
+
+
+# ----- 호가 두께 필터 (만쥬 최우선) --------------------------------------------
+
+def _book(px, qty, n=10, step=0):
+    """``n`` 단계 호가 — 각 단계 ``qty`` 주. ``step`` 만큼 가격이 멀어진다."""
+    return [(px + i * step, qty) for i in range(n)]
+
+
+def test_roundtrip_bp_thick_book_is_cheap():
+    """두꺼운 호가: 1000만원이 1호가에서 다 체결 → 충격은 스프레드뿐."""
+    from scalp_it.realtime.pair_detector import roundtrip_bp
+    bids = _book(9_990.0, 10_000, step=-10)
+    asks = _book(10_000.0, 10_000, step=10)
+    bp = roundtrip_bp(bids, asks, 10_000_000)
+    # 스프레드 10원 / mid 9995 = 10.0bp
+    assert bp == pytest.approx(10.0, abs=0.1)
+
+
+def test_roundtrip_bp_thin_book_is_expensive():
+    """얇은 호가: 상단까지 긁어 올라가며 VWAP 이 밀린다."""
+    from scalp_it.realtime.pair_detector import roundtrip_bp
+    bids = _book(9_990.0, 200, step=-10)
+    asks = _book(10_000.0, 200, step=10)
+    thin = roundtrip_bp(bids, asks, 10_000_000)
+    assert thin > 50.0
+
+
+def test_roundtrip_bp_insufficient_depth_is_inf():
+    """10호가를 다 긁어도 주문금액을 못 채우면 무한대 = 즉시 배제 대상."""
+    import math
+
+    from scalp_it.realtime.pair_detector import roundtrip_bp
+    bids = _book(1_000.0, 10, step=-1)      # 10단계 × 1만원 = 10만원뿐
+    asks = _book(1_001.0, 10, step=1)
+    assert math.isinf(roundtrip_bp(bids, asks, 10_000_000))
+
+
+def _depth_det(**cfg_kw):
+    cfg_kw.setdefault("min_sl_ticks", 0.0)
+    return PairDetector([PAIR], DetectorConfig(**cfg_kw))
+
+
+def _depth_timeline(det, bids, asks):
+    """후속주에 10호가를 넣고 평소 시나리오를 돌린다(후속가 1만원대)."""
+    px = 10_000.0
+    for sec in (0, 30):
+        det.on_quote(PAIR.follower, BASE + timedelta(seconds=sec), bids=bids, asks=asks)
+        _feed(det, PAIR.follower, sec, px, volume=1000)
+    _feed(det, PAIR.leader, 30, 100.0, volume=1000)
+    det.on_quote(PAIR.follower, BASE + timedelta(seconds=60), bids=bids, asks=asks)
+    _feed(det, PAIR.follower, 60, px * 1.006, volume=1000)
+    return _feed(det, PAIR.leader, 60, 102.0, volume=1000)
+
+
+def test_thick_book_passes_depth_filter():
+    det = _depth_det()
+    alerts = _depth_timeline(det, _book(9_990.0, 10_000, step=-10),
+                             _book(10_000.0, 10_000, step=10))
+    assert len(alerts) == 1
+    assert alerts[0].rt_bp == pytest.approx(10.0, abs=0.1)
+
+
+def test_thin_book_rejected_and_recorded():
+    det = _depth_det()
+    alerts = _depth_timeline(det, _book(9_990.0, 200, step=-10),
+                             _book(10_000.0, 200, step=10))
+    assert alerts == []
+    recs = det.drain_filtered()
+    assert len(recs) == 1 and recs[0].reason == "roundtrip_bp"
+    assert recs[0].rt_bp > 20.0
+    assert recs[0].order_krw == 10_000_000
+    assert recs[0].to_dict()["filtered"] == "roundtrip_bp"
+    assert "왕복충격" in recs[0].to_line()
+
+
+def test_insufficient_depth_rejected_as_depth_short():
+    """10호가로 못 채우는 종목은 별도 사유로 기록한다(만쥬: 즉시 제외)."""
+    det = _depth_det()
+    alerts = _depth_timeline(det, _book(9_990.0, 1, step=-10), _book(10_000.0, 1, step=10))
+    assert alerts == []
+    recs = det.drain_filtered()
+    assert len(recs) == 1 and recs[0].reason == "depth_short"
+    assert "못 채움" in recs[0].to_line()
+
+
+def test_depth_filter_without_quote_data_passes():
+    """10호가를 안 넣어주던 기존 호출부는 그대로 동작해야 한다(잴 수 없으면 통과)."""
+    det = _det()                       # 호가 스냅샷 없음, max_roundtrip_bp 기본 20
+    assert det.config.max_roundtrip_bp == 20.0
+    assert len(_base_timeline(det)) == 1
+
+
+def test_depth_filter_off_by_zero():
+    det = _depth_det(max_roundtrip_bp=0.0)
+    alerts = _depth_timeline(det, _book(9_990.0, 200, step=-10),
+                             _book(10_000.0, 200, step=10))
+    assert len(alerts) == 1
+
+
+def test_depth_filter_runs_before_tick_width():
+    """두 필터가 동시에 걸리면 만쥬 최우선인 두께 쪽 사유로 기록된다."""
+    det = PairDetector([PAIR], DetectorConfig())     # min_sl_ticks 3.0 도 켜짐
+    alerts = _depth_timeline(det, _book(9_990.0, 200, step=-10),
+                             _book(10_000.0, 200, step=10))
+    assert alerts == []
+    recs = det.drain_filtered()
+    assert [r.reason for r in recs] == ["roundtrip_bp"]
+
+
+def test_on_quote_keeps_positional_bid1():
+    """기존 호출부 시그니처 on_quote(code, ts, bid1) 가 그대로 살아 있어야 한다."""
+    det = _det()
+    det.on_quote(PAIR.follower, BASE, 99.0)
+    _feed(det, PAIR.follower, 0, 100.0, volume=1000)
+    _feed(det, PAIR.follower, 30, 100.0, volume=1000)
+    _feed(det, PAIR.leader, 30, 100.0, volume=1000)
+    _feed(det, PAIR.follower, 60, 100.6, volume=1000)
+    a = _feed(det, PAIR.leader, 60, 102.0, volume=1000)
+    assert a and a[0].entry == pytest.approx(99.0)
+
+
+# ----- 동적 대장/후속 선정 -----------------------------------------------------
+
+UNIV = ["100001", "100002", "100003", "100004", "100005"]
+SECTORS = dict.fromkeys(UNIV[:4], "로봇") | {"100005": "방산"}
+PREV = dict.fromkeys(UNIV, 10_000.0)
+
+
+def _dyn_det(**cfg_kw):
+    cfg_kw.setdefault("min_sl_ticks", 0.0)
+    cfg_kw.setdefault("cosurge_min", 0.0)
+    cfg_kw.setdefault("premove_max", 1.0)
+    cfg_kw.setdefault("min_buy_ratio", 0.0)
+    cfg_kw.setdefault("limitup_touch", True)
+    return PairDetector([], DetectorConfig(**cfg_kw),
+                        prev_close=PREV, sectors=SECTORS, universe=UNIV,
+                        names={"100001": "대장", "100002": "2등"})
+
+
+def _dyn_timeline(det, prices):
+    """``prices`` = {코드: (t0가격, t60가격)}. 마지막에 대장(100001) 틱을 흘린다."""
+    for code, (p0, p60) in prices.items():
+        _feed(det, code, 0, p0, bid1=p0, volume=1000)
+        _feed(det, code, 30, p0, bid1=p0, volume=1000)
+        _feed(det, code, 60, p60, bid1=p60, volume=1000)
+    return _feed(det, "100001", 61, 13_000.0, volume=1000)
+
+
+def test_dynamic_mode_picks_ranks_two_and_three():
+    """대장은 방아쇠가 터진 종목, 후속은 같은 섹터 등락률 2~3위."""
+    det = _dyn_det()
+    alerts = _dyn_timeline(det, {
+        "100001": (12_000.0, 13_000.0),   # +29.9% 1위 = 대장
+        "100002": (11_000.0, 11_100.0),   # +11.0% 2위
+        "100003": (10_500.0, 10_600.0),   # +6.0%  3위
+        "100004": (10_100.0, 10_150.0),   # +1.5%  4위 — 제외
+        "100005": (12_500.0, 12_800.0),   # 다른 섹터 — 제외
+    })
+    assert sorted(a.follower for a in alerts) == ["100002", "100003"]
+    assert all(a.leader == "100001" and a.trigger == "touch" for a in alerts)
+    assert [a.follower_name for a in alerts if a.follower == "100002"] == ["2등"]
+
+
+def test_dynamic_rank_range_is_configurable():
+    det = _dyn_det(follower_rank_min=2, follower_rank_max=2)
+    alerts = _dyn_timeline(det, {
+        "100001": (12_000.0, 13_000.0),
+        "100002": (11_000.0, 11_100.0),
+        "100003": (10_500.0, 10_600.0),
+        "100004": (10_100.0, 10_150.0),
+    })
+    assert [a.follower for a in alerts] == ["100002"]
+
+
+def test_dynamic_excludes_other_sectors():
+    det = _dyn_det()
+    alerts = _dyn_timeline(det, {
+        "100001": (12_000.0, 13_000.0),
+        "100005": (10_100.0, 10_200.0),   # 유일한 다른 섹터 종목
+    })
+    assert alerts == []                    # 같은 섹터에 2~3위가 없다
+
+
+def test_fixed_pairs_still_work_alongside_dynamic():
+    """고정 쌍 모드는 하위호환 — 동적 모드를 켜도 함께 돈다."""
+    cfg = DetectorConfig(min_sl_ticks=0.0, cosurge_min=0.0, premove_max=1.0,
+                         min_buy_ratio=0.0, limitup_touch=True)
+    det = PairDetector([Pair(leader="100001", follower="100004")], cfg,
+                       prev_close=PREV, sectors=SECTORS, universe=UNIV)
+    alerts = _dyn_timeline(det, {
+        "100001": (12_000.0, 13_000.0),
+        "100002": (11_000.0, 11_100.0),
+        "100003": (10_500.0, 10_600.0),
+        "100004": (10_100.0, 10_150.0),
+    })
+    # 고정 쌍의 100004(4위) + 동적 2~3위
+    assert sorted(a.follower for a in alerts) == ["100002", "100003", "100004"]
+
+
+def test_dynamic_mode_off_without_sectors():
+    """유니버스만 주면 동적 모드는 안 켜진다(섹터 없이 후속을 못 고른다)."""
+    det = PairDetector([], DetectorConfig(limitup_touch=True, min_sl_ticks=0.0),
+                       prev_close=PREV, universe=UNIV)
+    assert _dyn_timeline(det, {"100001": (12_000.0, 13_000.0)}) == []
+
+
+# ----- 순간 체결량 필터 --------------------------------------------------------
+
+def test_big_trade_filter_blocks_when_no_big_prints():
+    """대장에 5천만원 이상 체결이 없으면 상한가를 굳히는 자금이 아니다 — 기각."""
+    det = _limit_det(limitup_touch=True, min_big_trades=1)
+    # 대장 체결 1000주 × 12,990원 = 1,299만원 < 5천만원
+    assert _limit_timeline(det, 13_000.0, lead30=13_000.0) == []
+
+
+def test_big_trade_filter_passes_with_big_prints():
+    det = _limit_det(limitup_touch=True, min_big_trades=1)
+    _feed(det, PAIR.follower, 0, 100.0, bid1=100.0, volume=1000)
+    _feed(det, PAIR.follower, 30, 100.0, bid1=100.0, volume=1000)
+    _feed(det, PAIR.leader, 30, 13_000.0, volume=1000)
+    _feed(det, PAIR.follower, 60, 100.6, bid1=100.0, volume=1000)
+    a = _feed(det, PAIR.leader, 60, 13_000.0, volume=5000)   # 6,495만원 ≥ 5천만원
+    assert len(a) == 1 and a[0].big_trades == 1
+
+
+def test_big_trade_window_expires():
+    """관측창(기본 30초)을 벗어난 대량체결은 세지 않는다."""
+    det = _limit_det(limitup_touch=True, min_big_trades=1, big_trade_window=10.0)
+    _feed(det, PAIR.follower, 0, 100.0, bid1=100.0, volume=1000)
+    _feed(det, PAIR.follower, 30, 100.0, bid1=100.0, volume=1000)
+    _feed(det, PAIR.leader, 30, 13_000.0, volume=5000)       # 대량체결이지만 30초 전
+    _feed(det, PAIR.follower, 60, 100.6, bid1=100.0, volume=1000)
+    assert _feed(det, PAIR.leader, 60, 13_000.0, volume=1000) == []
+
+
+def test_big_trade_filter_off_by_default():
+    det = _det()
+    assert det.config.min_big_trades == 0
+    assert det.config.big_trade_krw == 50_000_000
+    assert len(_base_timeline(det)) == 1
+
+
+# ----- 대장 상태 통보 (만쥬 §5-3 — 짝꿍의 진짜 청산 규칙) ----------------------
+#
+# "대장이 상한가를 못 말거나 풀리는 순간 = 손익 무관 전량 매도". 상한가를 계산할 수
+# 있는 건 전일종가를 주입받은 감지기뿐이라 판정은 여기서 내고 밖으로 알린다.
+
+def test_leader_state_constants_match_risk_guard():
+    """가드가 비교하는 문자열과 글자까지 같아야 한다 — 다르면 청산이 조용히 안 돈다."""
+    from scalp_it.realtime import risk_guard
+    from scalp_it.realtime.pair_detector import LEADER_HOLDING, LEADER_LOST
+    assert LEADER_HOLDING == risk_guard.LEADER_HOLDING == "holding"
+    assert LEADER_LOST == risk_guard.LEADER_LOST == "lost"
+
+
+def _leader_det(**cfg_kw):
+    """전일종가 1만원(상한가 13,000원) 대장 하나를 보는 감지기."""
+    cfg_kw.setdefault("min_sl_ticks", 0.0)
+    return PairDetector([PAIR], DetectorConfig(**cfg_kw),
+                        prev_close={PAIR.leader: 10_000.0})
+
+
+def test_leader_holding_then_lost_emitted_once_each():
+    det = _leader_det()
+    _feed(det, PAIR.leader, 0, 12_000.0, volume=1000)
+    assert det.drain_leader_events() == []            # 상한가 근처도 아님
+    _feed(det, PAIR.leader, 10, 13_000.0, volume=1000)
+    _feed(det, PAIR.leader, 11, 13_000.0, volume=1000)   # 계속 잠김 — 재통보 없음
+    ev = det.drain_leader_events()
+    assert ev == [(PAIR.leader, BASE + timedelta(seconds=10), "holding")]
+    _feed(det, PAIR.leader, 20, 12_990.0, volume=1000)   # 풀림
+    _feed(det, PAIR.leader, 21, 12_900.0, volume=1000)   # 계속 아래 — 재통보 없음
+    ev = det.drain_leader_events()
+    assert ev == [(PAIR.leader, BASE + timedelta(seconds=20), "lost")]
+    assert det.drain_leader_events() == []             # 비운 뒤엔 다시 안 나온다
+
+
+def test_leader_lost_not_emitted_without_prior_touch():
+    """상한가에 닿은 적 없는 대장은 이탈도 없다(그냥 오르내리는 종목)."""
+    det = _leader_det()
+    for sec, px in [(0, 12_000.0), (10, 12_500.0), (20, 11_000.0)]:
+        _feed(det, PAIR.leader, sec, px, volume=1000)
+    assert det.drain_leader_events() == []
+
+
+def test_leader_relock_emits_holding_again():
+    """풀렸다 다시 붙으면 holding 을 다시 알린다 — 가드가 재진입 판단을 할 수 있게."""
+    det = _leader_det()
+    _feed(det, PAIR.leader, 0, 13_000.0, volume=1000)
+    _feed(det, PAIR.leader, 10, 12_900.0, volume=1000)
+    _feed(det, PAIR.leader, 20, 13_000.0, volume=1000)
+    assert [(s, st) for _c, s, st in det.drain_leader_events()] == [
+        (BASE, "holding"),
+        (BASE + timedelta(seconds=10), "lost"),
+        (BASE + timedelta(seconds=20), "holding"),
+    ]
+
+
+def test_leader_lost_confirm_window():
+    """확인 구간을 주면 그 안의 한 틱 이탈은 통보하지 않는다(노이즈 방어)."""
+    det = _leader_det(leader_lost_confirm_secs=2.0)
+    _feed(det, PAIR.leader, 0, 13_000.0, volume=1000)
+    assert [st for _c, _t, st in det.drain_leader_events()] == ["holding"]
+    _feed(det, PAIR.leader, 10, 12_990.0, volume=1000)   # 스침 — 아직 확인 안 됨
+    assert det.drain_leader_events() == []
+    _feed(det, PAIR.leader, 11, 13_000.0, volume=1000)   # 곧바로 복귀 — 이탈 아님
+    assert det.drain_leader_events() == []
+    _feed(det, PAIR.leader, 20, 12_990.0, volume=1000)   # 다시 아래로
+    assert det.drain_leader_events() == []
+    _feed(det, PAIR.leader, 23, 12_950.0, volume=1000)   # 3초 뒤에도 아래 → 이탈 확정
+    assert [st for _c, _t, st in det.drain_leader_events()] == ["lost"]
+
+
+def test_leader_state_skipped_without_prev_close():
+    """전일종가를 모르면 상한가를 모른다 — 억지 추정 없이 이벤트를 내지 않는다."""
+    det = PairDetector([PAIR], DetectorConfig(min_sl_ticks=0.0))   # prev_close 미주입
+    _feed(det, PAIR.leader, 0, 13_000.0, volume=1000)
+    _feed(det, PAIR.leader, 10, 12_000.0, volume=1000)
+    assert det.drain_leader_events() == []
+
+
+def test_leader_events_not_mixed_into_alerts():
+    """이벤트는 on_tick 반환값에 섞이면 안 된다 — 호출부가 진입 신호로 오해한다."""
+    det = _leader_det(limitup_touch=True, cosurge_min=0.0, premove_max=1.0,
+                      min_buy_ratio=0.0)
+    _feed(det, PAIR.follower, 0, 100.0, bid1=100.0, volume=1000)
+    _feed(det, PAIR.follower, 30, 100.0, bid1=100.0, volume=1000)
+    _feed(det, PAIR.follower, 60, 100.6, bid1=100.0, volume=1000)
+    alerts = _feed(det, PAIR.leader, 60, 13_000.0, volume=1000)
+    assert all(isinstance(a, Alert) for a in alerts)
+    assert len(det.drain_leader_events()) == 1
+
+
+def test_leader_state_tracked_for_dynamic_universe():
+    """동적 모드에선 유니버스 종목이 다 대장 후보라 전부 추적한다."""
+    det = _dyn_det()
+    _feed(det, "100003", 0, 13_000.0, volume=1000)
+    _feed(det, "100003", 5, 12_900.0, volume=1000)
+    assert [(c, st) for c, _t, st in det.drain_leader_events()] == [
+        ("100003", "holding"), ("100003", "lost")]
+
+
+def test_follower_only_code_emits_no_leader_events():
+    """고정 쌍의 후속주는 대장이 아니다 — 가드가 안 쓸 이벤트를 만들지 않는다."""
+    det = PairDetector([PAIR], DetectorConfig(min_sl_ticks=0.0),
+                       prev_close={PAIR.follower: 10_000.0})
+    _feed(det, PAIR.follower, 0, 13_000.0, bid1=13_000.0, volume=1000)
+    _feed(det, PAIR.follower, 10, 12_000.0, bid1=12_000.0, volume=1000)
+    assert det.drain_leader_events() == []
