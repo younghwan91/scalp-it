@@ -36,6 +36,15 @@
   이탈이면 그 대장으로 연 포지션을 **손익 무관 즉시** 청산한다(사유 ``대장이탈``).
   이 모듈은 상한가를 스스로 계산하지 않는다 — 판정은 감지기 몫이다.
 
+* **국면별 비중**(만쥬 §8-1): 포지션 명목 = ``position_notional × size_multiplier``.
+  배수는 :meth:`RiskGuard.set_size_multiplier` 로 **주입**받는다 — 이 모듈은 DB 를
+  모르므로 ``market_regime`` 을 import 하지 않는다. 배수 0(극침체)은 **신규 알림만**
+  막고(킬 아님) 보유분 청산은 정상 진행한다.
+
+* **분할 매도**(만쥬 §5-2): ``partial_exit_gain`` 도달 또는 ``partial_exit_after_s``
+  경과 시 ``partial_exit_ratio`` 만큼 먼저 실현하고 잔량을 기존 규칙으로 굴린다.
+  대장이탈·손절·재난선은 §5-3 "손익 무관 전량"이라 분할 대상이 아니다. 기본값 꺼짐.
+
 * **일일 리셋**: 날짜가 바뀌면 손실·연속손절 카운터와 킬 상태를 리셋한다.
 
 안전 제약(불변)
@@ -60,6 +69,7 @@ if TYPE_CHECKING:
     from .pair_detector import Alert
 
 __all__ = [
+    "BLOCK_REGIME_ZERO",
     "KILL_CONSECUTIVE",
     "KILL_DAILY_LOSS",
     "KILL_MANUAL",
@@ -81,6 +91,10 @@ KILL_MANUAL = "manual_stop"
 # 상한가 여부를 스스로 계산하지 않는다. 여기 오는 건 이미 내려진 판정뿐이다.
 LEADER_HOLDING = "holding"   # 상한가를 말고 있음(유지 중)
 LEADER_LOST = "lost"         # 상한가를 못 말거나 풀리고 꺾임 = 매수 이유 상실
+
+# 신규 알림 억제 사유 — 킬스위치가 **아니다**. 국면 배수가 0(극침체)이면 그날 신규
+# 진입만 막고, 배수를 되돌리면 즉시 재개된다. 킬은 하루를 접는 것이라 성격이 다르다.
+BLOCK_REGIME_ZERO = "regime_zero"
 
 _EPS = 1e-9
 
@@ -106,6 +120,16 @@ class RiskGuardConfig:
     cost_rate: float = 0.0                    # 왕복 비용률(수익률에서 차감). 0 = 끔
     # 대장 조건부 청산(만쥬 §5-3). 켜 두어도 대장 상태를 안 먹이면 아무 일도 없다.
     leader_exit: bool = True
+    # 국면별 비중(만쥬 §8-1) — 배수는 **주입**받는다. 여기서 ``market_regime`` 을
+    # import 하지 않는 건 그 모듈이 DB 를 알기 때문이다(이 모듈은 DB·시계 무지가 규약).
+    # 배선은 CLI 몫이고, 장중 국면이 바뀌면 :meth:`RiskGuard.set_size_multiplier` 로 갱신.
+    size_multiplier: float = 1.0
+    # 분할 매도(만쥬 §5-2 "탄력이 충분히 나온 시점에 **분할 또는 전량** 매도").
+    # 1차로 ``partial_exit_ratio`` 만큼 덜어내고 잔량은 기존 규칙(익절/손절/재난선/
+    # 대장이탈/시간청산) 그대로 굴린다. ratio 가 0 이면 완전히 꺼진 상태 = 기존 동작.
+    partial_exit_ratio: float = 0.0            # 1차 분할 비율(0<r<1). 0 = 끔
+    partial_exit_gain: float | None = None     # 이 수익률 도달 시 1차 분할(예: 0.002)
+    partial_exit_after_s: float | None = None  # 체결 후 이 초 경과 시 1차 분할
     stop_file: str | None = "data/pair_STOP"  # 존재 시 수동 킬(트리거 c). None = 끔
 
     def loss_limit_krw(self) -> float:
@@ -134,6 +158,15 @@ class Position:
     basis: str = "through"                    # 이 포지션이 굴러가는 체결 가정
     shadow: bool = False                      # True 면 회계 밖(로그 전용) 그림자
     leader_lost: bool = False                 # 대장이 상한가를 놓쳤다고 통보받았는가
+    # 분할 매도(만쥬 §5-2). remaining 은 아직 안 판 비율 — 잔량 손익은 여기에 곱한다.
+    remaining: float = 1.0
+    partial_done: bool = False
+    partial_ratio: float = 0.0
+    partial_price: float | None = None
+    partial_ts: datetime | None = None
+    partial_reason: str = ""
+    partial_pnl: float | None = None
+    partial_pnl_krw: float = 0.0
     # 체결(두 가정 병기)
     touch_fill_ts: datetime | None = None
     through_fill_ts: datetime | None = None
@@ -195,6 +228,13 @@ class Position:
             "mae": round(self.mae, 6),
             "mfe": round(self.mfe, 6),
             "exit_price": self.exit_price,
+            # 분할 매도 — 잔량 비율과 1차분 실현손익을 같이 남겨야 회계가 맞춰진다.
+            "remaining": round(self.remaining, 6),
+            "partial_ratio": round(self.partial_ratio, 6),
+            "partial_reason": self.partial_reason,
+            "partial_price": self.partial_price,
+            "partial_pnl": None if self.partial_pnl is None else round(self.partial_pnl, 6),
+            "partial_pnl_krw": round(self.partial_pnl_krw, 2),
             "pnl": None if self.pnl is None else round(self.pnl, 6),
             "pnl_krw": None if self.pnl_krw is None else round(self.pnl_krw, 2),
         }
@@ -220,6 +260,8 @@ class RiskGuard:
 
     def __init__(self, config: RiskGuardConfig | None = None) -> None:
         self.config = config or RiskGuardConfig()
+        # 국면 배수는 장중에 바뀔 수 있어 config(frozen) 밖에 둔다. 초기값은 설정에서.
+        self.size_multiplier: float = float(self.config.size_multiplier)
         self.day: date | None = None
         self.realized_krw: float = 0.0        # 당일 누적 실현손익(원)
         self.consecutive_losses: int = 0
@@ -235,6 +277,14 @@ class RiskGuard:
         self.shadow_positions: list[Position] = []
         self.closed_shadows: list[Position] = []
         self._on_close = None                 # 콜백(Position) — 로깅용
+
+    def set_size_multiplier(self, mult: float) -> None:
+        """국면 배수를 갱신한다(만쥬 §8-1). CLI 가 ``market_regime`` 판정을 주입한다.
+
+        **이미 열린 포지션은 건드리지 않는다** — 명목이 소급 변경되면 그 포지션의
+        회계가 진입 시점과 달라진다. 배수는 다음 진입부터 적용된다.
+        """
+        self.size_multiplier = max(0.0, float(mult))
 
     def set_close_callback(self, fn: Any) -> None:
         """포지션 청산 때 호출할 콜백(로깅 sink 연결용)."""
@@ -306,6 +356,12 @@ class RiskGuard:
         if self.killed:
             return Decision(allowed=False, reason=self.kill_reason,
                             killed=True, banner=self._banner())
+        # 국면 배수 0(만쥬 §8-1 극침체) = 신규 진입 금지. **킬이 아니다** — 배너도
+        # 카운터도 건드리지 않고, 배수가 돌아오면 그 자리에서 다시 통과한다.
+        # 기존 포지션의 청산 경로(on_tick/on_leader_state/flush)는 여기를 안 지나므로
+        # 배수가 0이어도 들고 있는 건 규칙대로 정상 청산된다.
+        if self.size_multiplier <= _EPS:
+            return Decision(allowed=False, reason=BLOCK_REGIME_ZERO)
         if len(self.open_positions) >= self.config.max_positions:
             return Decision(allowed=False, reason="max_positions")
         # 통과 — 가상 포지션 등록
@@ -329,7 +385,7 @@ class RiskGuard:
             stop_loss=alert.stop_loss,
             disaster_line=alert.disaster_line,
             exit_ts=alert.exit_ts,
-            notional=self.config.position_notional,
+            notional=self.config.position_notional * self.size_multiplier,
             follower_name=alert.follower_name,
             basis=basis,
             shadow=shadow,
@@ -397,7 +453,59 @@ class RiskGuard:
         if ts >= pos.exit_ts:
             self._close(pos, ts, price, "시간청산", filled=True)
             return True
+        # 전량 청산 사유가 하나도 안 걸린 뒤에만 1차 분할을 본다(만쥬 §5-2). 순서를
+        # 뒤집으면 익절가를 찍은 틱에서 절반만 팔고 나머지가 뒤로 밀린다.
+        self._maybe_partial(pos, ts, price)
         return False
+
+    # ----- 분할 매도(만쥬 §5-2) ---------------------------------------------
+
+    def _maybe_partial(self, pos: Position, ts: datetime, price: float) -> None:
+        """1차 분할 청산. 조건 충족 시 ``ratio`` 만큼 실현하고 잔량을 계속 굴린다.
+
+        만쥬 §5-2: "탄력이 충분히 나온 시점에서 **분할 또는 전량** 매도로 수익 실현."
+        **분할 대상은 익절·시간청산 계열뿐이다.** 대장이탈·손절·재난선은 §5-3 원문이
+        "손익 무관 **전량**"이라 쪼개지 않는다 — 매수 근거가 사라졌는데 절반을 들고
+        있는 건 그 규칙의 정반대다. 그래서 분할 방아쇠는 (a) 수익률 도달, (b) 체결 후
+        경과시간 둘뿐이고, 전량 사유가 걸리는 틱에서는 아예 호출되지 않는다.
+
+        승패(연속손절·킬스위치)는 여기서 세지 않는다. 포지션이 아직 안 끝났고, 1차
+        익절만으로 연속손절 카운터가 리셋되면 킬스위치가 무력화되기 때문이다. 실현
+        손익(원)에는 그 즉시 반영한다 — 실제로 현금이 들어온 몫이라 손실한도에는
+        정직하게 반영되어야 한다.
+        """
+        cfg = self.config
+        ratio = cfg.partial_exit_ratio
+        if pos.partial_done or not (_EPS < ratio < 1.0 - _EPS):
+            return
+        entry = pos.eff_entry()
+        reason = ""
+        if (cfg.partial_exit_gain is not None
+                and price >= entry * (1.0 + cfg.partial_exit_gain) - _EPS):
+            reason = "분할익절"
+        elif cfg.partial_exit_after_s is not None:
+            lat = pos.fill_latency(pos.basis)   # 알림→체결 지연(초)
+            if lat is not None:
+                held = (ts - pos.alert_ts).total_seconds() - lat
+                if held >= cfg.partial_exit_after_s:
+                    reason = "분할시간청산"
+        if not reason:
+            return
+        pos.partial_done = True
+        pos.partial_ratio = ratio
+        pos.partial_reason = reason
+        pos.partial_ts = ts
+        pos.partial_price = round(price, 4)
+        # 분할은 "지금 시장가로 판다"에 가깝다(탄력을 보고 내리는 판단) → 트리거 틱의
+        # 가격이 실현가다. 익절처럼 미리 걸어둔 지정가가 아니므로 레벨을 쓰지 않는다.
+        pos.partial_pnl = (price / entry - 1.0) - cfg.cost_rate
+        pos.partial_pnl_krw = pos.partial_pnl * pos.notional * ratio
+        pos.remaining = 1.0 - ratio
+        if not pos.shadow:
+            self.realized_krw += pos.partial_pnl_krw
+            self._refresh_kill()
+        if self._on_close is not None:
+            self._on_close(pos)   # status 는 아직 open — sink 가 event='partial' 로 쓴다
 
     def _close(self, pos: Position, ts: datetime, price: float | None,
                reason: str, *, filled: bool) -> None:
@@ -409,12 +517,16 @@ class RiskGuard:
             entry = pos.eff_entry()
             gross = price / entry - 1.0
             pos.pnl = gross - self.config.cost_rate
-            pos.pnl_krw = pos.pnl * pos.notional
+            # 분할이 있었으면 잔량 몫만 계상한다(1차분은 이미 realized 에 들어갔다).
+            pos.pnl_krw = pos.pnl * pos.notional * pos.remaining
             # 그림자 손익은 기록만 한다 — 실현손익·승패·연속손절·킬스위치는 회계 기준
             # 포지션 하나로만 굴러야 두 가정이 리스크 통제를 오염시키지 않는다.
             if not pos.shadow:
                 self.realized_krw += pos.pnl_krw
-                if pos.pnl < -_EPS:
+                # 승패는 그 포지션이 최종적으로 남긴 **합계**로 가른다 — 1차 익절 후
+                # 잔량이 살짝 밀린 건을 '손절'로 세면 연속손절 킬이 과민해진다.
+                outcome = (pos.partial_pnl_krw + pos.pnl_krw) if pos.partial_done else pos.pnl
+                if outcome < -_EPS:
                     self.losses += 1
                     self.consecutive_losses += 1
                 else:
@@ -567,7 +679,13 @@ class PositionLogSink:
     def log_close(self, pos: Position) -> None:
         # 미체결은 청산이 아니다 — 별도 이벤트로 갈라야 집계의 "청산 N건"·MAE/MFE 중앙값에
         # 초기값 0.0 이 섞이지 않는다(체결률은 unfilled 건수로 따로 본다).
-        event = "unfilled" if pos.status == "unfilled" else "close"
+        if pos.status == "unfilled":
+            event = "unfilled"
+        elif pos.status == "open" and pos.partial_done:
+            # 아직 열린 채로 콜백이 온 유일한 경우 = 1차 분할. 청산으로 세면 안 된다.
+            event = "partial"
+        else:
+            event = "close"
         self._write(pos.to_record(pos.basis or self.basis, event))
 
     def log_kill(self, when: datetime, reason: str, realized_krw: float) -> None:

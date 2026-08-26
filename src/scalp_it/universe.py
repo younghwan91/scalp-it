@@ -39,9 +39,9 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, timedelta
 from itertools import pairwise
 from typing import Any
 
@@ -467,3 +467,91 @@ def build_universe(
         asof_date = max(b.day for b in bars)
     cands = build_candidates(bars, asof_date, cfg)
     return select_universe(rank_candidates(cands, cfg), asof_date, cfg)
+
+# ---------------------------------------------- 만쥬 §4-5 신규상장 · §5-5 신선도
+
+def pick_recent_listings(first_day_by_code: Mapping[str, date], *, asof: date,
+                         within_days: int) -> list[str]:
+    """상장일이 ``asof`` 로부터 ``within_days`` 일 이내인 종목(만쥬 §4-5).
+
+    > "상장 당일은 풍부한 거래대금과 높은 변동성을 보이므로 **무조건** 관심종목에
+    > 등록 후 매매 기회를 포착한다"
+
+    신규 상장주는 과거 일봉이 없어 거래대금·변동성 필터를 통과할 수가 없다. 그래서
+    일반 랭킹으로는 절대 안 뽑힌다 — ``UniverseConfig.pinned`` 로 박아야 한다.
+    ``within_days`` 는 **달력일**이다(영업일 아님) — 상장 직후 며칠만 보므로
+    둘의 차이가 실질적이지 않고, 영업일로 세려면 DB 를 알아야 해서 규약이 깨진다.
+    ``within_days=0`` 이면 끈다(빈 리스트).
+    """
+    if within_days <= 0:
+        return []
+    cutoff = asof - timedelta(days=int(within_days))
+    return sorted(code for code, day in first_day_by_code.items()
+                  if day is not None and cutoff <= day <= asof)
+
+
+def stale_sectors(limitup_counts: Mapping[str, int], *, max_limitups: int) -> set[str]:
+    """최근 상한가가 ``max_limitups`` 를 넘긴 섹터 = 소비된 테마(만쥬 §5-5).
+
+    > "이미 수차례 소비되어 **신선도가 떨어진 테마**는 대장이 상을 가도 후발주가
+    > 잘 따라가지 못하므로 주의해야 한다"
+
+    신선도는 이 문서에서 가장 자동화하기 어려운 항목이라(등급 C) 정확한 재현이
+    아니라 **대용치**다 — 그 섹터에서 최근 상한가가 몇 번 나왔는지로 '소비 정도'를
+    근사한다. 섹터(27종 산업분류)가 당일 테마와 다르다는 한계도 그대로 있다.
+    ``max_limitups=0`` 이면 끈다.
+    """
+    if max_limitups <= 0:
+        return set()
+    return {sec for sec, n in limitup_counts.items() if n > max_limitups}
+
+
+def fetch_first_days(conn: Any, codes: Sequence[str] | None = None) -> dict[str, date]:
+    """종목별 일봉 최초 등장일 = 상장일 근사. 상장 피드가 없어 일봉으로 대신한다."""
+    ph = _ph(conn)
+    sql = "select code, min(date) from daily_bars"
+    params: list[Any] = []
+    if codes:
+        sql += " where code in (" + ",".join([ph] * len(codes)) + ")"
+        params = list(codes)
+    sql += " group by 1"
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    out: dict[str, date] = {}
+    for code, day in cur.fetchall():
+        if day is None:
+            continue
+        out[str(code)] = day if isinstance(day, date) else date.fromisoformat(str(day))
+    return out
+
+
+def fetch_sector_limitups(conn: Any, asof: date | str, *, days: int = 10,
+                          market: str = KOSDAQ) -> dict[str, int]:
+    """최근 ``days`` 영업일 섹터별 상한가 발생 횟수(만쥬 §5-5 신선도 대용치).
+
+    상한가 근사는 전일종가 대비 +29.5% 이상. ``daily_bars.close`` 가 **정수형**이라
+    ``::float`` 캐스팅이 없으면 정수 나눗셈이 되어 거의 안 걸린다 — 실제로 그 함정에
+    빠져 1년 2,313건을 5건으로 셌던 적이 있다.
+    """
+    sessions = trading_days(conn, asof, days + 1)
+    if len(sessions) < 2:
+        return {}
+    ph = _ph(conn)
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        with d as (
+          select b.code, b.date, cast(b.close as float) c,
+                 lag(cast(b.close as float)) over (partition by b.code order by b.date) pc
+          from daily_bars b join stocks s on s.code = b.code
+          where s.market = {ph} and b.date >= {ph} and b.date <= {ph}
+        )
+        select s.sector, count(*)
+        from d join stocks s on s.code = d.code
+        where d.pc > 0 and d.c / d.pc >= 1.295 and d.date >= {ph}
+        group by 1
+        """,
+        [market, sessions[0], sessions[-1], sessions[1]],
+    )
+    return {str(sec or UNSECTORED): int(n) for sec, n in cur.fetchall()}
+

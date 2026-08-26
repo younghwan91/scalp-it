@@ -109,6 +109,16 @@ def build_config(args: argparse.Namespace) -> DetectorConfig:
         over["max_roundtrip_bp"] = args.max_roundtrip_bp
     if args.order_krw is not None:
         over["order_krw"] = args.order_krw
+    if args.lock_min_krw is not None:
+        over["lock_min_krw"] = args.lock_min_krw
+    if args.lock_wall_decay is not None:
+        over["lock_wall_decay"] = args.lock_wall_decay
+    if args.dump_krw is not None:
+        over["dump_krw"] = args.dump_krw
+    if args.big_trades is not None:
+        over["min_big_trades"] = args.big_trades
+    if args.stale_sector_limitups > 0:
+        over["max_sector_limitups"] = args.stale_sector_limitups
     from dataclasses import replace
 
     return replace(cfg, **over) if over else cfg
@@ -139,6 +149,7 @@ def build_guard(args: argparse.Namespace) -> RiskGuard | None:
         fill_basis=args.fill_basis,
         cost_rate=args.cost_rate,
         leader_exit=not args.no_leader_exit,
+        size_multiplier=args.size_multiplier,
         stop_file=(None if args.no_stop_file else args.stop_file),
     )
     return RiskGuard(cfg)
@@ -208,18 +219,48 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
             if not gate.tradable:
                 print("#   ↑ 만쥬 기준으론 쉬는 날이다. dry-run 이라 계속 진행하되, "
                       "이 결과는 '쉬라고 한 국면'의 것으로 해석해야 한다.", file=sys.stderr)
+            if args.size_by_regime:
+                # 만쥬 §8-1 — 국면이 나빠지면 시드를 줄인다("1억을 그대로 베팅하지
+                # 않고 3천만 이하로"). 배수 0 이면 신규 진입만 막고 기존 청산은 돈다.
+                args.size_multiplier = gate.size_multiplier
+                print(f"#   비중 배수 {gate.size_multiplier:g} 적용(--size-by-regime)",
+                      file=sys.stderr)
         except Exception as exc:  # noqa: BLE001 — 게이트 실패로 매매를 막지 않는다
             print(f"[경고] 시황 판정 실패(계속 진행): {exc}", file=sys.stderr)
-        uni = build_universe(conn, prev, UniverseConfig(limit=args.universe_size))
+        # 만쥬 §4-5 — 신규상장주는 과거 일봉이 없어 거래대금·변동성 필터를 못 넘는다.
+        # 일반 랭킹으로는 영영 안 뽑히므로 pinned 로 박는다("상장 당일은 무조건 등록").
+        pinned: tuple[str, ...] = ()
+        if args.new_listing_days > 0:
+            from .universe import fetch_first_days, pick_recent_listings
+
+            fresh = pick_recent_listings(fetch_first_days(conn), asof=prev,
+                                         within_days=args.new_listing_days)
+            pinned = tuple(fresh)
+            if pinned:
+                print(f"# 신규상장 편입 {len(pinned)}종목(최근 {args.new_listing_days}일): "
+                      f"{', '.join(pinned)}", file=sys.stderr)
+        uni = build_universe(conn, prev,
+                             UniverseConfig(limit=args.universe_size, pinned=pinned))
         if not uni.codes:
             print("[경고] 유니버스가 비었다 — 고정 쌍으로 폴백", file=sys.stderr)
             return {}
         print(f"# 유니버스 {len(uni.codes)}종목(기준일 {uni.asof}) · "
               f"짝꿍성립 {len(uni.pairable_codes)} · 섹터 {len(uni.sector_counts)}개",
               file=sys.stderr)
-        return {"universe": uni.pairable_codes,
-                "sectors": uni.sector_by_code,
-                "prev_close": uni.prev_close_by_code}
+        out: dict[str, Any] = {"universe": uni.pairable_codes,
+                               "sectors": uni.sector_by_code,
+                               "prev_close": uni.prev_close_by_code}
+        # 만쥬 §5-5 테마 신선도 — 최근 상한가가 잦은 섹터는 '소비된 테마'로 본다.
+        # 정확한 재현이 아니라 대용치다(신선도는 등급 C, 자동화 불가 항목).
+        if args.stale_sector_limitups > 0:
+            from .universe import fetch_sector_limitups
+
+            counts = fetch_sector_limitups(conn, prev, days=args.stale_sector_days)
+            out["sector_limitup_counts"] = counts
+            top = dict(sorted(counts.items(), key=lambda x: -x[1])[:5])
+            print(f"# 섹터 신선도 — 최근 {args.stale_sector_days}영업일 상한가 {top}",
+                  file=sys.stderr)
+        return out
     except Exception as exc:  # noqa: BLE001 — 하루를 날리느니 폴백한다
         print(f"[경고] 유니버스 선정 실패({exc}) — 고정 쌍으로 폴백", file=sys.stderr)
         return {}
@@ -392,6 +433,7 @@ def build_order_executor(
                          unfilled_timeout=args.unfilled_timeout,
                          fill_basis=args.fill_basis,   # 가드 회계와 같은 체결 가정
                          leader_exit=not args.no_leader_exit,
+        size_multiplier=args.size_multiplier,
                          notice=lambda s: print(s, flush=True))
 
 
@@ -673,6 +715,25 @@ def build_parser() -> argparse.ArgumentParser:
                    help="상한가 터치를 방아쇠로 (만쥬 §5-1)")
     p.add_argument("--limitup-near", type=float, default=None,
                    help="상한가까지 이 비율 이내면 발동 (예 0.04 = 4%%p). 0 = 끔")
+    p.add_argument("--lock-min-krw", type=float, default=None,
+                   help="상한가 매수벽 금액 하한(원) — 만쥬 §5-2 \"수십만~수백만 주를 "
+                        "안정적으로 굳히면\". 0 = 끔")
+    p.add_argument("--lock-wall-decay", type=float, default=None,
+                   help="매수벽이 최근 최대 대비 이 비율 아래로 깎이면 이탈로 본다 "
+                        "(0.5 = 반토막). 0 = 끔")
+    p.add_argument("--dump-krw", type=float, default=None,
+                   help="대장 매도 체결대금이 관측창에서 이 금액을 넘으면 이탈 — "
+                        "만쥬 §5-4 \"프로그램 매도 폭탄에 막히면 즉시 손절\". 0 = 끔")
+    p.add_argument("--big-trades", type=int, default=None,
+                   help="대장에 필요한 대량체결(기본 5천만원↑) 최소 건수 — 만쥬 §5-1 "
+                        "순간 체결량 확인. 0 = 끔")
+    p.add_argument("--new-listing-days", type=int, default=5,
+                   help="최근 N일 내 상장 종목을 유니버스에 무조건 편입(만쥬 §4-5). 0 = 끔")
+    p.add_argument("--stale-sector-days", type=int, default=10,
+                   help="테마 신선도를 재는 기간(영업일). 기본 10")
+    p.add_argument("--stale-sector-limitups", type=int, default=0,
+                   help="이 횟수를 넘게 상한가가 나온 섹터는 '소비된 테마'로 보고 배제"
+                        "(만쥬 §5-5). 0 = 끔 — 문턱이 낮으면 유니버스가 거덜난다")
     p.add_argument("--limitup-require-surge", action="store_true",
                    help="상한가 방아쇠에 서지 조건까지 AND — 상한가 근처에서 정체된 "
                         "종목에 발동하는 걸 막는다(원본 presurge 는 +25% 교차 AND "
@@ -715,6 +776,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="왕복 비용률(수익률에서 차감). 기본 0.0064 = 왕복 34bp + "
                         "슬리피지 왕복 30bp(레포 기본 가정, scripts/verify_pair.py). "
                         "0 = 끔(세전)")
+    g.add_argument("--size-multiplier", type=float, default=1.0,
+                   help="포지션 명목에 곱하는 국면 배수(만쥬 §8-1). 활황 1.0 / 중간 0.6 "
+                        "/ 침체 0.3 / 극침체 0. --size-by-regime 로 자동 결정 가능")
+    g.add_argument("--size-by-regime", action="store_true",
+                   help="국면 배수를 코스닥 거래대금에서 자동 결정(만쥬 §8-1). "
+                        "극침체면 배수 0 = 신규 진입 없음")
     g.add_argument("--no-leader-exit", action="store_true",
                    help="대장 조건부 청산 끄기 — 만쥬 §5-3 의 핵심 축이라 기본은 켬. "
                         "대장이 상한가를 놓치면 손익 무관 즉시 청산한다")

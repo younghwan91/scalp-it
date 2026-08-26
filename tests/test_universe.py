@@ -275,3 +275,33 @@ def test_build_universe_end_to_end_on_sqlite() -> None:
     assert uni.codes == ["111111", "222222"]   # 거래대금 순, 얇은주·거래소주 탈락
     assert uni.sector_by_code == {"111111": "전기/전자", "222222": "전기/전자"}
     assert uni.prev_close_by_code["111111"] > 0
+
+
+# ----- 만쥬 §4-5 신규상장 · §5-5 테마 신선도 --------------------------------
+
+def test_pick_recent_listings_from_first_days():
+    """상장일이 최근인 종목만 고른다 — 만쥬 §4-5 "상장 당일은 무조건 관심종목"."""
+    from scalp_it.universe import pick_recent_listings
+
+    first = {"111111": date(2026, 8, 25), "222222": date(2026, 8, 14),
+             "333333": date(2025, 1, 2)}
+    got = pick_recent_listings(first, asof=date(2026, 8, 25), within_days=5)
+    assert got == ["111111"]                       # 08-14 는 5일(달력) 밖
+    # 경계 포함: 정확히 within_days 일 전이면 들어온다
+    assert pick_recent_listings(first, asof=date(2026, 8, 25), within_days=11) == [
+        "111111", "222222"]
+    assert pick_recent_listings(first, asof=date(2026, 8, 25), within_days=0) == []
+
+
+def test_stale_sectors_flags_overused_themes():
+    """최근 상한가가 잦은 섹터는 '소비된 테마' — 만쥬 §5-5.
+
+    "이미 수차례 소비되어 신선도가 떨어진 테마는 대장이 상을 가도 후발주가 잘
+    따라가지 못한다". 섹터별 상한가 횟수를 그 대용치로 쓴다.
+    """
+    from scalp_it.universe import stale_sectors
+
+    counts = {"전기/전자": 7, "제약": 3, "금융": 0}
+    assert stale_sectors(counts, max_limitups=5) == {"전기/전자"}
+    assert stale_sectors(counts, max_limitups=0) == set()      # 0 = 필터 끔
+    assert stale_sectors(counts, max_limitups=2) == {"전기/전자", "제약"}

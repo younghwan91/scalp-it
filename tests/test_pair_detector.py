@@ -938,3 +938,234 @@ def test_follower_only_code_emits_no_leader_events():
     _feed(det, PAIR.follower, 0, 13_000.0, bid1=13_000.0, volume=1000)
     _feed(det, PAIR.follower, 10, 12_000.0, bid1=12_000.0, volume=1000)
     assert det.drain_leader_events() == []
+
+
+# ----- 상한가 매수벽 두께 (만쥬 §5-2 "수십만~수백만 주를 안정적으로 굳히면") -----
+#
+# 지금까지 '굳힘' 판정은 가격만 봤다(현재가 ≥ 상한가). 만쥬는 매수 잔량의 두께로
+# 판정한다 — 상한가에 수십만~수백만 주가 쌓여야 굳힌 것이고, 그 벽이 얇으면 곧 풀린다.
+
+def _wall(det, secs, qty, px=13_000.0, code=None):
+    """대장 호가 스냅샷 — 상한가 ``px`` 에 ``qty`` 주가 쌓인 상태."""
+    det.on_quote(code or PAIR.leader, BASE + timedelta(seconds=secs), px,
+                 bids=[(px, qty)], asks=[(px + 10, qty)])
+
+
+def _wall_timeline(det, *, qty, lead_now=13_000.0, wall_px=13_000.0):
+    """후속 히스토리를 채우고, 대장 상한가 벽을 세운 뒤 마지막 대장 틱의 알림을 준다."""
+    _feed(det, PAIR.follower, 0, 100.0, bid1=100.0, volume=1000)
+    _feed(det, PAIR.follower, 30, 100.0, bid1=100.0, volume=1000)
+    _feed(det, PAIR.leader, 30, 13_000.0, volume=1000)
+    if qty is not None:
+        _wall(det, 45, qty, wall_px)
+    _feed(det, PAIR.follower, 60, 100.6, bid1=100.0, volume=1000)
+    return _feed(det, PAIR.leader, 60, lead_now, volume=1000)
+
+
+def test_lock_wall_qty_blocks_thin_wall():
+    """상한가에 1만 주밖에 없으면 '굳혔다'가 아니다 — 방아쇠 기각."""
+    det = _limit_det(limitup_touch=True, lock_min_qty=100_000)
+    assert _wall_timeline(det, qty=10_000) == []
+
+
+def test_lock_wall_qty_passes_thick_wall():
+    det = _limit_det(limitup_touch=True, lock_min_qty=100_000)
+    a = _wall_timeline(det, qty=300_000)
+    assert len(a) == 1 and a[0].lock_qty == pytest.approx(300_000)
+    assert a[0].lock_krw == pytest.approx(300_000 * 13_000.0)
+
+
+def test_lock_wall_krw_threshold_is_price_aware():
+    """주 수만으로는 가격대별 의미가 달라 원화 환산 문턱도 따로 건다."""
+    det = _limit_det(limitup_touch=True, lock_min_krw=10_000_000_000)   # 100억
+    assert _wall_timeline(det, qty=100_000) == []                        # 13억
+    ok = _limit_det(limitup_touch=True, lock_min_krw=10_000_000_000)
+    assert len(_wall_timeline(ok, qty=1_000_000)) == 1                   # 130억
+
+
+def test_lock_wall_both_thresholds_are_and():
+    det = _limit_det(limitup_touch=True, lock_min_qty=100_000,
+                     lock_min_krw=10_000_000_000)
+    assert _wall_timeline(det, qty=200_000) == []      # 주 수는 통과, 금액은 미달
+
+
+def test_lock_wall_requires_book_when_enabled():
+    """벽을 재라고 했는데 호가를 못 받으면 굳힘을 확인할 수 없다 — 안전 기각."""
+    det = _limit_det(limitup_touch=True, lock_min_qty=100_000)
+    assert _wall_timeline(det, qty=None) == []
+
+
+def test_lock_wall_off_by_default_keeps_old_behaviour():
+    cfg = DetectorConfig()
+    assert cfg.lock_min_qty == 0.0 and cfg.lock_min_krw == 0.0
+    det = _limit_det(limitup_touch=True)
+    assert len(_wall_timeline(det, qty=None)) == 1
+
+
+def test_lock_wall_not_required_for_near_trigger():
+    """'상한가 직전' 방아쇠는 아직 상한가 호가가 없다 — 벽을 요구하지 않는다."""
+    det = _limit_det(limitup_near_pct=0.04, lock_min_qty=100_000)
+    assert len(_wall_timeline(det, qty=None, lead_now=12_600.0)) == 1
+
+
+# ----- 매수벽 깎임 = 이탈 예고 ------------------------------------------------
+
+def test_wall_decay_emits_leader_lost():
+    """상한가는 아직 안 풀렸어도 매수벽이 반토막 나면 이탈로 본다."""
+    det = _leader_det(lock_wall_decay=0.5, lock_wall_window=30.0)
+    _feed(det, PAIR.leader, 0, 13_000.0, volume=1000)
+    _wall(det, 0, 1_000_000)
+    assert [st for _c, _t, st in det.drain_leader_events()] == ["holding"]
+    _wall(det, 10, 700_000)
+    assert det.drain_leader_events() == []             # 70% — 아직 아니다
+    _wall(det, 20, 400_000)                            # 40% < 50%
+    ev = det.drain_leader_events()
+    assert [st for _c, _t, st in ev] == ["lost"]
+    assert ev[0].reason == "wall"
+    _wall(det, 21, 300_000)
+    assert det.drain_leader_events() == []             # 이탈은 한 번만
+
+
+def test_wall_decay_off_by_default():
+    cfg = DetectorConfig()
+    assert cfg.lock_wall_decay == 0.0
+    det = _leader_det()
+    _feed(det, PAIR.leader, 0, 13_000.0, volume=1000)
+    _wall(det, 0, 1_000_000)
+    _wall(det, 10, 10_000)
+    assert [st for _c, _t, st in det.drain_leader_events()] == ["holding"]
+
+
+# ----- 매도 폭탄 (만쥬 §5-4 "프로그램 매도 폭탄이 쏟아져 막히면 지체 없이 손절") ----
+
+def test_sell_dump_emits_lost_while_price_still_at_limit():
+    """가격이 아직 상한가여도 매도 폭탄이 쏟아지면 이탈이다 — 만쥬는 or 로 말한다."""
+    det = _leader_det(dump_krw=1_000_000_000, dump_window=10.0)
+    _feed(det, PAIR.leader, 0, 13_000.0, volume=1000)
+    assert [st for _c, _t, st in det.drain_leader_events()] == ["holding"]
+    _feed(det, PAIR.leader, 5, 13_000.0, volume=50_000, side=-1)    # 6.5억
+    assert det.drain_leader_events() == []
+    _feed(det, PAIR.leader, 6, 13_000.0, volume=50_000, side=-1)    # 누적 13억 ≥ 10억
+    ev = det.drain_leader_events()
+    assert [st for _c, _t, st in ev] == ["lost"]
+    assert ev[0].reason == "dump"
+
+
+def test_sell_dump_ignores_buy_side_volume():
+    det = _leader_det(dump_krw=1_000_000_000, dump_window=10.0)
+    _feed(det, PAIR.leader, 0, 13_000.0, volume=1000)
+    det.drain_leader_events()
+    _feed(det, PAIR.leader, 5, 13_000.0, volume=200_000, side=1)    # 26억이지만 매수
+    assert det.drain_leader_events() == []
+
+
+def test_sell_dump_window_expires():
+    det = _leader_det(dump_krw=1_000_000_000, dump_window=10.0)
+    _feed(det, PAIR.leader, 0, 13_000.0, volume=1000)
+    det.drain_leader_events()
+    _feed(det, PAIR.leader, 5, 13_000.0, volume=50_000, side=-1)
+    _feed(det, PAIR.leader, 30, 13_000.0, volume=50_000, side=-1)   # 창 밖 — 누적 아님
+    assert det.drain_leader_events() == []
+
+
+def test_sell_dump_does_not_immediately_relock():
+    """폭탄으로 이탈시킨 뒤 가격이 상한가라고 곧바로 holding 으로 되돌리면 안 된다."""
+    det = _leader_det(dump_krw=1_000_000_000, dump_window=10.0)
+    _feed(det, PAIR.leader, 0, 13_000.0, volume=1000)
+    _feed(det, PAIR.leader, 5, 13_000.0, volume=100_000, side=-1)
+    assert [st for _c, _t, st in det.drain_leader_events()] == ["holding", "lost"]
+    _feed(det, PAIR.leader, 30, 13_000.0, volume=1000)
+    assert det.drain_leader_events() == []
+    _feed(det, PAIR.leader, 40, 12_900.0, volume=1000)   # 실제로 풀렸다가
+    _feed(det, PAIR.leader, 50, 13_000.0, volume=1000)   # 다시 붙으면 재잠김
+    assert [st for _c, _t, st in det.drain_leader_events()] == ["holding"]
+
+
+def test_sell_dump_off_by_default():
+    cfg = DetectorConfig()
+    assert cfg.dump_krw == 0.0
+    det = _leader_det()
+    _feed(det, PAIR.leader, 0, 13_000.0, volume=1000)
+    _feed(det, PAIR.leader, 5, 13_000.0, volume=10_000_000, side=-1)
+    assert [st for _c, _t, st in det.drain_leader_events()] == ["holding"]
+
+
+def test_leader_event_is_plain_three_tuple_with_reason():
+    """소비자는 3-튜플로 언패킹한다 — reason 은 곁다리 속성이라 배선을 안 깬다."""
+    det = _leader_det()
+    _feed(det, PAIR.leader, 0, 13_000.0, volume=1000)
+    _feed(det, PAIR.leader, 10, 12_900.0, volume=1000)
+    ev = det.drain_leader_events()
+    code, ts, state = ev[1]
+    assert (code, ts, state) == (PAIR.leader, BASE + timedelta(seconds=10), "lost")
+    assert ev[1] == (PAIR.leader, BASE + timedelta(seconds=10), "lost")
+    assert ev[1].reason == "unlock"
+
+
+# ----- 테마 신선도 대용치 (만쥬 §5-5) -----------------------------------------
+
+def _fresh_det(counts, **cfg_kw):
+    cfg_kw.setdefault("min_sl_ticks", 0.0)
+    cfg_kw.setdefault("cosurge_min", 0.0)
+    cfg_kw.setdefault("premove_max", 1.0)
+    cfg_kw.setdefault("min_buy_ratio", 0.0)
+    return PairDetector(
+        [PAIR], DetectorConfig(**cfg_kw),
+        prev_close={PAIR.leader: 10_000.0, PAIR.follower: 100.0},
+        sectors={PAIR.leader: "정치", PAIR.follower: "정치"},
+        sector_limitup_counts=counts,
+    )
+
+
+def test_stale_sector_is_excluded_and_recorded():
+    """최근 N일 상한가를 이미 여러 번 낸 테마는 후발주가 안 따라온다 — 배제하되 기록."""
+    det = _fresh_det({"정치": 5}, limitup_touch=True, max_sector_limitups=3)
+    assert _limit_timeline(det, 13_000.0, lead30=13_000.0) == []
+    rec = det.drain_filtered()
+    assert len(rec) == 1 and rec[0].reason == "sector_stale"
+    assert rec[0].sector == "정치" and rec[0].sector_limitups == 5
+    assert "정치" in rec[0].to_line()
+    assert det.filtered_count == 1
+
+
+def test_fresh_sector_passes():
+    det = _fresh_det({"정치": 1}, limitup_touch=True, max_sector_limitups=3)
+    assert len(_limit_timeline(det, 13_000.0, lead30=13_000.0)) == 1
+    assert det.drain_filtered() == []
+
+
+def test_unknown_sector_count_passes():
+    """섹터를 모르거나 집계가 없으면 판단 근거가 없다 — 막지 않는다."""
+    det = _fresh_det({}, limitup_touch=True, max_sector_limitups=3)
+    assert len(_limit_timeline(det, 13_000.0, lead30=13_000.0)) == 1
+
+
+def test_sector_freshness_off_by_default():
+    cfg = DetectorConfig()
+    assert cfg.max_sector_limitups == 0
+    det = _fresh_det({"정치": 99}, limitup_touch=True)
+    assert len(_limit_timeline(det, 13_000.0, lead30=13_000.0)) == 1
+
+
+def test_sector_limitup_counts_can_be_updated_intraday():
+    det = _fresh_det({"정치": 1}, limitup_touch=True, max_sector_limitups=3)
+    det.set_sector_limitup_counts({"정치": 9})
+    assert _limit_timeline(det, 13_000.0, lead30=13_000.0) == []
+
+
+# ----- 순간 체결량 필터 재검증 (만쥬 §5-1) -------------------------------------
+
+def test_big_trade_counts_leader_only():
+    """수급 확인은 **대장** 기준이다 — 후속주에 대량체결이 있어도 소용없다."""
+    det = _limit_det(limitup_touch=True, min_big_trades=1)
+    _feed(det, PAIR.follower, 0, 100.0, bid1=100.0, volume=1_000_000)   # 1억
+    _feed(det, PAIR.follower, 30, 100.0, bid1=100.0, volume=1_000_000)
+    _feed(det, PAIR.leader, 30, 13_000.0, volume=1000)
+    _feed(det, PAIR.follower, 60, 100.6, bid1=100.0, volume=1_000_000)
+    assert _feed(det, PAIR.leader, 60, 13_000.0, volume=1000) == []
+
+
+def test_big_trade_needs_positive_threshold():
+    """big_trade_krw 를 0 으로 두면 모든 체결이 '대량'이 된다 — 그건 필터가 아니다."""
+    det = _limit_det(limitup_touch=True, min_big_trades=1, big_trade_krw=0.0)
+    assert _limit_timeline(det, 13_000.0, lead30=13_000.0) == []

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 
 from scalp_it.realtime.pair_detector import Alert
 from scalp_it.realtime.risk_guard import (
+    BLOCK_REGIME_ZERO,
     KILL_CONSECUTIVE,
     KILL_DAILY_LOSS,
     KILL_MANUAL,
@@ -583,3 +584,134 @@ def test_leader_lost_counts_into_kill_switch_accounting():
     g.on_leader_state("000001", BASE + timedelta(seconds=3), LEADER_LOST)
     assert g.realized_krw < 0
     assert g.killed and g.kill_reason == KILL_CONSECUTIVE
+
+
+# ------------------------------------------------- 국면별 비중 조절(만쥬 §8-1)
+
+def test_size_multiplier_scales_position_notional():
+    """배수 0.3 이면 명목이 30%로 줄고 손익(원)도 그만큼만 잡힌다."""
+    g = _guard(size_multiplier=0.3)
+    _settle_win(g, 0)
+    pos = g.closed_positions[0]
+    assert pos.notional == 30_000.0
+    assert abs(pos.pnl_krw - pos.pnl * 30_000.0) < 1e-6
+    assert abs(g.realized_krw - pos.pnl_krw) < 1e-6
+
+
+def test_size_multiplier_zero_blocks_new_alert_but_is_not_kill():
+    """극침체(배수 0)는 신규 진입 금지. 킬스위치와는 다르다 — 배수를 되돌리면 재개."""
+    g = _guard(size_multiplier=0.0)
+    d = g.on_alert(_alert(0))
+    assert d.allowed is False
+    assert d.reason == BLOCK_REGIME_ZERO
+    assert d.killed is False and g.killed is False
+    assert g.open_positions == [] and g.shadow_positions == []
+    g.set_size_multiplier(1.0)
+    assert g.on_alert(_alert(10)).allowed is True
+
+
+def test_size_multiplier_zero_still_closes_open_positions():
+    """배수 0으로 바뀌어도 **들고 있는 포지션의 청산은 정상 동작**해야 한다."""
+    g = _guard()
+    g.on_alert(_alert(0))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)     # 체결
+    g.set_size_multiplier(0.0)
+    assert g.on_alert(_alert(5, follower="000003")).allowed is False   # 신규만 차단
+    g.on_tick(FOL, BASE + timedelta(seconds=2), 100.6)    # 익절은 그대로
+    assert g.closed_positions[0].exit_reason == "익절"
+    assert g.realized_krw > 0
+
+
+def test_size_multiplier_default_is_unchanged():
+    g = _guard()
+    _settle_win(g, 0)
+    assert g.closed_positions[0].notional == 100_000.0
+
+
+# ---------------------------------------------------- 분할 매도(만쥬 §5-2)
+
+def test_partial_exit_at_gain_then_remainder_takes_profit():
+    g = _guard(partial_exit_ratio=0.5, partial_exit_gain=0.002)
+    g.on_alert(_alert(0))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)     # 체결
+    g.on_tick(FOL, BASE + timedelta(seconds=2), 100.25)   # +0.25% → 1차 분할
+    pos = g.open_positions[0]
+    assert pos.partial_done is True and pos.remaining == 0.5
+    assert abs(pos.partial_pnl_krw - 0.0025 * 100_000 * 0.5) < 1e-6
+    assert abs(g.realized_krw - pos.partial_pnl_krw) < 1e-6
+    g.on_tick(FOL, BASE + timedelta(seconds=3), 100.6)    # 잔량은 기존 익절 규칙
+    done = g.closed_positions[0]
+    assert done.exit_reason == "익절"
+    assert abs(done.pnl_krw - 0.005 * 100_000 * 0.5) < 1e-6
+    assert abs(g.realized_krw - (125.0 + 250.0)) < 1e-6
+
+
+def test_partial_exit_by_elapsed_time():
+    g = _guard(partial_exit_ratio=0.4, partial_exit_after_s=30.0)
+    g.on_alert(_alert(0, tp=None))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)     # 체결
+    g.on_tick(FOL, BASE + timedelta(seconds=10), 100.1)   # 아직 30초 전
+    assert g.open_positions[0].partial_done is False
+    g.on_tick(FOL, BASE + timedelta(seconds=40), 100.1)   # 체결 후 39초 → 분할
+    assert g.open_positions[0].partial_done is True
+    assert g.open_positions[0].remaining == 0.6
+
+
+def test_partial_fires_only_once():
+    g = _guard(partial_exit_ratio=0.5, partial_exit_gain=0.002)
+    g.on_alert(_alert(0, tp=None))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)
+    g.on_tick(FOL, BASE + timedelta(seconds=2), 100.25)
+    g.on_tick(FOL, BASE + timedelta(seconds=3), 100.3)
+    assert g.open_positions[0].remaining == 0.5
+
+
+def test_leader_exit_is_full_never_partial():
+    """만쥬 §5-3 은 '손익 무관 **전량**' — 대장이탈은 분할 대상이 아니다."""
+    g = _guard(partial_exit_ratio=0.5, partial_exit_gain=0.002)
+    g.on_alert(_alert(0))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)
+    g.on_leader_state("000001", BASE + timedelta(seconds=2), LEADER_LOST)
+    pos = g.closed_positions[0]
+    assert pos.exit_reason == "대장이탈"
+    assert pos.partial_done is False and pos.remaining == 1.0
+    assert abs(pos.pnl_krw - pos.pnl * 100_000) < 1e-6
+
+
+def test_stop_loss_after_partial_uses_remainder_only():
+    g = _guard(partial_exit_ratio=0.5, partial_exit_gain=0.002)
+    g.on_alert(_alert(0))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)
+    g.on_tick(FOL, BASE + timedelta(seconds=2), 100.25)   # 1차 분할(+125원)
+    g.on_tick(FOL, BASE + timedelta(seconds=3), 99.5)     # 잔량 손절
+    done = g.closed_positions[0]
+    assert done.exit_reason == "손절"
+    assert abs(done.pnl_krw - done.pnl * 100_000 * 0.5) < 1e-6
+    # 승패는 그 포지션의 **합계**로 가른다(분할 익절 + 잔량 손절).
+    total = done.partial_pnl_krw + done.pnl_krw
+    assert abs(g.realized_krw - total) < 1e-6
+    assert (g.losses == 1) is (total < 0)
+
+
+def test_partial_disabled_by_default():
+    g = _guard()
+    _settle_win(g, 0)
+    pos = g.closed_positions[0]
+    assert pos.partial_done is False and pos.remaining == 1.0
+    assert abs(pos.pnl_krw - pos.pnl * 100_000) < 1e-6
+
+
+def test_partial_logged_as_its_own_event(tmp_path):
+    log = tmp_path / "positions.log"
+    sink = PositionLogSink(log, basis="through")
+    g = _guard(partial_exit_ratio=0.5, partial_exit_gain=0.002)
+    g.set_close_callback(sink.log_close)
+    g.on_alert(_alert(0))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 99.9)
+    g.on_tick(FOL, BASE + timedelta(seconds=2), 100.25)
+    g.on_tick(FOL, BASE + timedelta(seconds=3), 100.6)
+    lines = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    events = [x["event"] for x in lines]
+    assert events[0] == "partial" and events[-1] == "close"
+    assert lines[0]["partial_ratio"] == 0.5
+    assert lines[-1]["remaining"] == 0.5

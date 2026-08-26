@@ -711,3 +711,133 @@ def test_leader_state_never_fed_keeps_legacy_time_exit():
     ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)
     ex.on_tick("294570", t0 + timedelta(seconds=20), 10000)
     assert _last(ex).exit_reason == "시간청산"
+
+
+# ------------------------------------------------- 국면별 비중 조절(만쥬 §8-1)
+
+def test_size_multiplier_scales_order_qty():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=10, size_multiplier=0.3)
+    ex.on_signal(_alert())
+    assert c.buys == [("294570", 3, 10000, False)]       # 10주 × 0.3 = 3주
+
+
+def test_size_multiplier_keeps_at_least_one_share():
+    """1주 × 0.3 = 0주가 되면 매매가 사라진다 — 진입하는 이상 최소 1주는 낸다."""
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1, size_multiplier=0.3)
+    ex.on_signal(_alert())
+    assert c.buys == [("294570", 1, 10000, False)]
+
+
+def test_size_multiplier_zero_blocks_entry():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=5, size_multiplier=0.0)
+    assert ex.on_signal(_alert()) is None
+    assert c.buys == [] and ex.positions == []
+
+
+def test_size_multiplier_zero_still_exits_open_position():
+    """극침체로 배수가 0이 되어도 **들고 있는 포지션의 청산은 정상 동작**해야 한다."""
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=10050))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)          # 체결
+    ex.set_size_multiplier(0.0)
+    assert ex.on_signal(_alert(code="123456", ts=t0)) is None      # 신규만 차단
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10050)         # 익절 접수
+    assert c.sells and c.sells[0][1] == 1
+    ex.on_tick("294570", t0 + timedelta(seconds=6), 10060)         # 체결확인
+    assert _last(ex).status == "exited"
+
+
+def test_size_multiplier_default_unchanged():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=2)
+    ex.on_signal(_alert())
+    assert c.buys == [("294570", 2, 10000, False)]
+
+
+# ---------------------------------------------------- 분할 매도(만쥬 §5-2)
+
+def test_partial_exit_sells_portion_then_remainder():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=4, partial_exit_ratio=0.5, partial_exit_gain=0.002)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=10050))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)          # 체결 4주
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10025)         # +0.25% → 2주 분할 접수
+    pos = ex.positions[0]
+    assert pos.status == "selling" and c.sells[-1][1] == 2
+    ex.on_tick("294570", t0 + timedelta(seconds=6), 10030)         # 분할 체결
+    assert pos.status == "filled" and pos.qty == 2 and pos.partial_done is True
+    assert pos.partial_qty == 2 and ex.history == []
+    ex.on_tick("294570", t0 + timedelta(seconds=8), 10050)         # 잔량 익절 접수
+    assert c.sells[-1][1] == 2 and pos.exit_reason == "익절"
+    ex.on_tick("294570", t0 + timedelta(seconds=9), 10060)
+    assert _last(ex).status == "exited" and _last(ex).qty == 2
+
+
+def test_partial_skipped_when_qty_too_small():
+    """1주는 쪼갤 수 없다 — 분할 설정이 있어도 기존(전량) 경로 그대로."""
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1, partial_exit_ratio=0.5, partial_exit_gain=0.002)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=10050))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10025)
+    assert c.sells == []                                            # 분할 없음
+    assert ex.positions[0].status == "filled"
+
+
+def test_partial_disabled_by_default():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=4)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=10050))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10025)
+    assert c.sells == []
+
+
+def test_leader_lost_sells_full_remainder_not_partial():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=4, partial_exit_ratio=0.5, partial_exit_gain=0.002)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=10050, leader="124500"))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)
+    ex.on_leader_state("124500", t0 + timedelta(seconds=3), LEADER_LOST)
+    assert c.sells[-1][1] == 4 and ex.positions[0].exit_reason == "대장이탈"
+
+
+def test_partial_sell_chase_uses_partial_qty():
+    """분할 매도가 안 붙어 추격 재호가할 때도 수량은 분할분이어야 한다."""
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=4, unfilled_timeout=5.0,
+                       partial_exit_ratio=0.5, partial_exit_gain=0.002)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=10050))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10025)          # 분할 2주 접수 @10025
+    ex.on_tick("294570", t0 + timedelta(seconds=12), 10020)         # 미체결·타임아웃 → 추격
+    assert c.cancels[-1][2] == 2                                     # 취소 수량 = 분할분
+    assert c.sells[-1][1] == 2 and c.sells[-1][2] == 10020
+
+
+def test_live_partial_fill_uses_holdings_delta():
+    """live 매도 체결확인은 잔고 '소멸'이 아니라 **잔여 수량 도달**로 판정해야 한다."""
+    hold = [{"code": "294570", "qty": 4}]
+    c = FakeClient(holdings=hold)
+    ex = OrderExecutor(c, qty=4, live=True, partial_exit_ratio=0.5,
+                       partial_exit_gain=0.002)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=10050))
+    ex.on_tick("294570", t0 + timedelta(seconds=2), 9999)           # is_filled True → 체결
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10025)          # 분할 2주 접수
+    assert ex.positions[0].status == "selling"
+    ex.on_tick("294570", t0 + timedelta(seconds=6), 10030)          # 잔고 4 그대로 → 미체결
+    assert ex.positions[0].status == "selling"
+    hold[0]["qty"] = 2                                               # 2주만 체결됨
+    ex.on_tick("294570", t0 + timedelta(seconds=7), 10030)
+    assert ex.positions[0].status == "filled" and ex.positions[0].qty == 2

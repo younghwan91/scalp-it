@@ -19,6 +19,11 @@
   ``OrderResult`` 를 직접 검사한다(C-2). 거부면 포지션을 버리지 않고 유지·재시도한다.
 * **마감 청산.** :meth:`flush` 는 대기 매수뿐 아니라 **체결·매도대기분도 정리**한다
   (C-3). 오버나이트로 넘어가면 다음 날 인수할 코드가 없다.
+* **국면별 비중(만쥬 §8-1).** 주문 수량에 국면 배수를 곱한다. 배수는 **주입**받는다
+  (이 모듈은 DB·시계를 모른다). 진입하는 이상 최소 1주는 유지하고, 배수 0(극침체)이면
+  **신규 진입만** 막는다 — 보유분 청산은 그대로 돈다.
+* **분할 매도(만쥬 §5-2).** 익절·시간 계열에 한해 1차로 일부만 판다. 대장이탈·손절·
+  재난선은 §5-3 "손익 무관 전량"이라 쪼개지 않는다. 기본값은 꺼짐(기존 전량 동작).
 * **대장 조건부 청산.** 포지션마다 그 포지션을 만든 대장 코드를 달고, 감지기가
   :meth:`on_leader_state` 로 대장의 상한가 이탈을 통보하면 그 대장으로 연 포지션을
   손익 무관 즉시 매도 접수한다(만쥬 §5-3). 대기 매수는 취소한다.
@@ -54,7 +59,7 @@ class LivePosition:
 
     code: str
     name: str
-    qty: int
+    qty: int                            # **현재 보유 수량**(분할 매도가 붙으면 줄어든다)
     entry: int                          # 매수 지정가(bid1)
     take_profit: float | None           # 익절가(원). None = 상한 없음
     stop_loss: float | None
@@ -72,10 +77,16 @@ class LivePosition:
     exit_reason: str = ""
     sell_ord_no: str | None = None
     sell_price: int | None = None       # 접수한 청산 지정가
+    sell_qty: int = 0                   # 접수한 청산 수량(분할이면 일부, 아니면 전량)
     sell_deadline: datetime | None = None   # 이 시각까지 안 붙으면 취소 후 재호가
     sell_chases: int = 0                # 재호가(추격) 횟수
     chase_alerted: bool = False         # 추격 상한 경보를 이미 냈는가(중복 경보 방지)
     last_price: float | None = None     # 마지막으로 본 체결가 — flush 의 청산가로 쓴다
+    qty_initial: int = 0                # 진입 수량(분할 회계용). 0 이면 qty 와 같다
+    partial_done: bool = False          # 1차 분할이 이미 체결됐는가
+    partial_qty: int = 0                # 분할로 이미 판 누적 수량
+    partial_price: int | None = None    # 분할 체결가(접수가)
+    partial_reason: str = ""            # 분할익절 | 분할시간청산
 
 
 class OrderExecutor:
@@ -91,6 +102,10 @@ class OrderExecutor:
         max_sell_chases: int = 3,
         fill_basis: str = "through",
         leader_exit: bool = True,
+        size_multiplier: float = 1.0,
+        partial_exit_ratio: float = 0.0,
+        partial_exit_gain: float | None = None,
+        partial_exit_after_s: float | None = None,
         notice: Callable[[str], None] | None = None,
     ) -> None:
         self._client = client
@@ -102,9 +117,35 @@ class OrderExecutor:
         self._fill_basis = fill_basis if fill_basis in ("through", "touch") else "through"
         # 대장 조건부 청산(만쥬 §5-3). 켜 두어도 대장 상태를 안 먹이면 아무 일도 없다.
         self._leader_exit = bool(leader_exit)
+        # 국면별 비중(만쥬 §8-1). config 가 아니라 속성으로 두는 건 장중에 국면이
+        # 바뀌면 CLI 가 :meth:`set_size_multiplier` 로 갈아끼우기 때문이다.
+        self.size_multiplier = max(0.0, float(size_multiplier))
+        # 분할 매도(만쥬 §5-2). ratio 가 0 이면 완전히 꺼진 상태 = 기존(전량) 동작.
+        self._partial_ratio = float(partial_exit_ratio)
+        self._partial_gain = partial_exit_gain
+        self._partial_after_s = partial_exit_after_s
         self._notice = notice or (lambda _s: None)
         self.positions: list[LivePosition] = []
         self.history: list[LivePosition] = []
+
+    # ----- 국면별 비중(만쥬 §8-1) -------------------------------------------
+
+    def set_size_multiplier(self, mult: float) -> None:
+        """국면 배수를 갱신한다. 다음 진입부터 적용되고, 보유분은 건드리지 않는다."""
+        self.size_multiplier = max(0.0, float(mult))
+
+    def effective_qty(self) -> int:
+        """이번 진입에 낼 수량. 0 이면 **진입 금지**(만쥬 §8-1 극침체 = 매매를 쉰다).
+
+        1주 × 0.3 = 0주가 되면 배수가 곧 '매매 중단'이 되어 버린다. 만쥬는 침체장에
+        "몸을 사리고 관망"(비중 축소)이라 했지 "매매 금지"라 하지 않았고, 금지는
+        극침체(배수 0)에만 붙였다. 그래서 **진입하는 이상 최소 1주**를 유지하고,
+        배수가 정확히 0일 때만 진입 자체를 막는다. 청산 경로는 이 함수를 안 지나므로
+        배수가 0이어도 들고 있는 건 정상적으로 팔린다.
+        """
+        if self.size_multiplier <= _EPS:
+            return 0
+        return max(1, round(self._qty * self.size_multiplier))
 
     # ----- 조회 --------------------------------------------------------------
 
@@ -123,10 +164,16 @@ class OrderExecutor:
         if self._active_for(code) is not None:
             self._notice(f"[주문] dedup — {alert.follower_name or code} 이미 활성 포지션, 매수 생략")
             return None
+        qty = self.effective_qty()
+        if qty <= 0:
+            self._notice(
+                f"[주문] 국면차단(배수 0) — {alert.follower_name or code} 신규 진입 없음"
+            )
+            return None
         entry = round(alert.entry)
         try:
             result = self._client.buy_limit(
-                code, self._qty, entry, live=self._live, ref_price=alert.price
+                code, qty, entry, live=self._live, ref_price=alert.price
             )
         except Exception as exc:  # noqa: BLE001 — N-2: 매수 거부로 프로세스 크래시 금지
             self._notice(
@@ -137,7 +184,8 @@ class OrderExecutor:
         pos = LivePosition(
             code=code,
             name=alert.follower_name or code,
-            qty=self._qty,
+            qty=qty,
+            qty_initial=qty,
             entry=entry,
             take_profit=alert.take_profit,
             stop_loss=alert.stop_loss,
@@ -214,6 +262,8 @@ class OrderExecutor:
         elif ts >= pos.exit_ts:
             reason = "시간청산"
         if reason is None:
+            # 전량 청산 사유가 하나도 안 걸린 뒤에만 1차 분할을 본다(만쥬 §5-2).
+            self._maybe_partial(pos, ts, price)
             return False
         # N-1/N-2/C-1: 매도는 **접수**까지만. 접수 성공이면 selling 으로 두고 계속 틱을
         # 먹여 체결을 확인한다. 차단·거부·예외면 filled 로 남아 다음 틱에 재시도.
@@ -228,6 +278,13 @@ class OrderExecutor:
         집계한다. 하락 중 손절 지정가는 정확히 안 붙는 구간이라 실제로 자주 일어난다.
         """
         if self._check_sell_fill(pos, price):
+            if 0 < pos.sell_qty < pos.qty:
+                # 분할 체결 — 포지션은 **끝나지 않았다**. 잔량을 그대로 감시로 되돌린다.
+                # 잔량의 청산규칙은 **다음 틱**부터 다시 돈다(이 틱은 여기서 끝난다).
+                # 한 틱 지연을 감수하는 이유: 같은 틱에서 곧바로 전량 매도를 이어 내면
+                # 방금 취소·재호가 경로와 뒤엉켜 이중 매도 위험이 생긴다.
+                self._settle_partial(pos)
+                return False
             pos.status = "exited"
             self._notice(
                 f"[주문] 청산체결({pos.exit_reason}) — {pos.name}({pos.code}) "
@@ -246,8 +303,10 @@ class OrderExecutor:
                     f"({pos.exit_reason}) · 수동 확인 필요. 포지션은 계속 감시한다."
                 )
             return False
-        # 추격: 기존 매도 취소 → 현재가로 재호가.
-        if not self._try_cancel(pos, "청산재호가", ord_no=pos.sell_ord_no):
+        # 추격: 기존 매도 취소 → 현재가로 재호가. 수량은 **접수했던 그 수량** 그대로다
+        # (분할이면 분할분). 여기서 전량으로 바꾸면 분할 의도가 조용히 뒤집힌다.
+        chase_qty = pos.sell_qty or pos.qty
+        if not self._try_cancel(pos, "청산재호가", ord_no=pos.sell_ord_no, qty=chase_qty):
             # 취소 실패 — 이중 매도가 나가면 무보유 매도가 되므로 재발주하지 않는다.
             # 다음 타임아웃에 재시도.
             pos.sell_deadline = ts + timedelta(seconds=self._unfilled_timeout)
@@ -262,8 +321,61 @@ class OrderExecutor:
         # 재발주가 실패해도 filled 로 남아 다음 틱에 청산규칙이 다시 돈다(무감시 방지).
         pos.status = "filled"
         pos.sell_ord_no = None
-        self._sell(pos, ts, new_price, pos.exit_reason)
+        self._sell(pos, ts, new_price, pos.exit_reason, qty=chase_qty)
         return False
+
+    # ----- 분할 매도(만쥬 §5-2) ---------------------------------------------
+
+    def _settle_partial(self, pos: LivePosition) -> None:
+        """분할 매도 체결 정산 — 보유 수량을 줄이고 감시 상태(filled)로 되돌린다."""
+        sold = pos.sell_qty
+        pos.qty -= sold
+        pos.partial_done = True
+        pos.partial_qty += sold
+        pos.partial_price = pos.sell_price
+        pos.partial_reason = pos.exit_reason
+        self._notice(
+            f"[주문] 분할체결({pos.exit_reason}) — {pos.name}({pos.code}) "
+            f"{sold}주 @ {(pos.sell_price or 0):,} · 잔량 {pos.qty}주 계속 감시"
+        )
+        # 매도 상태를 완전히 비운다. 안 비우면 잔량 청산 때 옛 주문번호로 취소를 걸거나
+        # 옛 접수 수량으로 체결확인을 해 수량이 어긋난다.
+        pos.status = "filled"
+        pos.exit_reason = ""
+        pos.sell_ord_no = None
+        pos.sell_price = None
+        pos.sell_qty = 0
+        pos.sell_deadline = None
+        pos.sell_chases = 0
+        pos.chase_alerted = False
+
+    def _maybe_partial(self, pos: LivePosition, ts: datetime, price: float) -> bool:
+        """1차 분할 매도를 접수한다(만쥬 §5-2 "분할 또는 전량 매도"). 접수했으면 True.
+
+        **분할 대상은 익절·시간청산 계열뿐이다.** 대장이탈·손절·재난선은 §5-3 이
+        "손익 무관 **전량**"이라 쪼개지 않는다 — 매수 근거가 사라졌는데 절반을 들고
+        있는 건 그 규칙의 정반대다. 그래서 방아쇠는 (a) 수익률 도달, (b) 체결 후
+        경과시간 둘뿐이고, 전량 사유가 걸린 틱에서는 호출되지 않는다.
+
+        1주는 쪼갤 수 없다. ``int(qty*ratio)`` 가 1 미만이거나 전량이면 분할을 **하지
+        않고** 기존 전량 경로에 맡긴다 — 억지로 반올림해 전량을 내보내면 설정이
+        의도치 않게 조기 전량청산으로 둔갑한다.
+        """
+        if pos.partial_done or not (_EPS < self._partial_ratio < 1.0 - _EPS):
+            return False
+        pqty = int(pos.qty * self._partial_ratio)
+        if pqty < 1 or pqty >= pos.qty:
+            return False
+        reason = ""
+        if (self._partial_gain is not None
+                and price >= pos.entry * (1.0 + self._partial_gain) - _EPS):
+            reason = "분할익절"
+        elif (self._partial_after_s is not None and pos.fill_ts is not None
+                and (ts - pos.fill_ts).total_seconds() >= self._partial_after_s):
+            reason = "분할시간청산"
+        if not reason:
+            return False
+        return self._sell(pos, ts, round(price), reason, qty=pqty)
 
     def _check_fill(self, pos: LivePosition, ts: datetime, price: float) -> bool:
         """대기 매수가 체결됐는지. live 는 미체결조회, dry 는 틱 관통 근사."""
@@ -292,8 +404,11 @@ class OrderExecutor:
 
         live 에서 :meth:`KiwoomOrderClient.is_filled` 를 그대로 쓰면 **뜻이 뒤집힌다** —
         그 메서드는 '잔고에 있으면 True(매수 체결)' 라, 매도에 쓰면 아직 보유 중인
-        포지션을 청산 완료로 찍는다(= C-1 그 자체). 그래서 매도는 잔고에서 **사라졌는지**
-        로 판정한다. 조회 예외는 매수 경로와 같은 원칙으로 '체결 아님'(fail-safe).
+        포지션을 청산 완료로 찍는다(= C-1 그 자체). 그래서 매도는 잔고 수량이
+        **접수 후 잔여 수량까지 줄었는지**로 판정한다. 전량 매도면 잔여가 0이라
+        기존의 '잔고에서 사라짐'과 완전히 같고, 분할 매도면 남아야 할 만큼만 남았는지를
+        본다 — 여기서 '0인가'만 보면 분할 체결이 영영 미체결로 읽혀 무한 추격이 된다.
+        조회 예외는 매수 경로와 같은 원칙으로 '체결 아님'(fail-safe).
         """
         if pos.sell_price is None:
             return False
@@ -309,18 +424,20 @@ class OrderExecutor:
                 rows = holdings()
             except Exception:  # noqa: BLE001 — 조회 실패를 체결로 단정하지 않는다
                 return False
+            expect_left = max(0, pos.qty - (pos.sell_qty or pos.qty))
             for h in rows:
                 try:
-                    if h["code"] == pos.code and int(h.get("qty") or 0) > 0:
-                        return False      # 아직 보유 → 미체결
+                    if h["code"] == pos.code and int(h.get("qty") or 0) > expect_left:
+                        return False      # 아직 접수분이 안 빠짐 → 미체결
                 except (KeyError, TypeError, ValueError):
                     return False          # 응답이 이상하면 체결 단정 안 함
-            return True                   # 잔고에서 사라짐 → 매도 체결
+            return True                   # 잔여 수량까지 줄었다 → 매도 체결
         # dry-run 근사 — 매수와 대칭. 매도 지정가는 가격이 그 **위로** 가야 붙는다.
         return (price > pos.sell_price + _EPS if self._fill_basis == "through"
                 else price >= pos.sell_price - _EPS)
 
-    def _sell(self, pos: LivePosition, ts: datetime, price: int, reason: str) -> bool:
+    def _sell(self, pos: LivePosition, ts: datetime, price: int, reason: str,
+              *, qty: int | None = None) -> bool:
         """청산 매도를 **접수**한다. 접수 성공 시 True(selling), 미성사 시 False(filled 유지).
 
         N-1: ``result.blocked``/실패를 확인하지 않고 무조건 '청산완료(exited)' 로
@@ -330,9 +447,10 @@ class OrderExecutor:
         N-2: 발주 거부는 어댑터에서 예외(KiwoomError)로 튄다 → 여기서 잡아 루프를
         살리고 포지션을 open 으로 유지, 다음 틱에 재시도한다.
         """
+        sell_qty = pos.qty if qty is None else max(1, min(int(qty), pos.qty))
         try:
             result = self._client.sell_limit(
-                pos.code, pos.qty, price, live=self._live, ref_price=price
+                pos.code, sell_qty, price, live=self._live, ref_price=price
             )
         except Exception as exc:  # noqa: BLE001 — 거부·네트워크 어떤 예외든 크래시 금지
             self._notice(
@@ -351,14 +469,17 @@ class OrderExecutor:
         pos.exit_reason = reason
         pos.sell_ord_no = result.ord_no
         pos.sell_price = price
+        pos.sell_qty = sell_qty
         pos.sell_deadline = ts + timedelta(seconds=self._unfilled_timeout)
+        tag = f"{sell_qty}/{pos.qty}주" if sell_qty < pos.qty else f"{pos.qty}주"
         self._notice(
-            f"[주문] 청산주문({reason}) — {pos.name}({pos.code}) {pos.qty}주 @ {price:,} "
+            f"[주문] 청산주문({reason}) — {pos.name}({pos.code}) {tag} @ {price:,} "
             f"· 체결확인 대기"
         )
         return True
 
-    def _try_cancel(self, pos: LivePosition, reason: str, *, ord_no: str | None = None) -> bool:
+    def _try_cancel(self, pos: LivePosition, reason: str, *, ord_no: str | None = None,
+                    qty: int | None = None) -> bool:
         """주문 취소를 시도한다. 성공 시 True, 실패 시 False(호출부가 유지·재시도 판단).
 
         N-2: 거부·예외를 잡아 크래시를 막는다.
@@ -371,8 +492,10 @@ class OrderExecutor:
         오판되지 않는다.)
         """
         target = ord_no if ord_no is not None else pos.buy_ord_no
+        # 분할 매도를 취소할 때는 보유 수량이 아니라 **접수한 수량**을 넘겨야 한다.
+        cancel_qty = pos.qty if qty is None else int(qty)
         try:
-            result = self._client.cancel(target or "", pos.code, pos.qty, live=self._live)
+            result = self._client.cancel(target or "", pos.code, cancel_qty, live=self._live)
         except Exception as exc:  # noqa: BLE001 — 취소 거부로 프로세스 크래시 금지
             self._notice(
                 f"[주문][경보] 취소 실패(예외·{reason}) — {pos.name}({pos.code}): {exc} · "
@@ -491,10 +614,13 @@ class OrderExecutor:
                         f"주문 잔존 · 수동 확인 필요"
                     )
                     continue
-                if not self._try_cancel(pos, "마감재호가", ord_no=pos.sell_ord_no):
+                if not self._try_cancel(pos, "마감재호가", ord_no=pos.sell_ord_no,
+                                        qty=pos.sell_qty or pos.qty):
                     continue
                 pos.status = "filled"
                 pos.sell_ord_no = None
+                pos.sell_qty = 0
+                # 마감은 전량이다 — 분할 접수분만 재호가하면 잔량이 오버나이트로 넘어간다.
                 self._sell(pos, now, round(pos.last_price), "마감청산")
 
     def summary(self) -> str:
