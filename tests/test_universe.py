@@ -305,3 +305,52 @@ def test_stale_sectors_flags_overused_themes():
     assert stale_sectors(counts, max_limitups=5) == {"전기/전자"}
     assert stale_sectors(counts, max_limitups=0) == set()      # 0 = 필터 끔
     assert stale_sectors(counts, max_limitups=2) == {"전기/전자", "제약"}
+
+
+# ----- 만쥬 §2-1 재료 — DART 공시를 재료 신호로 -------------------------------
+
+def test_material_score_ranks_strong_catalysts_higher():
+    """재료 유형마다 무게가 다르다 — 만쥬 §2-1 "명확한 재료 및 미래 가치".
+
+    "단순 수급뿐만 아니라 시장의 관심을 지속시킬 강력한 스토리"를 요구한다.
+    공급계약·기술 인허가·시설투자는 미래 실적으로 이어지는 이야기가 되고,
+    정기보고·행정은 그런 이야기가 아니다. 악재는 반대 방향이다.
+    """
+    from scalp_it.universe import material_score
+
+    assert material_score(["공급계약"]) > material_score(["정기보고"])
+    assert material_score(["기술_인허가"]) > material_score(["지분변동"])
+    assert material_score(["악재"]) < 0, "악재는 재료가 아니라 감점이다"
+    assert material_score([]) == 0.0
+    # 여러 건이면 쌓이되 한 종목이 목록을 독식하지 않게 상한이 있어야 한다
+    many = material_score(["공급계약"] * 10)
+    assert many <= material_score(["공급계약"]) * 4
+
+
+def test_recent_materials_groups_by_code():
+    """공시 레코드를 종목별 재료 유형 목록으로 접는다."""
+    from scalp_it.universe import group_materials
+
+    rows = [("100000", "공급계약"), ("100000", "실적"), ("200000", "악재")]
+    got = group_materials(rows)
+    assert got["100000"] == ["공급계약", "실적"]
+    assert got["200000"] == ["악재"]
+
+
+def test_score_rewards_material_when_supplied():
+    """재료가 있으면 점수가 오른다 — 만쥬 3대 요건의 세 번째(§2-1).
+
+    거래대금·변동성만으로 고르면 "수급은 있는데 이야기가 없는" 종목이 올라온다.
+    만쥬는 그걸 주도주로 안 본다.
+    """
+    from scalp_it.universe import Candidate, UniverseConfig, _score
+
+    cand = Candidate(code="100000", name="테스트", sector="전기/전자", market="코스닥",
+                     prev_close=10_000, trade_value_eok=300.0, range_pct=12.0,
+                     last_range_pct=12.0, surge_days=1, limitup_days=0,
+                     avg_fill_won=1e6)
+    cfg = UniverseConfig(weight_material=0.5)
+    plain = _score(cand, cfg, material=0.0)
+    strong = _score(cand, cfg, material=1.0)      # 공급계약 수준
+    bad = _score(cand, cfg, material=-1.0)        # 악재
+    assert strong > plain > bad

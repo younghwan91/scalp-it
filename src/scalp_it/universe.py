@@ -43,6 +43,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from itertools import pairwise
+from pathlib import Path
 from typing import Any
 
 __all__ = [
@@ -115,6 +116,10 @@ class UniverseConfig:
     §2-1 이 거래대금을 '가장 우선시되는 기준'이라 못 박았기 때문이다."""
 
     weight_limitup: float = 0.2
+    #: 재료 가중치(만쥬 §2-1 3대 요건의 세 번째). 거래대금·변동성만으로 고르면
+    #: "수급은 있는데 이야기가 없는" 종목이 올라온다 — 만쥬는 그걸 주도주로 안 본다.
+    #: 재료는 DART 공시에서 온다(뉴스 크롤러 금지 정책, docs/research/manju/17).
+    weight_material: float = 0.5
     """lookback 상한가 일수당 가산. 테마 대장 이력의 대용."""
 
 
@@ -247,21 +252,25 @@ def build_candidates(
     return out
 
 
-def _score(cand: Candidate, cfg: UniverseConfig) -> float:
-    """거래대금이 주항, 변동성·상한가 이력이 보조항(§2-1 의 우선순위 그대로)."""
+def _score(cand: Candidate, cfg: UniverseConfig, *, material: float = 0.0) -> float:
+    """거래대금이 주항, 변동성·상한가 이력·재료가 보조항(§2-1 의 우선순위 그대로)."""
     turnover_term = math.log10(max(cand.trade_value_eok, 1.0))
     vol_term = cfg.weight_volatility * (min(cand.range_pct, 30.0) / 10.0)
     limitup_term = cfg.weight_limitup * cand.limitup_days
-    return turnover_term + vol_term + limitup_term
+    material_term = cfg.weight_material * material
+    return turnover_term + vol_term + limitup_term + material_term
 
 
 def rank_candidates(
     candidates: Iterable[Candidate],
     config: UniverseConfig | None = None,
+    materials: Mapping[str, Sequence[str]] | None = None,
 ) -> list[Candidate]:
     """필터를 통과한 후보에 점수를 매겨 내림차순으로 돌려준다.
 
     `pinned` 는 필터를 우회하되 점수는 그대로 계산한다(선정 단계에서 먼저 들어간다).
+    `materials` 는 종목별 최근 재료 유형 목록(만쥬 §2-1). 안 주면 재료항은 0 이다 —
+    있으면 쓰고 없으면 기존대로 도는 게 규약이다(재료 DB 가 없어도 기동해야 한다).
     """
     cfg = config or UniverseConfig()
     pinned = set(cfg.pinned)
@@ -279,7 +288,9 @@ def rank_candidates(
                 continue
             if cand.surge_days < cfg.min_surge_days:
                 continue
-        scored.append(replace(cand, score=_score(cand, cfg), pinned=is_pinned))
+        mat = material_score((materials or {}).get(cand.code, ()))
+        scored.append(replace(cand, score=_score(cand, cfg, material=mat),
+                              pinned=is_pinned))
     scored.sort(key=lambda c: (-c.score, c.code))
     return scored
 
@@ -455,6 +466,7 @@ def build_universe(
     conn: Any,
     asof: date | str,
     config: UniverseConfig | None = None,
+    materials: Mapping[str, Sequence[str]] | None = None,
 ) -> Universe:
     """DB → 후보 → 랭킹 → 선정. 장전에 이 함수 하나만 부르면 된다.
 
@@ -466,7 +478,7 @@ def build_universe(
     if bars:
         asof_date = max(b.day for b in bars)
     cands = build_candidates(bars, asof_date, cfg)
-    return select_universe(rank_candidates(cands, cfg), asof_date, cfg)
+    return select_universe(rank_candidates(cands, cfg, materials), asof_date, cfg)
 
 # ---------------------------------------------- 만쥬 §4-5 신규상장 · §5-5 신선도
 
@@ -554,4 +566,81 @@ def fetch_sector_limitups(conn: Any, asof: date | str, *, days: int = 10,
         [market, sessions[0], sessions[-1], sessions[1]],
     )
     return {str(sec or UNSECTORED): int(n) for sec, n in cur.fetchall()}
+
+# ------------------------------------------------ 만쥬 §2-1 재료 — DART 공시 기반
+
+#: 재료 유형별 무게. 만쥬 원문(§2-1)은 "단순 수급뿐 아니라 **시장의 관심을 지속시킬
+#: 강력한 스토리**"를 요구한다 — 공급계약·기술 인허가·시설투자는 미래 실적으로 이어지는
+#: 이야기가 되고, 정기보고·행정은 그런 이야기가 아니다. 악재는 반대 방향이라 감점이다.
+#:
+#: 뉴스가 아니라 공시를 쓰는 이유: `docs/research/manju/17` 이 "1년치 종목 뉴스를
+#: 프로그램으로 합법 확보할 경로는 없다"고 결론짓고 **크롤러를 새로 짜지 않는다**는
+#: 정책을 세웠다(ToS·저작권). 같은 문서가 지목한 현실 경로가 DART 공시 원문이다.
+#: 공시는 재료의 1차 소스이고 제목이 법정 양식이라 규칙만으로 분류된다(LLM 불필요).
+MATERIAL_WEIGHTS: dict[str, float] = {
+    "공급계약": 1.0,        # 수주 = 가장 직접적인 미래 실적
+    "기술_인허가": 1.0,     # 특허·임상·품목허가 — 스토리가 길게 간다
+    "시설투자": 0.7,
+    "실적": 0.6,
+    "구조조정": 0.4,
+    "재량공시": 0.3,
+    "주주환원": 0.3,
+    "자본조달": 0.1,        # 증자는 재료이기도 악재이기도 하다 — 거의 중립
+    "지분변동": 0.1,
+    "내부자": 0.0,
+    "정기보고": 0.0,
+    "행정": 0.0,
+    "기타": 0.0,
+    "악재": -1.0,           # 감점. 재료가 아니라 반대다
+}
+
+#: 한 종목이 공시 여러 건으로 목록을 독식하지 못하게 하는 상한(가중치 합의 배수).
+_MATERIAL_CAP = 3.0
+
+
+def material_score(material_types: Sequence[str]) -> float:
+    """재료 유형 목록 → 점수. 강한 재료는 쌓이되 상한이 있다."""
+    if not material_types:
+        return 0.0
+    total = sum(MATERIAL_WEIGHTS.get(str(t), 0.0) for t in material_types)
+    best = max((MATERIAL_WEIGHTS.get(str(t), 0.0) for t in material_types), default=0.0)
+    if best <= 0:
+        return total          # 악재만 있으면 그대로 감점
+    return min(total, best * _MATERIAL_CAP)
+
+
+def group_materials(rows: Iterable[tuple[str, str]]) -> dict[str, list[str]]:
+    """``(코드, 재료유형)`` 행들을 종목별 목록으로 접는다."""
+    out: dict[str, list[str]] = defaultdict(list)
+    for code, mtype in rows:
+        if code and mtype:
+            out[str(code)].append(str(mtype))
+    return dict(out)
+
+
+def fetch_recent_materials(db_path: str, *, since: date | str,
+                           until: date | str | None = None) -> dict[str, list[str]]:
+    """DART sqlite 에서 최근 공시를 종목별 재료 유형 목록으로.
+
+    `rcept_dt` 는 ``YYYYMMDD`` 문자열이다. 파일이 없거나 읽기 실패면 빈 dict —
+    재료를 못 읽는다고 기동을 막지는 않는다(만쥬 3대 요건 중 하나가 빠질 뿐이다).
+    """
+    import sqlite3
+
+    p = Path(db_path)
+    if not p.exists():
+        return {}
+    lo = (since if isinstance(since, str) else since.isoformat()).replace("-", "")
+    hi = until or date.today()  # noqa: DTZ011 — KST naive, 프로젝트 표준
+    hi = (hi if isinstance(hi, str) else hi.isoformat()).replace("-", "")
+    try:
+        with sqlite3.connect(f"file:{p}?mode=ro", uri=True) as conn:
+            rows = conn.execute(
+                "select code, material_type from disclosures "
+                "where rcept_dt >= ? and rcept_dt <= ? and code is not null",
+                (lo, hi),
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    return group_materials(rows)
 

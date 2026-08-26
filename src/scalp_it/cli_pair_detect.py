@@ -241,8 +241,23 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
             if pinned:
                 print(f"# 신규상장 편입 {len(pinned)}종목(최근 {args.new_listing_days}일): "
                       f"{', '.join(pinned)}", file=sys.stderr)
+        # 만쥬 §2-1 3대 요건의 세 번째 — "명확한 재료 및 미래 가치". 거래대금·변동성만
+        # 보면 "수급은 있는데 이야기가 없는" 종목이 올라온다. 재료는 DART 공시에서
+        # 온다(뉴스 크롤러 금지 정책, docs/research/manju/17 — ToS·저작권).
+        materials: dict[str, list[str]] = {}
+        if args.material_days > 0:
+            from datetime import timedelta
+
+            from .universe import fetch_recent_materials
+
+            materials = fetch_recent_materials(
+                args.dart_db, since=prev - timedelta(days=args.material_days), until=prev)
+            print(f"# 재료 공시 {len(materials)}종목(최근 {args.material_days}일, "
+                  f"{args.dart_db})", file=sys.stderr)
         uni = build_universe(conn, prev,
-                             UniverseConfig(limit=args.universe_size, pinned=pinned))
+                             UniverseConfig(limit=args.universe_size, pinned=pinned,
+                                            weight_material=args.material_weight),
+                             materials)
         if not uni.codes:
             print("[경고] 유니버스가 비었다 — 고정 쌍으로 폴백", file=sys.stderr)
             return {}
@@ -731,6 +746,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--big-trades", type=int, default=None,
                    help="대장에 필요한 대량체결(기본 5천만원↑) 최소 건수 — 만쥬 §5-1 "
                         "순간 체결량 확인. 0 = 끔")
+    p.add_argument("--dart-db", default="data/dart.db",
+                   help="재료 판정에 쓸 DART 공시 sqlite. 없으면 재료항 없이 돈다")
+    p.add_argument("--material-days", type=int, default=5,
+                   help="최근 N일 공시를 재료로 본다(만쥬 §2-1). 0 = 끔")
+    p.add_argument("--material-weight", type=float, default=0.5,
+                   help="유니버스 점수의 재료 가중치. 0 = 재료 무시")
     p.add_argument("--new-listing-days", type=int, default=5,
                    help="최근 N일 내 상장 종목을 유니버스에 무조건 편입(만쥬 §4-5). 0 = 끔")
     p.add_argument("--stale-sector-days", type=int, default=10,
