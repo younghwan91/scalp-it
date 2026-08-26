@@ -33,6 +33,7 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Iterable
 from datetime import date, datetime
 from datetime import time as dtime
 from pathlib import Path
@@ -596,7 +597,8 @@ def _feed(detector: PairDetector, bus: AlertBus, rows: list[tuple],
 
 
 def build_order_executor(
-    args: argparse.Namespace, pairs: list[Pair], *, client: Any | None = None
+    args: argparse.Namespace, pairs: list[Pair], *, client: Any | None = None,
+    universe: Iterable[str] = (),
 ) -> OrderExecutor | None:
     """``--live-order`` 일 때만 실계좌 주문 실행기를 만든다.
 
@@ -614,7 +616,13 @@ def build_order_executor(
         OrderGuardConfig,
     )
 
-    whitelist = frozenset(p.follower for p in pairs)  # 등록 쌍 후속주만 허용
+    # 주문 화이트리스트 — **후속주가 될 수 있는 종목 전부**여야 한다.
+    # 만쥬는 고정 쌍을 안 쓴다. 후속주는 장중에 "대장과 같은 테마 등락률 2·3등"으로
+    # 정해지므로, 등록 쌍만 허용하면 동적 모드에서 화이트리스트가 비어 **모든 주문이
+    # 차단된다**(고정 쌍을 지우자 실제로 0종목이 됐다). 그날 유니버스를 합친다 —
+    # 감지기가 후속주로 고를 수 있는 범위와 정확히 같은 집합이다.
+    whitelist = frozenset(p.follower for p in pairs) | frozenset(
+        str(c) for c in universe if c)
     guard = OrderGuardConfig(
         max_qty=args.qty,
         price_band_pct=args.order_band_pct,
@@ -1141,7 +1149,9 @@ def main(argv: list[str] | None = None) -> int:
     detector = PairDetector(pairs, build_config(args), **uni)
     guard = build_guard(args)
     # 주문 실행기 — 리플레이(과거 재현)에선 절대 만들지 않는다.
-    executor = None if args.replay else build_order_executor(args, pairs)
+    executor = (None if args.replay
+                else build_order_executor(args, pairs,
+                                          universe=uni.get("universe") or ()))
 
     # 소켓 직결 모드 — DB 폴링을 안 거친다(저장은 collector 가 담당).
     if args.live:

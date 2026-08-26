@@ -71,6 +71,10 @@ while [ "$(date +%s)" -lt "$END" ]; do
   #                      2등주 시장가 청산." 종전 3억은 우리 임의값이라 너무 굼떴다.
   # 매도 폭탄(§5-4 "프로그램 매도 폭탄이 쏟아져 막히면") — 분당 매도 체결대금 실측
   #   중앙 3,887만 / 95% 9.7억 / 99% 112억. 10초 창에서 3억이면 상위권 투매다.
+  #   --position-notional 10000000 — 만쥬 "사전 세팅된 (비공개 회신 — 공개본에서 뺐다) 기본값 10만원은 만쥬의
+  #                      1/100 이라 가상 손익도 낙폭 문턱도 만쥬 크기가 아니었다.
+  #                      (--qty 는 **실주문** 안전캡이라 그대로 1주. --confirm-real 이
+  #                      없어 실주문은 0건이고, 가상 회계는 이 명목으로 돈다.)
   #   --big-trades 2 — 만쥬 원문은 "5천만 원 이상 (비공개 회신 — 공개본에서 뺐다) 종전 1건은 "연속"이 아니다.
   #   --drawdown-krw 100000 — 만쥬 "과거 정점 대비 계좌가 꺾일 때 예수금을 1/3~1/5로
   #                      축소". 절대액을 안 줘서 만쥬가 준 다른 수치에서 유도했다:
@@ -89,6 +93,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --follower-priority manju --stale-sector-limitups 3 --stale-sector-days 10 \
     --partial-exit 0.5 --partial-exit-gain 0.03 \
     --universe-size 45 --max-roundtrip-bp 20 --order-krw 10000000 \
+    --position-notional 10000000 \
     --lock-min-krw 300000000 --lock-wall-decay 0.7 \
     --dump-krw 100000000 --big-trades 2 --drawdown-krw 100000 \
     --new-listing-days 5 \
