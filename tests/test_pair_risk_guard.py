@@ -715,3 +715,31 @@ def test_partial_logged_as_its_own_event(tmp_path):
     assert events[0] == "partial" and events[-1] == "close"
     assert lines[0]["partial_ratio"] == 0.5
     assert lines[-1]["remaining"] == 0.5
+
+
+# ----- 만쥬 §9-6 일일 이익 후 절제 --------------------------------------------
+
+def test_daily_profit_target_shrinks_size_not_stops_exits():
+    """일일 이익 목표에 닿으면 이후 진입 비중을 줄인다 — 만쥬 §9-6.
+
+    원문: "오전에 큰 수익을 낸 뒤 오후에 흥분해 무리하게 베팅하다 수익을 전부 날리는
+    패턴을 **가장 경계**" / "오전에 목표 이상 수익 시 오후장 목표치를 대폭 낮추고
+    **소액 비중으로만** 접근". 손실 킬스위치의 거울상이다 — 그쪽은 멈추고, 이쪽은 줄인다.
+    """
+    g = _guard(daily_profit_target=10_000.0, profit_size_multiplier=0.3)
+    assert not g.profit_capped
+    g.realized_krw = 12_000.0
+    g._refresh_kill()
+    assert g.profit_capped, "이익 목표를 넘겼는데 절제가 안 걸렸다"
+    # 킬스위치가 아니다 — 매매는 계속되고 비중만 줄어든다.
+    assert not g.killed
+    assert g.effective_notional() < g.config.position_notional
+
+
+def test_daily_profit_target_off_by_default():
+    """기본은 꺼짐 — 기존 동작 보존."""
+    g = _guard()
+    g.realized_krw = 1_000_000.0
+    g._refresh_kill()
+    assert not g.profit_capped
+    assert g.effective_notional() == g.config.position_notional

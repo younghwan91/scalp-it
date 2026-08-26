@@ -124,6 +124,12 @@ class RiskGuardConfig:
     # import 하지 않는 건 그 모듈이 DB 를 알기 때문이다(이 모듈은 DB·시계 무지가 규약).
     # 배선은 CLI 몫이고, 장중 국면이 바뀌면 :meth:`RiskGuard.set_size_multiplier` 로 갱신.
     size_multiplier: float = 1.0
+    # 만쥬 §9-6 — 손실 킬스위치의 거울상. 오전에 목표 이상 벌면 오후엔 비중을 줄인다.
+    #   원문: "오전에 큰 수익을 낸 뒤 오후에 흥분해 무리하게 베팅하다 수익을 전부
+    #   날리는 패턴을 **가장 경계**" / "목표치를 대폭 낮추고 소액 비중으로만 접근".
+    #   멈추는 게 아니라 **줄이는** 것이다 — 그래서 킬스위치가 아니라 배수로 만든다.
+    daily_profit_target: float = 0.0           # 일일 이익 목표(원). 0 = 끔
+    profit_size_multiplier: float = 0.3        # 목표 도달 후 곱할 배수
     # 분할 매도(만쥬 §5-2 "탄력이 충분히 나온 시점에 **분할 또는 전량** 매도").
     # 1차로 ``partial_exit_ratio`` 만큼 덜어내고 잔량은 기존 규칙(익절/손절/재난선/
     # 대장이탈/시간청산) 그대로 굴린다. ratio 가 0 이면 완전히 꺼진 상태 = 기존 동작.
@@ -262,6 +268,7 @@ class RiskGuard:
         self.config = config or RiskGuardConfig()
         # 국면 배수는 장중에 바뀔 수 있어 config(frozen) 밖에 둔다. 초기값은 설정에서.
         self.size_multiplier: float = float(self.config.size_multiplier)
+        self.profit_capped: bool = False      # 일일 이익 목표 도달(만쥬 §9-6)
         self.day: date | None = None
         self.realized_krw: float = 0.0        # 당일 누적 실현손익(원)
         self.consecutive_losses: int = 0
@@ -277,6 +284,17 @@ class RiskGuard:
         self.shadow_positions: list[Position] = []
         self.closed_shadows: list[Position] = []
         self._on_close = None                 # 콜백(Position) — 로깅용
+
+    def effective_notional(self) -> float:
+        """지금 열 포지션의 명목(원) = 기본 × 국면배수 × (이익목표 도달 시 절제배수).
+
+        만쥬 §8-1(국면별 비중)과 §9-6(오전 수익 뒤 오후 축소)이 곱으로 겹친다.
+        둘 다 "덜 걸어라"라 방향이 같으므로 곱하는 게 자연스럽다.
+        """
+        mult = self.size_multiplier
+        if self.profit_capped:
+            mult *= max(0.0, float(self.config.profit_size_multiplier))
+        return self.config.position_notional * mult
 
     def set_size_multiplier(self, mult: float) -> None:
         """국면 배수를 갱신한다(만쥬 §8-1). CLI 가 ``market_regime`` 판정을 주입한다.
@@ -301,6 +319,7 @@ class RiskGuard:
             # 날짜 변경 → 카운터·킬 리셋. 전날 미청산 포지션은 버린다.
             self.day = d
             self.realized_krw = 0.0
+            self.profit_capped = False
             self.consecutive_losses = 0
             self.wins = 0
             self.losses = 0
@@ -317,10 +336,17 @@ class RiskGuard:
         return bool(sf) and Path(sf).exists()
 
     def _refresh_kill(self) -> None:
-        """현재 상태로 킬 여부 갱신(수동 정지·손실한도·연속손절)."""
+        """현재 상태로 킬 여부·이익절제 갱신(수동 정지·손실한도·연속손절·이익목표)."""
+        cfg = self.config
+        # 이익 목표는 **킬이 아니다** — 매매를 멈추지 않고 비중만 줄인다(§9-6).
+        if cfg.daily_profit_target > 0 and self.realized_krw >= cfg.daily_profit_target:
+            self.profit_capped = True
         if self.killed:
             return
-        cfg = self.config
+        # 이익 목표는 **킬이 아니다** — 매매를 멈추지 않고 비중만 줄인다(§9-6).
+        # 그래서 killed 판정보다 먼저, 그리고 독립적으로 갱신한다.
+        if cfg.daily_profit_target > 0 and self.realized_krw >= cfg.daily_profit_target:
+            self.profit_capped = True
         if self._stop_file_present():
             self._trigger_kill(KILL_MANUAL)
         elif (cfg.max_consecutive_losses > 0
@@ -385,7 +411,7 @@ class RiskGuard:
             stop_loss=alert.stop_loss,
             disaster_line=alert.disaster_line,
             exit_ts=alert.exit_ts,
-            notional=self.config.position_notional * self.size_multiplier,
+            notional=self.effective_notional(),
             follower_name=alert.follower_name,
             basis=basis,
             shadow=shadow,

@@ -150,6 +150,8 @@ def build_guard(args: argparse.Namespace) -> RiskGuard | None:
         cost_rate=args.cost_rate,
         leader_exit=not args.no_leader_exit,
         size_multiplier=args.size_multiplier,
+        daily_profit_target=args.daily_profit_target,
+        profit_size_multiplier=args.profit_size_multiplier,
         stop_file=(None if args.no_stop_file else args.stop_file),
     )
     return RiskGuard(cfg)
@@ -434,6 +436,8 @@ def build_order_executor(
                          fill_basis=args.fill_basis,   # 가드 회계와 같은 체결 가정
                          leader_exit=not args.no_leader_exit,
         size_multiplier=args.size_multiplier,
+        daily_profit_target=args.daily_profit_target,
+        profit_size_multiplier=args.profit_size_multiplier,
                          notice=lambda s: print(s, flush=True))
 
 
@@ -776,6 +780,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="왕복 비용률(수익률에서 차감). 기본 0.0064 = 왕복 34bp + "
                         "슬리피지 왕복 30bp(레포 기본 가정, scripts/verify_pair.py). "
                         "0 = 끔(세전)")
+    g.add_argument("--daily-profit-target", type=float, default=0.0,
+                   help="일일 이익 목표(원). 도달하면 이후 진입 비중을 줄인다 — 만쥬 "
+                        "§9-6 \"오전 수익 뒤 오후에 무리하게 베팅하는 패턴을 가장 경계\". "
+                        "멈추는 게 아니라 줄인다. 0 = 끔")
+    g.add_argument("--profit-size-multiplier", type=float, default=0.3,
+                   help="이익 목표 도달 후 곱할 비중 배수. 기본 0.3")
     g.add_argument("--size-multiplier", type=float, default=1.0,
                    help="포지션 명목에 곱하는 국면 배수(만쥬 §8-1). 활황 1.0 / 중간 0.6 "
                         "/ 침체 0.3 / 극침체 0. --size-by-regime 로 자동 결정 가능")
