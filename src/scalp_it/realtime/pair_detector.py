@@ -276,6 +276,11 @@ class DetectorConfig:
     #   전일종가를 모르는 종목은 상한가를 계산할 수 없으므로 **방아쇠 없음**(안전 스킵).
     limitup_touch: bool = False       # 현재가 ≥ 상한가
     limitup_near_pct: float = 0.0     # 상한가까지 이 비율 이내면 발동. 0.04 = 4%p. 0 = 끔
+    # 상한가까지 **남은 호가 수**로 재는 방아쇠. 만쥬가 말한 진입 시점이 이것이다 —
+    # "대장이 상한가 호가를 3개 남겨둔 3~5초 사이에 매수". 비율(`limitup_near_pct`)
+    # 로는 이 시점을 못 집는다: 0.05 는 등락률 +23%대에서 터져 만쥬보다 한참 이르고,
+    # 그만큼 상한가에 못 가는 건을 다 사게 된다. 0 = 끔.
+    limitup_near_ticks: int = 0
     # VI 방아쇠(만쥬 §5-1 "상한가 안착하거나 상한가 직전 급등·**VI에 들어가는 순간**").
     #   VI 는 +10% 에서 걸려 상한가(+30%)보다 훨씬 이르다 — 상한가만 보면 놓치는 구간이다.
     #   실시간 VI 피드(`1h`)를 구독하면 종목당 등록 단위가 2→3 이 되어 구독 가능 종목이
@@ -291,6 +296,12 @@ class DetectorConfig:
     # 진입 지정가를 현재가 위 몇 호가에 낼지. 0 = 매수호가(bid1)에 수동으로 건다.
     # 만쥬는 2~3 이다 — "현재가 기준 위 2~3호가 지정가 원클릭 주문".
     entry_ticks_up: int = 0
+    # 등락률 2~3위 후보가 여럿일 때 **무엇으로 하나를 고르는가**. 만쥬가 준 순서:
+    #   (1) 호가 두께 — 1회 주문을 1~2호가 안에서 받아줄 잔량이 깔려 있는가
+    #   (2) 당일 틱 체결 강도 — 대장이 쏠 때 매수 호가로 가장 빠르게 반응하는가
+    #   (3) 가벼운 소형주 우선(단, 호가가 얇지 않은 범위 내 — (1)이 이미 보장한다)
+    # "rank" 는 종전 동작(등락률 순서 그대로). 만쥬와 같게 하려면 "manju".
+    follower_priority: str = "rank"
     follower_rank_min: int = 2        # 후속 후보 순위 하한(1 = 대장 자리)
     follower_rank_max: int = 3        # 후속 후보 순위 상한
     # 호가 두께 — 만쥬가 **최우선**이라 한 필터(§4-1).
@@ -751,6 +762,7 @@ class PairDetector:
     def _limitup_on(self) -> bool:
         cfg = self.config
         return bool(cfg.limitup_touch or cfg.limitup_near_pct > 0
+                    or cfg.limitup_near_ticks > 0
                     or cfg.limitup_lock_secs > 0 or cfg.vi_near_pct > 0)
 
     def add_codes(self, codes: Sequence[str], *,
@@ -933,6 +945,12 @@ class PairDetector:
                 return "locked"
         if cfg.limitup_touch and price >= limit:
             return "touch"
+        # 만쥬의 진입 시점 — 상한가까지 남은 호가가 N개 이하. 호가 단위가 가격대마다
+        # 달라서 비율로는 같은 "3호가"가 종목마다 다른 지점이 된다.
+        if cfg.limitup_near_ticks > 0:
+            if price >= limit - cfg.limitup_near_ticks * tick_size(limit):
+                return "near"
+            return None
         # "20%대 중후반에서 상한가로 치고 들어가는" 구간 — 상한가까지 N% 이내.
         if cfg.limitup_near_pct > 0 and price >= limit * (1.0 - cfg.limitup_near_pct):
             return "near"
@@ -1008,14 +1026,33 @@ class PairDetector:
                 ranked.append((ret, code))
         # 등락률 내림차순, 동률은 코드 오름차순으로 고정(재현 가능한 순위).
         ranked.sort(key=lambda x: (-x[0], x[1]))
-        out: list[Pair] = []
+        picked: list[str] = []
         for rank, (_ret, code) in enumerate(ranked, start=1):
             if code == leader or rank < cfg.follower_rank_min or rank > cfg.follower_rank_max:
                 continue
-            out.append(Pair(leader=leader, follower=code,
-                            leader_name=self._names.get(leader, ""),
-                            follower_name=self._names.get(code, "")))
-        return out
+            picked.append(code)
+        if cfg.follower_priority == "manju" and len(picked) > 1:
+            picked.sort(key=lambda c: self._manju_priority(c, ts))
+        return [Pair(leader=leader, follower=code,
+                     leader_name=self._names.get(leader, ""),
+                     follower_name=self._names.get(code, "")) for code in picked]
+
+    def _manju_priority(self, code: str, ts: datetime) -> tuple[float, float, float]:
+        """만쥬가 준 2등주 서열 — 작을수록 먼저 산다.
+
+        (1) 호가 두께: 1회 주문을 왕복시키는 비용(bp)이 낮을수록 두껍다. 못 재면
+            맨 뒤로 보낸다 — 두께를 모르는 종목을 두껍다고 볼 근거가 없다.
+        (2) 틱 체결 강도: 매수체결비율이 높을수록 "매수 호가로 빠르게 반응"이다.
+        (3) 가벼운 소형주: 당일 거래대금이 작을수록 가볍다. (1)이 이미 얇은 호가를
+            걸러내므로 여기서 가벼움을 좇아도 못 팔 종목을 집지 않는다.
+        """
+        cfg = self.config
+        book = self._book.get(code)
+        bp = roundtrip_bp(book[0], book[1], cfg.order_krw) if book else None
+        ratio = self._buy_ratio(code, ts, cfg.buy_ratio_window)
+        return (bp if bp is not None else float("inf"),
+                -(ratio if ratio is not None else 0.0),
+                self._turnover.get(code, 0.0))
 
     def drain_filtered(self) -> list[FilteredSignal]:
         """필터로 버린 신호를 꺼내고 큐를 비운다(누계 ``filtered_count`` 는 유지).

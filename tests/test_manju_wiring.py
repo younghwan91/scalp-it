@@ -105,3 +105,62 @@ def test_entry_ticks_up_crosses_the_spread():
     assert cfg.entry_ticks_up * tick_size(cur) > 0
     # 진입가가 현재가보다 위여야 매도 최우선 잔량부터 즉시 체결된다.
     assert cur + cfg.entry_ticks_up * tick_size(cur) > cur
+
+
+# ----- 진입 방아쇠는 "상한가 3호가 남은 시점" ---------------------------------
+
+def test_near_ticks_fires_only_next_to_the_limit():
+    """만쥬: "대장이 상한가 호가를 3개 남겨둔 3~5초 사이에 매수"."""
+    from scalp_it.realtime.pair_detector import DetectorConfig, PairDetector, limit_up_price
+
+    prev = 10_000.0
+    limit = limit_up_price(prev)
+    d = PairDetector([], DetectorConfig(limitup_near_ticks=3), prev_close={"000001": prev})
+    kind = d._limitup_kind
+    t = tick_size(limit)
+    assert kind("000001", BASE, limit - 2 * t) == "near", "3호가 안이면 발동"
+    assert kind("000001", BASE, limit - 6 * t) is None, "멀면 발동하면 안 된다"
+
+
+def test_near_pct_would_have_fired_far_too_early():
+    """종전 비율 방아쇠(5%p)는 등락률 +23%대에서 터진다 — 만쥬 시점이 아니다."""
+    from scalp_it.realtime.pair_detector import DetectorConfig, PairDetector, limit_up_price
+
+    prev = 10_000.0
+    limit = limit_up_price(prev)
+    d = PairDetector([], DetectorConfig(limitup_near_pct=0.05), prev_close={"000001": prev})
+    far = limit * 0.96                      # 상한가에서 4% 아래 = 등락률 +25% 근처
+    assert d._limitup_kind("000001", BASE, far) == "near"
+    assert far < limit - 6 * tick_size(limit), "만쥬 기준으론 아직 살 자리가 아니다"
+
+
+# ----- 2등주 서열은 호가두께 → 틱강도 → 가벼운 소형주 --------------------------
+
+def test_follower_priority_defaults_to_rank():
+    """켜지 않은 판이 조용히 달라지면 안 된다."""
+    from scalp_it.realtime.pair_detector import DetectorConfig
+
+    assert DetectorConfig().follower_priority == "rank"
+
+
+def test_manju_priority_prefers_the_thicker_book():
+    """만쥬 1순위: "1회 주문을 1~2호가 안에서 받아줄 잔량이 깔려 있는가"."""
+    from scalp_it.realtime.pair_detector import DetectorConfig, PairDetector
+
+    d = PairDetector([], DetectorConfig(follower_priority="manju", order_krw=10_000_000))
+    thin = [(10_000.0, 1)] * 10
+    thick = [(10_000.0, 10_000)] * 10
+    d._book["THIN"] = (thin, [(10_050.0, 1)] * 10)
+    d._book["THICK"] = (thick, [(10_010.0, 10_000)] * 10)
+    order = sorted(["THIN", "THICK"], key=lambda c: d._manju_priority(c, BASE))
+    assert order[0] == "THICK"
+
+
+def test_unmeasurable_book_goes_last():
+    """두께를 모르는 종목을 두껍다고 볼 근거가 없다."""
+    from scalp_it.realtime.pair_detector import DetectorConfig, PairDetector
+
+    d = PairDetector([], DetectorConfig(follower_priority="manju", order_krw=10_000_000))
+    d._book["KNOWN"] = ([(10_000.0, 10_000)] * 10, [(10_010.0, 10_000)] * 10)
+    order = sorted(["UNKNOWN", "KNOWN"], key=lambda c: d._manju_priority(c, BASE))
+    assert order[0] == "KNOWN"

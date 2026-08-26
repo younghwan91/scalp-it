@@ -104,6 +104,10 @@ def build_config(args: argparse.Namespace) -> DetectorConfig:
         over["limitup_touch"] = True
     if args.limitup_near is not None:
         over["limitup_near_pct"] = args.limitup_near
+    if args.limitup_near_ticks:
+        over["limitup_near_ticks"] = args.limitup_near_ticks
+    if args.follower_priority != "rank":
+        over["follower_priority"] = args.follower_priority
     if args.limitup_lock is not None:
         over["limitup_lock_secs"] = args.limitup_lock
     if args.limitup_require_surge:
@@ -971,6 +975,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "0 = 매수호가에 걸고 기다린다")
     p.add_argument("--limitup-touch", action="store_true",
                    help="상한가 터치를 방아쇠로 (만쥬 §5-1)")
+    p.add_argument("--follower-priority", choices=["rank", "manju"], default="rank",
+                   help="등락률 2~3위가 여럿일 때 고르는 순서. manju = 호가두께 → "
+                        "틱 체결강도 → 가벼운 소형주(만쥬가 준 서열)")
+    p.add_argument("--limitup-near-ticks", type=int, default=0,
+                   help="상한가까지 남은 호가가 이 개수 이하면 발동 (만쥬: 3). "
+                        "켜면 --limitup-near(비율)보다 우선한다. 0 = 끔")
     p.add_argument("--limitup-near", type=float, default=None,
                    help="상한가까지 이 비율 이내면 발동 (예 0.04 = 4%%p). 0 = 끔")
     p.add_argument("--lock-min-krw", type=float, default=None,

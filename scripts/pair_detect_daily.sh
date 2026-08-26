@@ -35,7 +35,17 @@ while [ "$(date +%s)" -lt "$END" ]; do
   #   잠김직전 +10분 +0.178%(30분까지 유일하게 플러스) > 잠김 +0.064% > 터치 +0.009%
   #   > 3분잠김 −0.007%. 대장이 굳는 걸 확인하고 들어가면(3분잠김 굳힘 80%) 이미 먹을
   #   게 없다 — 굳힘 비율과 수익이 정확히 반대 순서다. 그래서 터치는 끈다.
-  #   --limitup-near 0.05 = 상한가까지 5%p 이내(≈ 등락률 +25%), 원본 presurge 정의.
+  #   --limitup-near-ticks 3 = 만쥬가 준 진입 시점. "대장이 상한가 호가를 3개 남겨둔
+  #                      3~5초 사이에 매수." 종전 --limitup-near 0.05 는 등락률 +23%대
+  #                      에서 터져 만쥬보다 한참 이르고, 그만큼 상한가에 못 가는 건까지
+  #                      다 샀다. 호가 단위는 가격대마다 달라 비율로는 못 집는다.
+  #   --follower-priority manju = 등락률 2~3위가 여럿일 때 만쥬 서열로 고른다:
+  #                      호가 두께 → 당일 틱 체결강도 → 가벼운 소형주.
+  #   --stale-sector-limitups 3 --stale-sector-days 10 = "이미 (비공개 회신 — 공개본에서 뺐다)
+  #                      안 따라오므로 제외."
+  #   --partial-exit 0.5 --partial-exit-gain 0.03 = "탄력이 충분히 나온 시점에서 분할
+  #                      매도." +3% 에서 절반을 실현하고 나머지는 트레일링으로 굴린다 —
+  #                      만쥬가 말한 "분할 또는 전량"의 분할 쪽이다.
   #   --limitup-require-surge 로 모멘텀까지 AND — 없으면 상한가 근처에서 정체된
   #   종목에도 발동한다(원본은 +25% 교차 **그 분에 +1%** 올랐을 때만).
   #   --vi-near 0.01 = 정적 VI 상단(당일 기준가 +10%) 1%p 이내. 만쥬는 상한가와 함께
@@ -70,7 +80,9 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --live --live-order --duration "$(date '+%H:%M')-15:20" \
     --take-profit 0 --stop-loss -0.005 --hold 180 \
     --trail-arm 0.03 --trail 0.015 --entry-ticks-up 2 --halt-below-jo 8 \
-    --limitup-near 0.05 --limitup-require-surge --vi-near 0.01 \
+    --limitup-near-ticks 3 --limitup-require-surge --vi-near 0.01 \
+    --follower-priority manju --stale-sector-limitups 3 --stale-sector-days 10 \
+    --partial-exit 0.5 --partial-exit-gain 0.03 \
     --universe-size 45 --max-roundtrip-bp 20 --order-krw 10000000 \
     --lock-min-krw 300000000 --lock-wall-decay 0.7 \
     --dump-krw 100000000 --big-trades 1 \
