@@ -55,11 +55,15 @@ _EXIT_STORY = {
     "킬스위치취소": "킬스위치 발동으로 대기 주문 취소",
 }
 
-#: 방아쇠 종류 → 사람 말. 무엇을 보고 들어갔는지가 복기의 출발점이다.
+#: 방아쇠 코드 → 복기용 서술. **키는 감지기가 실제로 넣는 코드**여야 한다 —
+#: 한국어 이름으로 적어뒀다가 매번 miss 나서 상한가 알림이 전부 "서지"로 남은 적이 있다.
+#: 이름 자체는 감지기의 :data:`TRIGGER_NAMES` 가 유일한 출처다.
 _TRIGGER_STORY = {
-    "상한가터치": "대장이 상한가에 닿는 순간",
-    "상한가근접": "대장이 상한가로 치고 들어가는 구간(잠김 직전)",
-    "상한가잠김": "대장이 상한가를 굳힌 뒤",
+    "touch": "대장이 상한가에 닿는 순간",
+    "near": "대장이 상한가로 치고 들어가는 구간(잠김 직전)",
+    "locked": "대장이 상한가를 굳힌 뒤",
+    "vi": "대장이 정적 VI 문턱에 닿는 구간",
+    "surge": "대장 급등",
 }
 
 
@@ -98,8 +102,10 @@ def why_entered(alert: dict[str, Any]) -> str:
     story = _TRIGGER_STORY.get(str(trig), "") if trig else ""
     if story:
         # 방아쇠 이름을 그대로 남긴다 — 터치였는지 근접이었는지가 복기의 출발점이고,
-        # 며칠치를 grep 으로 세려면 코드 문자열이 문장 안에 있어야 한다.
-        head = f"{story}({trig})"
+        # 며칠치를 grep 으로 세려면 사람이 읽는 이름이 문장 안에 있어야 한다.
+        from .realtime.pair_detector import TRIGGER_NAMES
+
+        head = f"{story}({TRIGGER_NAMES.get(str(trig), trig)})"
     else:
         # 방아쇠가 기록되지 않은 옛 알림 — 서지(급등) 방아쇠였다.
         surge = alert.get("leader_surge")

@@ -116,6 +116,18 @@ __all__ = [
 #: 호가 한 단계 = (가격, 잔량).
 Level = tuple[float, float]
 
+#: 방아쇠 코드 → 사람 말. **여기가 유일한 어휘 출처다.**
+#: 2026-08-26 까지 `journal._TRIGGER_STORY` 가 한국어 키("상한가터치")로 적혀 있었는데
+#: `Alert.trigger` 에 실제로 들어가는 값은 영문 코드라 매번 miss 였다 — 상한가로 잡은
+#: 알림이 전부 "대장 서지"로 일지에 남았다. 복기의 출발점이 통째로 틀리는 버그다.
+TRIGGER_NAMES: dict[str, str] = {
+    "surge": "서지",
+    "touch": "상한가터치",
+    "near": "상한가근접",
+    "locked": "상한가잠김",
+    "vi": "VI근접",
+}
+
 #: 대장 상태 — :meth:`PairDetector.drain_leader_events` 가 내보내는 값.
 #: ``scalp_it.realtime.risk_guard`` 의 동명 상수와 **글자까지 같아야** 한다(테스트로 고정).
 #: 여기서 import 하지 않는 이유: 감지기는 순수 계산부라 가드·실행기에 의존하지 않는다.
@@ -395,7 +407,7 @@ class Alert:
         if self.trigger == "surge":
             head = f"+{self.leader_surge:.2%}/서지"
         else:
-            kind = {"touch": "상한가터치", "near": "상한가근접", "locked": "상한가잠김"}
+            kind = TRIGGER_NAMES
             head = f"{self.leader_ret:+.1%}/{kind.get(self.trigger, self.trigger)}"
         return (
             f"[{self.ts:%H:%M:%S}] 짝꿍 신호  {lead}({self.leader}) {head}{wall}"

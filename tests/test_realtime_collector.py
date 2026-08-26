@@ -359,3 +359,36 @@ def test_pending_adds_skip_already_subscribed():
     ok, rejected = plan_additions(have, ["000001", "000003"], ["0B", "0D"])
     assert ok == ["000003"]
     assert rejected == []
+
+
+def test_quote_levels_extracts_ten_levels():
+    """0D 행 → ``(bids, asks)`` 10단 — 만쥬 §4-1 호가 두께 필터의 유일한 입력.
+
+    2026-08-26: CLI 가 `on_quote(code, ts, bid1)` 로 **가격 하나만** 넘겨서 감지기의
+    호가창이 프로덕션에서 영원히 비어 있었다. 그 결과 `--max-roundtrip-bp 20`(만쥬가
+    **최우선**이라 한 필터)이 입력이 없어 무조건 통과로 돌았다 — cron 플래그가 켜져
+    있는데 아무것도 안 거르는 상태였다.
+    """
+    from scalp_it.realtime.collector import quote_levels
+
+    row = {"code": "000001"}
+    for i in range(1, 11):
+        row[f"bid{i}"] = 1000 - i
+        row[f"bidqty{i}"] = 10 * i
+        row[f"ask{i}"] = 1000 + i
+        row[f"askqty{i}"] = 20 * i
+    bids, asks = quote_levels(row)
+    assert len(bids) == 10 and len(asks) == 10
+    assert bids[0] == (999.0, 10.0)      # 매수1호가
+    assert asks[0] == (1001.0, 20.0)     # 매도1호가
+
+
+def test_quote_levels_skips_missing_or_zero():
+    """잔량·가격이 없거나 0 인 단은 버린다 — 있는 것만 넘겨야 왕복충격이 맞는다."""
+    from scalp_it.realtime.collector import quote_levels
+
+    row = {"bid1": 1000, "bidqty1": 5, "bid2": None, "bidqty2": 3,
+           "ask1": 1001, "askqty1": 0}
+    bids, asks = quote_levels(row)
+    assert bids == [(1000.0, 5.0)]
+    assert asks == []

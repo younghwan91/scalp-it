@@ -349,10 +349,6 @@ class RiskGuard:
             self.profit_capped = True
         if self.killed:
             return
-        # 이익 목표는 **킬이 아니다** — 매매를 멈추지 않고 비중만 줄인다(§9-6).
-        # 그래서 killed 판정보다 먼저, 그리고 독립적으로 갱신한다.
-        if cfg.daily_profit_target > 0 and self.realized_krw >= cfg.daily_profit_target:
-            self.profit_capped = True
         if self._stop_file_present():
             self._trigger_kill(KILL_MANUAL)
         elif (cfg.max_consecutive_losses > 0

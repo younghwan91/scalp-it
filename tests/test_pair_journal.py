@@ -52,16 +52,19 @@ def _close(**kw):
 
 def test_why_entered_reads_like_manju_wrote_it():
     """진입 이유가 만쥬 일지 형식이어야 한다 — 사람이 읽고 복기할 수 있게."""
-    text = why_entered(_alert(trigger="상한가근접"))
+    # 감지기가 실제로 넣는 값은 영문 코드다(`Alert.trigger`). 한국어 이름으로
+    # 검증하면 사전이 miss 나도 테스트가 초록이라 버그를 놓친다.
+    text = why_entered(_alert(trigger="near"))
     assert "대장전자" in text and "후속전자" in text
-    assert "상한가근접" in text
+    assert "상한가근접" in text, "코드가 사람 이름으로 풀려야 한다"
     # 숫자만 나열하면 복기가 안 된다 — 무슨 상황이었는지 문장이어야 한다.
     assert len(text) > 20
 
 
 def test_why_entered_names_the_trigger_kind():
     """방아쇠 종류가 드러나야 한다 — 터치인지 근접인지가 복기의 핵심이다."""
-    assert "상한가터치" in why_entered(_alert(trigger="상한가터치"))
+    assert "상한가터치" in why_entered(_alert(trigger="touch"))
+    assert "VI근접" in why_entered(_alert(trigger="vi"))
     assert "서지" in why_entered(_alert(trigger=None))     # 방아쇠 미기록이면 기존 서지
 
 

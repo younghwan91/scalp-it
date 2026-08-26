@@ -692,6 +692,7 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
         KiwoomRealtimeCollector,
         SeqAssigner,
         parse_real_message,
+        quote_levels,
     )
     from .realtime.store import init_realtime_tables
 
@@ -739,7 +740,9 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             now = datetime.now()  # noqa: DTZ005 — KST naive
             ticks, quotes, _vis = parse_real_message(msg, trade_date, seq, received_at=now)
             for q in quotes:                      # 호가로 bid1 우선 갱신
-                detector.on_quote(str(q["code"]), q["ts"], q.get("bid1"))
+                bids, asks = quote_levels(q)
+                detector.on_quote(str(q["code"]), q["ts"], q.get("bid1"),
+                                  bids=bids, asks=asks)
             for t in ticks:                       # 체결로 서지·매칭 판정
                 if t.get("price") is None:
                     continue

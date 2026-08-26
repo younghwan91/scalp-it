@@ -32,7 +32,7 @@ import asyncio
 import contextlib
 import json
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime
 from typing import Any
 
@@ -347,6 +347,28 @@ def build_reg_message(
         "refresh": str(refresh),
         "data": [{"item": list(codes), "type": list(types)}],
     }
+
+
+def quote_levels(row: Mapping[str, Any]) -> tuple[list[tuple[float, float]],
+                                                  list[tuple[float, float]]]:
+    """0D 행 → ``(bids, asks)`` — 각 원소가 ``(가격, 잔량)``, 1호가부터.
+
+    만쥬 §4-1 이 **최우선**이라 한 호가 두께 필터(`max_roundtrip_bp`)의 유일한 입력이다.
+    2026-08-26 까지 CLI 가 `on_quote(code, ts, bid1)` 로 **가격 하나만** 넘겨서 감지기
+    호가창이 프로덕션에서 늘 비어 있었고, 그래서 그 필터가 입력 없음 → 무조건 통과로
+    돌았다. cron 플래그는 켜져 있는데 아무것도 안 거르는 상태였다.
+
+    가격이나 잔량이 없거나 0 인 단은 버린다 — 없는 물량을 소진 계산에 넣으면 왕복
+    충격이 실제보다 낙관적으로 나온다.
+    """
+    bids: list[tuple[float, float]] = []
+    asks: list[tuple[float, float]] = []
+    for i in range(1, 11):
+        for key, qkey, out in (("bid", "bidqty", bids), ("ask", "askqty", asks)):
+            px, qty = row.get(f"{key}{i}"), row.get(f"{qkey}{i}")
+            if px and qty:
+                out.append((float(px), float(qty)))
+    return bids, asks
 
 
 def plan_additions(
