@@ -188,6 +188,28 @@ def _fetch_ticks(conn: Any, codes: list[str], *, since: datetime | None,
     return rows
 
 
+def _disclosure_rows(db_path: str, asof: date, days: int) -> list[dict[str, Any]]:
+    """최근 공시 원본 행(제목 포함) — LLM 채점 입력. 실패하면 빈 리스트."""
+    import sqlite3
+    from datetime import timedelta
+
+    p = Path(db_path)
+    if not p.exists():
+        return []
+    lo = (asof - timedelta(days=days)).isoformat().replace("-", "")
+    hi = asof.isoformat().replace("-", "")
+    try:
+        with sqlite3.connect(f"file:{p}?mode=ro", uri=True) as conn:
+            cur = conn.execute(
+                "select rcept_no, code, corp_name, report_nm, material_type "
+                "from disclosures where rcept_dt >= ? and rcept_dt <= ? "
+                "and code is not null", (lo, hi))
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
+    except sqlite3.Error:
+        return []
+
+
 def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
     """만쥬 동적 모드 입력(유니버스·섹터·전일종가)을 만든다. **실패해도 죽지 않는다.**
 
@@ -263,6 +285,7 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
         # 보면 "수급은 있는데 이야기가 없는" 종목이 올라온다. 재료는 DART 공시에서
         # 온다(뉴스 크롤러 금지 정책, docs/research/manju/17 — ToS·저작권).
         materials: dict[str, list[str]] = {}
+        llm_materials: dict[str, float] = {}
         if args.material_days > 0:
             from datetime import timedelta
 
@@ -272,10 +295,25 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
                 args.dart_db, since=prev - timedelta(days=args.material_days), until=prev)
             print(f"# 재료 공시 {len(materials)}종목(최근 {args.material_days}일, "
                   f"{args.dart_db})", file=sys.stderr)
+            # 만쥬 §2-1 은 "명확한 재료 및 **미래 가치**", "관심을 **지속**시킬 강력한
+            # 스토리"를 요구한다. 유형별 가중치표로는 그 판단이 안 된다 — "공급계약"이
+            # 1억인지 1조인지 표는 모른다. LLM 이 있으면 그걸 쓰고, 없으면(키 미설정 등)
+            # 조용히 규칙 기반으로 간다. 어느 단계도 장 시작을 막지 않는다.
+            if args.material_llm:
+                from .material_llm import score_disclosures
+
+                rows = _disclosure_rows(args.dart_db, prev, args.material_days)
+                llm_scores = score_disclosures(rows, cache_path=args.llm_cache)
+                if llm_scores:
+                    llm_materials = llm_scores
+                    print(f"#   LLM 재료 채점 {len(llm_scores)}종목", file=sys.stderr)
+                else:
+                    print("#   LLM 재료 채점 불가(키·캐시 확인) — 규칙 기반으로 진행",
+                          file=sys.stderr)
         uni = build_universe(conn, prev,
                              UniverseConfig(limit=args.universe_size, pinned=pinned,
                                             weight_material=args.material_weight),
-                             materials)
+                             materials, llm_materials or None)
         if not uni.codes:
             print("[경고] 유니버스가 비었다 — 고정 쌍으로 폴백", file=sys.stderr)
             return {}
@@ -832,6 +870,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="재료 판정에 쓸 DART 공시 sqlite. 없으면 재료항 없이 돈다")
     p.add_argument("--material-days", type=int, default=5,
                    help="최근 N일 공시를 재료로 본다(만쥬 §2-1). 0 = 끔")
+    p.add_argument("--material-llm", action="store_true",
+                   help="재료를 LLM 으로 채점한다(만쥬 §2-1 \"미래 가치·지속시킬 스토리\"). "
+                        "유형 가중치표보다 판단이 세다. 키가 없으면 조용히 규칙 기반으로 "
+                        "폴백한다. SWING_LLM_PROVIDER·API 키 필요")
+    p.add_argument("--llm-cache", default="data/llm_material_cache.db",
+                   help="LLM 채점 캐시(같은 공시를 두 번 부르지 않는다)")
     p.add_argument("--material-weight", type=float, default=0.5,
                    help="유니버스 점수의 재료 가중치. 0 = 재료 무시")
     p.add_argument("--new-listing-days", type=int, default=5,

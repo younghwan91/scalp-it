@@ -265,6 +265,7 @@ def rank_candidates(
     candidates: Iterable[Candidate],
     config: UniverseConfig | None = None,
     materials: Mapping[str, Sequence[str]] | None = None,
+    material_scores: Mapping[str, float] | None = None,
 ) -> list[Candidate]:
     """필터를 통과한 후보에 점수를 매겨 내림차순으로 돌려준다.
 
@@ -288,7 +289,12 @@ def rank_candidates(
                 continue
             if cand.surge_days < cfg.min_surge_days:
                 continue
-        mat = material_score((materials or {}).get(cand.code, ()))
+        # LLM 이 매긴 점수가 있으면 그게 우선한다 — 유형 가중치표보다 판단이 세다
+        # (만쥬 §2-1 "미래 가치"·"지속시킬 스토리"는 표로 표현되지 않는다).
+        if material_scores and cand.code in material_scores:
+            mat = float(material_scores[cand.code])
+        else:
+            mat = material_score((materials or {}).get(cand.code, ()))
         scored.append(replace(cand, score=_score(cand, cfg, material=mat),
                               pinned=is_pinned))
     scored.sort(key=lambda c: (-c.score, c.code))
@@ -467,6 +473,7 @@ def build_universe(
     asof: date | str,
     config: UniverseConfig | None = None,
     materials: Mapping[str, Sequence[str]] | None = None,
+    material_scores: Mapping[str, float] | None = None,
 ) -> Universe:
     """DB → 후보 → 랭킹 → 선정. 장전에 이 함수 하나만 부르면 된다.
 
@@ -478,7 +485,8 @@ def build_universe(
     if bars:
         asof_date = max(b.day for b in bars)
     cands = build_candidates(bars, asof_date, cfg)
-    return select_universe(rank_candidates(cands, cfg, materials), asof_date, cfg)
+    ranked = rank_candidates(cands, cfg, materials, material_scores)
+    return select_universe(ranked, asof_date, cfg)
 
 # ---------------------------------------------- 만쥬 §4-5 신규상장 · §5-5 신선도
 
