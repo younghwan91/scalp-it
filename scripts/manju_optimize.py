@@ -71,6 +71,12 @@ class Rule:
     # 만쥬는 호가 훼손을 보고 초 안에 나간다. 실제값은 open 과 close 사이 어딘가다.
     lead_exit_at: str = "close"
     require_held: bool = False    # 대장이 끝까지 굳힌 건만
+    # 만쥬의 "2·3등주"는 **그 테마(섹터) 안에서의 순위**다. 수집기가 넣어준
+    # ``ret_rank`` 는 시장 전체 순위라서 그대로 쓰면 "시장 전체 2위이면서 마침 같은
+    # 섹터인 종목"이 되어 만쥬 규칙이 아니게 되고 표본도 통째로 날아간다.
+    #   group    = 후보군 안에서 다시 매긴 순위(만쥬)
+    #   universe = 시장 전체 순위(수집기 원값)
+    rank_mode: str = "group"
 
     def key(self) -> str:
         return (f"{self.pick}/r{self.rank_max}/h{self.hold}"
@@ -78,7 +84,8 @@ class Rule:
                 f"/tp{'' if self.take is None else f'{self.take:.3f}'}"
                 f"/{'LE' if self.leader_exit else 'noLE'}"
                 f"{'' if self.trail is None else f'/tr{self.trail:.3f}'}"
-                f"{'/held' if self.require_held else ''}")
+                f"{'/held' if self.require_held else ''}"
+                f"{'' if self.rank_mode == 'group' else '/uni'}")
 
 
 def _slip(price: float, prev_close: float) -> float:
@@ -104,11 +111,21 @@ def simulate(ev: pd.Series, paths: dict, rule: Rule) -> dict[str, Any] | None:
         # 성립하지 않는다. 대조군의 역할은 "같은 이벤트·같은 청산에서 **아무 종목이나**
         # 골랐으면 얼마였나"이므로 종목 선정만 무작위면 된다.
         fol = next((c for c in picks if paths.get(c) is not None), None)
+    elif rule.rank_mode == "group":
+        # 후보군을 등락률로 다시 세운다 — 만쥬가 보는 건 테마 안의 서열이다.
+        ranked = sorted(
+            (c for c in picks if c in info),
+            key=lambda c: -float((info.get(c) or {}).get("ret") or float("-inf")),
+        )
+        for i, code in enumerate(ranked, start=1):
+            # 1위(대장 다음으로 가장 오른 것)는 이미 뛴 것이라 뺀다.
+            if 2 <= i <= rule.rank_max:
+                fol = code
+                break
     else:
         for code in picks:
             meta = info.get(code) or {}
             rank = meta.get("ret_rank")
-            # 만쥬는 "2~3등주". 1위(대장 다음으로 가장 오른 것)는 이미 뛴 것이라 뺀다.
             if rank is not None and 2 <= int(rank) <= rule.rank_max:
                 fol = code
                 break
@@ -221,9 +238,11 @@ def build_grid(args: argparse.Namespace) -> list[Rule]:
                     for take in args.takes:
                         for le in (True, False):
                             for tr in args.trails:
-                                grid.append(Rule(pick=pick, rank_max=rank, hold=hold,
-                                                 stop=stop, take=take, leader_exit=le,
-                                                 trail=tr))
+                                for rm in args.rank_modes:
+                                    grid.append(Rule(
+                                        pick=pick, rank_max=rank, hold=hold, stop=stop,
+                                        take=take, leader_exit=le, trail=tr,
+                                        rank_mode=rm))
     return grid
 
 
@@ -250,6 +269,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--select-by", default="net64",
                    choices=["gross", "net34", "net64", "net94"],
                    help="트레인에서 무엇으로 최선 셀을 고를지. 기본은 세후 64bp")
+    p.add_argument("--rank-modes", nargs="+", default=["group"],
+                   choices=["group", "universe"],
+                   help="2·3등주 순위를 테마 안(group)에서 볼지 시장 전체(universe)에서 볼지")
     p.add_argument("--min-n", type=int, default=30, help="이보다 적은 셀은 후보 제외")
     a = p.parse_args(argv)
     a.stops = [None if s == 0 else s for s in a.stops]
