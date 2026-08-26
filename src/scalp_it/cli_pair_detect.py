@@ -158,6 +158,7 @@ def build_guard(args: argparse.Namespace) -> RiskGuard | None:
         trail_arm=args.trail_arm,
         trail_pct=args.trail,
         drawdown_krw=args.drawdown_krw,
+        shadow_when_blocked=args.shadow_when_blocked,
         drawdown_size_multiplier=args.drawdown_size,
         max_positions=args.max_positions,
         fill_basis=args.fill_basis,
@@ -1069,6 +1070,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="%% 손실한도·기록 기준 자본(원). 기본 100만")
     g.add_argument("--position-notional", type=float, default=100_000.0,
                    help="가상 포지션 1건 명목(원) — 수익률→원 환산. 기본 10만")
+    g.add_argument("--shadow-when-blocked", action="store_true",
+                   help="국면 차단(거래대금 미달)으로 안 산 신호도 그림자로 굴려 "
+                        "\"샀으면 어땠나\"를 기록한다. 실현손익·킬스위치·주문엔 "
+                        "안 닿는다 — 만쥬 규칙대로 안 사는 건 그대로다")
     g.add_argument("--drawdown-krw", type=float, default=0.0,
                    help="실현손익이 그날 정점 대비 이만큼(원) 밀리면 비중 축소 — 만쥬 "
                         "\"과거 정점 대비 계좌가 꺾일 때 예수금을 1/3~1/5로\". 0 = 끔")

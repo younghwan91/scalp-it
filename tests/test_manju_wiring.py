@@ -211,3 +211,54 @@ def test_drawdown_is_off_by_default():
     _cycle(g, 0, "000002", 10_500)
     _cycle(g, 10, "000003", 9_000)
     assert g.effective_notional() == 1_000_000
+
+
+# ----- 쉬는 국면에도 "샀으면 어땠나"는 남긴다 ----------------------------------
+
+def _blocked_guard(**kw) -> RiskGuard:
+    base = {"daily_loss_limit": 0.0, "max_consecutive_losses": 0, "max_positions": 99,
+            "stop_file": None, "position_notional": 10_000_000.0}
+    base.update(kw)
+    g = RiskGuard(RiskGuardConfig(**base))
+    g.set_size_multiplier(0.0)          # 거래대금 미달 → 만쥬 기준 진입 금지
+    return g
+
+
+def test_blocked_signal_opens_nothing_real():
+    """만쥬 규칙대로 **안 산다** — 이건 그림자를 켜도 그대로여야 한다."""
+    from scalp_it.realtime.risk_guard import BLOCK_REGIME_ZERO
+
+    for shadow in (False, True):
+        g = _blocked_guard(shadow_when_blocked=shadow)
+        d = g.on_alert(_alert())
+        assert not d.allowed and d.reason == BLOCK_REGIME_ZERO
+        assert g.open_positions == []
+        assert not d.killed, "국면 차단은 킬이 아니다"
+
+
+def test_blocked_signal_is_recorded_as_shadow():
+    """쉬는 국면이 몇 달이면 표본이 0 이라 규칙 검증조차 안 된다."""
+    g = _blocked_guard(shadow_when_blocked=True)
+    g.on_alert(_alert())
+    assert len(g.shadow_positions) == 1
+    assert g.shadow_positions[0].shadow is True
+    assert g.shadow_positions[0].notional == 10_000_000.0, \
+        "배수 0 을 그대로 곱하면 명목 0 이라 손익이 전부 0 이 된다"
+
+
+def test_shadow_never_touches_real_accounting():
+    """실현손익·승패·연속손절 어디에도 안 닿아야 한다."""
+    g = _blocked_guard(shadow_when_blocked=True)
+    g.on_alert(_alert())
+    _tick(g, 1, 9_999)                  # 그림자 체결
+    _tick(g, 200, 9_000)                # 크게 밀림 → 그림자 청산
+    assert g.realized_krw == 0.0
+    assert g.consecutive_losses == 0
+    assert g.losses == 0
+    assert not g.killed
+
+
+def test_shadow_off_by_default():
+    g = _blocked_guard()
+    g.on_alert(_alert())
+    assert g.shadow_positions == []

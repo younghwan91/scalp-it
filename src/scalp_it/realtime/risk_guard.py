@@ -128,6 +128,11 @@ class RiskGuardConfig:
     # 찍고 밀리는 중인데 같은 크기로 계속 거는 걸 막는다. 0 = 끔.
     drawdown_krw: float = 0.0                 # 실현손익이 정점 대비 이만큼 밀리면
     drawdown_size_multiplier: float = 1.0 / 3  # 명목을 이 배수로 줄인다(만쥬: 1/3~1/5)
+    # 국면이 나빠 진입을 막은 신호도 **그림자로는 굴린다**. 만쥬 규칙대로 안 사는 건
+    # 그대로이고(실현손익·승패·연속손절·킬스위치·주문 어디에도 안 닿는다), 대신
+    # "샀으면 어땠나"가 기록으로 남는다. 쉬는 국면이 몇 달 이어지면 표본이 0 이라
+    # 규칙이 맞는지조차 확인이 안 되기 때문이다.
+    shadow_when_blocked: bool = False
     max_positions: int = 2                    # 동시 보유 가상 포지션 상한
     fill_basis: str = "through"               # 'through'(보수·기본) | 'touch'(낙관)
     track_shadow_fill: bool = True            # 반대 가정을 그림자로 병행 추적(로그 전용)
@@ -414,6 +419,12 @@ class RiskGuard:
         # 기존 포지션의 청산 경로(on_tick/on_leader_state/flush)는 여기를 안 지나므로
         # 배수가 0이어도 들고 있는 건 규칙대로 정상 청산된다.
         if self.size_multiplier <= _EPS:
+            if self.config.shadow_when_blocked:
+                # 명목은 **기본값**을 쓴다 — 배수가 0 이라 effective_notional 도 0 이고,
+                # 0 짜리 그림자는 손익이 전부 0 이라 기록할 게 없다.
+                self.shadow_positions.append(
+                    self._new_position(alert, self.config.fill_basis, shadow=True,
+                                       notional=self.config.position_notional))
             return Decision(allowed=False, reason=BLOCK_REGIME_ZERO)
         if len(self.open_positions) >= self.config.max_positions:
             return Decision(allowed=False, reason="max_positions")
@@ -428,7 +439,8 @@ class RiskGuard:
                 self._new_position(alert, _opposite_basis(basis), shadow=True))
         return Decision(allowed=True)
 
-    def _new_position(self, alert: Alert, basis: str, *, shadow: bool) -> Position:
+    def _new_position(self, alert: Alert, basis: str, *, shadow: bool,
+                      notional: float | None = None) -> Position:
         return Position(
             follower=alert.follower,
             leader=alert.leader,
@@ -438,7 +450,7 @@ class RiskGuard:
             stop_loss=alert.stop_loss,
             disaster_line=alert.disaster_line,
             exit_ts=alert.exit_ts,
-            notional=self.effective_notional(),
+            notional=(self.effective_notional() if notional is None else notional),
             follower_name=alert.follower_name,
             basis=basis,
             shadow=shadow,

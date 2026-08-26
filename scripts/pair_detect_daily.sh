@@ -75,6 +75,12 @@ while [ "$(date +%s)" -lt "$END" ]; do
   #                      1/100 이라 가상 손익도 낙폭 문턱도 만쥬 크기가 아니었다.
   #                      (--qty 는 **실주문** 안전캡이라 그대로 1주. --confirm-real 이
   #                      없어 실주문은 0건이고, 가상 회계는 이 명목으로 돈다.)
+  #   --shadow-when-blocked — 만쥬 기준 쉬는 국면(8조 미만)에도 신호를 **그림자로**
+  #                      굴려 "샀으면 어땠나"를 남긴다. 안 사는 건 그대로다 —
+  #                      실현손익·승패·연속손절·킬스위치·주문 어디에도 안 닿는다.
+  #                      2026-07~08 코스닥 중앙값이 6조라 이걸 안 켜면 두 달째 표본이
+  #                      0 이고, 그러면 만쥬 규칙이 맞는지조차 확인할 길이 없다.
+  #                      (1년 기준으론 68% 날이 8조 넘어 정상 매매 구간이다.)
   #   --big-trades 2 — 만쥬 원문은 "5천만 원 이상 (비공개 회신 — 공개본에서 뺐다) 종전 1건은 "연속"이 아니다.
   #   --drawdown-krw 100000 — 만쥬 "과거 정점 대비 계좌가 꺾일 때 예수금을 1/3~1/5로
   #                      축소". 절대액을 안 줘서 만쥬가 준 다른 수치에서 유도했다:
@@ -96,6 +102,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --position-notional 10000000 \
     --lock-min-krw 300000000 --lock-wall-decay 0.7 \
     --dump-krw 100000000 --big-trades 2 --drawdown-krw 100000 \
+    --shadow-when-blocked \
     --new-listing-days 5 \
     --breaking-interval 90 --breaking-min-weight 0.7 --breaking-max 3 \
     >> data/pair_detect.log 2>&1
