@@ -354,3 +354,27 @@ def test_score_rewards_material_when_supplied():
     strong = _score(cand, cfg, material=1.0)      # 공급계약 수준
     bad = _score(cand, cfg, material=-1.0)        # 악재
     assert strong > plain > bad
+
+
+# ----- 만쥬 §6 장중 돌발 재료 -------------------------------------------------
+
+def test_breaking_materials_picks_only_strong_types():
+    """장중 신규 공시 중 **강한 재료만** 고른다 — 만쥬 §6.
+
+    "예상치 못한 돌발 뉴스가 나오면 즉각 관련 종목 매수". 다만 하루 수백 건 쏟아지는
+    공시를 전부 좇으면 구독 자리가 순식간에 동난다. 미래 실적으로 이어지는 것만.
+    """
+    from scalp_it.universe import breaking_materials
+
+    rows = [("100000", "공급계약"), ("200000", "정기보고"),
+            ("300000", "기술_인허가"), ("400000", "악재")]
+    got = breaking_materials(rows, min_weight=0.7)
+    assert got == ["100000", "300000"], "강한 재료만 남아야 한다"
+    assert "400000" not in got, "악재는 매수 대상이 아니다"
+
+
+def test_breaking_materials_orders_by_strength():
+    from scalp_it.universe import breaking_materials
+
+    rows = [("100000", "시설투자"), ("200000", "공급계약")]
+    assert breaking_materials(rows, min_weight=0.5) == ["200000", "100000"]

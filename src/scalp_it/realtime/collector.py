@@ -349,6 +349,36 @@ def build_reg_message(
     }
 
 
+def plan_additions(
+    subscribed: Sequence[str], wanted: Sequence[str], types: Sequence[str],
+    *, reg_limit: int = REG_LIMIT,
+) -> tuple[list[str], list[str]]:
+    """장중에 더 구독할 종목을 한도 안에서 고른다 → ``(추가할 것, 거절된 것)``.
+
+    만쥬 §6("돌발 뉴스가 나오면 즉각 관련 종목 매수")을 하려면 장전 유니버스에 없던
+    종목을 **장중에** 구독해야 한다. 그런데 등록 한도(커넥션당 종목×type ≈ 100)를
+    넘기면 수집기가 커넥션을 쪼개고, 같은 App key 로 둘을 열면 서로 kick 한다 —
+    2026-08-24 에 80종목을 넣었다가 **30종목이 10:58 에 끊겨** 하루의 3분의 2를 잃었다.
+
+    그래서 조용히 넘기지 않고 **거절 목록을 돌려준다**. 호출부가 그걸 남겨야 나중에
+    "자리가 없어서 못 봤다"를 셀 수 있다.
+    """
+    have = list(dict.fromkeys(str(c) for c in subscribed))
+    room = max(0, codes_per_connection(types, reg_limit=reg_limit) - len(have))
+    seen = set(have)
+    ok: list[str] = []
+    rejected: list[str] = []
+    for code in dict.fromkeys(str(c) for c in wanted):
+        if code in seen:
+            continue
+        seen.add(code)
+        if len(ok) < room:
+            ok.append(code)
+        else:
+            rejected.append(code)
+    return ok, rejected
+
+
 # --------------------------------------------------------------- 데몬
 
 
@@ -385,6 +415,7 @@ class KiwoomRealtimeCollector:
         self._max_backoff = max_backoff
         self._log = log or (lambda m: print(m, flush=True))
 
+        self._reg_limit = int(reg_limit)   # 장중 추가(add_codes)가 한도를 알아야 한다
         if per_conn is None:
             per_conn = codes_per_connection(types, reg_limit=reg_limit)
         self._groups = chunk_codes(codes, per_conn)
@@ -401,6 +432,10 @@ class KiwoomRealtimeCollector:
         self.quotes_stored = 0
         self.vi_stored = 0
         self.reconnects = 0
+        # 장중 구독 추가(만쥬 §6)용 — grp_no → (소켓, 그 커넥션의 종목 목록).
+        self._live_ws: dict[str, tuple[Any, list[str]]] = {}
+        self.added_codes: list[str] = []      # 장중에 붙인 종목(집계·복기용)
+        self.rejected_codes: list[str] = []   # 자리가 없어 못 붙인 종목
 
     # ------------------------------------------------------------- 공개 API
 
@@ -463,6 +498,8 @@ class KiwoomRealtimeCollector:
                 async with ws:
                     await self._login_and_reg(ws, grp_no, codes)
                     backoff = 1.0  # 성공적으로 붙었으면 백오프 리셋
+                    # 장중 추가(만쥬 §6)를 보내려면 살아 있는 소켓이 필요하다.
+                    self._live_ws[grp_no] = (ws, codes)
                     await self._listen(ws)
             except asyncio.CancelledError:
                 raise
@@ -473,6 +510,40 @@ class KiwoomRealtimeCollector:
                 self._log(f"[conn{grp_no}] 끊김: {exc} — {backoff:.0f}s 후 재연결·재REG")
                 await self._sleep_or_stop(backoff)
                 backoff = min(self._max_backoff, backoff * 2)
+
+    async def add_codes(self, codes: Sequence[str]) -> tuple[list[str], list[str]]:
+        """장중에 종목을 구독에 **추가**한다 → ``(추가된 것, 거절된 것)``.
+
+        만쥬 §6 — "예상치 못한 돌발 뉴스가 나오면 즉각 관련 종목 매수". 장전에 고른
+        유니버스에 그 종목이 없으면 구독조차 없어서 감시를 못 한다.
+
+        ``refresh="0"`` 로 보낸다 — 1(교체)로 보내면 **기존 종목이 통째로 날아간다**.
+        한도를 넘는 건 거절하고 목록으로 돌려준다(조용히 넘기면 왜 못 봤는지 모른다).
+        """
+        if not self._live_ws:
+            return [], list(codes)
+        # 첫 커넥션에만 붙인다 — 여러 커넥션은 같은 키에서 서로 kick 하므로 애초에
+        # 단일 커넥션으로 운영하는 게 전제다.
+        grp_no = min(self._live_ws)
+        ws, have = self._live_ws[grp_no]
+        ok, rejected = plan_additions(have, codes, self._types,
+                                      reg_limit=self._reg_limit)
+        if rejected:
+            self._log(f"[conn{grp_no}] 구독 자리 없음 — 거절 {len(rejected)}종목: "
+                      f"{', '.join(rejected[:5])}")
+            self.rejected_codes.extend(rejected)
+        if not ok:
+            return [], rejected
+        try:
+            await ws.send(json.dumps(
+                build_reg_message(ok, self._types, grp_no, refresh="0")))
+        except Exception as exc:  # noqa: BLE001 — 추가 실패로 수집을 죽이지 않는다
+            self._log(f"[conn{grp_no}] 장중 REG 추가 실패: {exc}")
+            return [], list(codes)
+        have.extend(ok)
+        self.added_codes.extend(ok)
+        self._log(f"[conn{grp_no}] 장중 구독 추가 {len(ok)}종목: {', '.join(ok)}")
+        return ok, rejected
 
     async def _login_and_reg(self, ws, grp_no: str, codes: list[str]) -> None:
         await ws.send(json.dumps(build_login_message(self._token)))

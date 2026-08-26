@@ -644,3 +644,52 @@ def fetch_recent_materials(db_path: str, *, since: date | str,
         return {}
     return group_materials(rows)
 
+
+def breaking_materials(rows: Iterable[tuple[str, str]], *,
+                       min_weight: float = 0.7) -> list[str]:
+    """장중 신규 공시 중 **강한 재료** 종목만, 강한 순으로(만쥬 §6).
+
+    > "예상치 못한 돌발 뉴스(전쟁 개전 속보 등)가 나올 경우 즉각적인 판단으로 관련
+    > 종목 매수 대응" [02:29]
+
+    다만 공시는 하루 수백 건이 쏟아진다. 전부 좇으면 구독 자리(단일 앱키 50종목)가
+    순식간에 동난다. 그래서 미래 실적으로 이어지는 유형만 남긴다 — 기본 0.7 이면
+    공급계약·기술_인허가·시설투자다. 악재는 당연히 제외(매수 대상이 아니다).
+    """
+    best: dict[str, float] = {}
+    for code, mtype in rows:
+        if not code or not mtype:
+            continue
+        w = MATERIAL_WEIGHTS.get(str(mtype), 0.0)
+        if w >= min_weight:
+            best[str(code)] = max(best.get(str(code), 0.0), w)
+    return [c for c, _ in sorted(best.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+
+def fetch_new_disclosures(db_path: str, *, day: date | str,
+                          after_rcept: str | None = None) -> list[tuple[str, str, str]]:
+    """그날 공시 중 ``after_rcept`` 이후 접수분 → ``(접수번호, 코드, 재료유형)``.
+
+    접수번호는 시간순으로 증가하므로 커서로 쓴다. 장중에 주기적으로 불러 **새로 들어온
+    것만** 가져오는 용도다(만쥬 §6). 파일이 없거나 읽기 실패면 빈 리스트 — 재료를
+    못 읽는다고 감지기를 죽이지는 않는다.
+    """
+    import sqlite3
+
+    p = Path(db_path)
+    if not p.exists():
+        return []
+    d = (day if isinstance(day, str) else day.isoformat()).replace("-", "")
+    sql = ("select rcept_no, code, material_type from disclosures "
+           "where rcept_dt = ? and code is not null")
+    params: list[Any] = [d]
+    if after_rcept:
+        sql += " and rcept_no > ?"
+        params.append(after_rcept)
+    sql += " order by rcept_no"
+    try:
+        with sqlite3.connect(f"file:{p}?mode=ro", uri=True) as conn:
+            return [(str(a), str(b), str(c)) for a, b, c in
+                    conn.execute(sql, params).fetchall()]
+    except sqlite3.Error:
+        return []

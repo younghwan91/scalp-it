@@ -312,6 +312,54 @@ def _cap_codes_for_single_key(codes: list[str], types: list[str], *, dedicated: 
     return codes[:cap]
 
 
+async def _watch_breaking_materials(
+    collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
+) -> None:
+    """장중 돌발 재료 감시 — 만쥬 §6.
+
+    > "예상치 못한 돌발 뉴스가 나올 경우 **즉각적인 판단으로 관련 종목 매수 대응**"
+
+    장전 유니버스에 없던 종목에 강한 재료 공시가 뜨면, 그 종목을 **장중에 구독에
+    추가**한다. 구독이 없으면 감시조차 못 하기 때문이다.
+
+    뉴스가 아니라 공시를 쓰는 이유는 재료 판정과 같다(크롤러 금지 정책,
+    docs/research/manju/17). DART 는 장중에도 계속 접수되므로 주기적으로 새로
+    수집하고, 접수번호를 커서로 써서 **새로 들어온 것만** 본다.
+    """
+    import asyncio
+
+    from .universe import breaking_materials, fetch_new_disclosures
+
+    day = date.today()  # noqa: DTZ011 — KST naive, 프로젝트 표준
+    cursor: str | None = None
+    # 시작 시점의 접수번호를 커서로 잡아 **장 시작 전 공시는 건너뛴다**(그건 장전
+    # 유니버스 선정에 이미 반영됐다). 여기서 보는 건 '장중에 새로 뜬 것'뿐이다.
+    seed = fetch_new_disclosures(args.dart_db, day=day)
+    if seed:
+        cursor = seed[-1][0]
+    while True:
+        await asyncio.sleep(max(30.0, args.breaking_interval))
+        try:
+            rows = fetch_new_disclosures(args.dart_db, day=day, after_rcept=cursor)
+            if not rows:
+                continue
+            cursor = rows[-1][0]
+            codes = breaking_materials([(c, m) for _, c, m in rows],
+                                       min_weight=args.breaking_min_weight)
+            fresh = [c for c in codes if c not in detector.codes]
+            if not fresh:
+                continue
+            added, rejected = await collector.add_codes(fresh[:args.breaking_max])
+            if added:
+                bus.notice(f"[돌발재료] 장중 구독 추가 {len(added)}종목: "
+                           f"{', '.join(added)} — 강한 재료 공시 접수")
+            if rejected:
+                bus.notice(f"[돌발재료] 구독 자리 없어 놓침 {len(rejected)}종목: "
+                           f"{', '.join(rejected[:5])}")
+        except Exception as exc:  # noqa: BLE001 — 감시 실패로 수집을 죽이지 않는다
+            print(f"[돌발재료][경보] 감시 중 예외(계속): {exc}", file=sys.stderr)
+
+
 def _drain_leader_events(detector: PairDetector, guard: RiskGuard | None,
                          executor: OrderExecutor | None) -> None:
     """감지기가 판정한 대장 상태 전이를 가드·실행기로 흘린다(만쥬 §5-3).
@@ -646,7 +694,16 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
                 loop.add_signal_handler(sig, collector.stop)
             except (NotImplementedError, ValueError):
                 pass
-        await collector.run(duration=duration)
+        watcher = None
+        if args.breaking_interval > 0:
+            # 만쥬 §6 — 장중 돌발 재료. 수집과 나란히 돌고, 죽어도 수집은 계속된다.
+            watcher = asyncio.create_task(
+                _watch_breaking_materials(collector, detector, bus, args))
+        try:
+            await collector.run(duration=duration)
+        finally:
+            if watcher is not None:
+                watcher.cancel()
 
     try:
         asyncio.run(_main())
@@ -746,6 +803,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--big-trades", type=int, default=None,
                    help="대장에 필요한 대량체결(기본 5천만원↑) 최소 건수 — 만쥬 §5-1 "
                         "순간 체결량 확인. 0 = 끔")
+    p.add_argument("--breaking-interval", type=float, default=0.0,
+                   help="장중 돌발 재료 감시 주기(초) — 만쥬 §6. 새 재료 공시 종목을 "
+                        "구독에 추가한다. 0 = 끔. 켤 거면 60 이상 권장")
+    p.add_argument("--breaking-min-weight", type=float, default=0.7,
+                   help="돌발 재료로 볼 최소 재료 가중치. 0.7 = 공급계약·기술인허가·시설투자")
+    p.add_argument("--breaking-max", type=int, default=5,
+                   help="한 번에 추가할 최대 종목 수(구독 자리 보호)")
     p.add_argument("--dart-db", default="data/dart.db",
                    help="재료 판정에 쓸 DART 공시 sqlite. 없으면 재료항 없이 돈다")
     p.add_argument("--material-days", type=int, default=5,

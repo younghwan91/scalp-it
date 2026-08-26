@@ -320,3 +320,42 @@ def test_flush_survives_db_outage_and_preserves_batch(conn):
     collector._conn = conn
     collector._flush()
     assert count_ticks(conn) >= 1
+
+
+# ----- 만쥬 §6 장중 돌발 재료 — 구독 종목 추가 --------------------------------
+
+def test_build_reg_message_supports_incremental_add():
+    """``refresh="0"`` = 기존 등록에 **추가**(교체 아님).
+
+    만쥬 §6 은 "예상치 못한 돌발 뉴스가 나오면 즉각 관련 종목 매수"다. 장전에 고른
+    유니버스에 그 종목이 없으면 구독부터 없어서 감시조차 못 한다. 그래서 장중 추가가
+    필요하고, refresh 를 1(교체)로 보내면 **기존 종목이 통째로 날아간다**.
+    """
+    from scalp_it.realtime.collector import build_reg_message
+
+    msg = build_reg_message(["000001"], ["0B", "0D"], "1", refresh="0")
+    assert msg["refresh"] == "0"
+    assert msg["data"][0]["item"] == ["000001"]
+
+
+def test_pending_adds_respect_registration_limit():
+    """등록 한도를 넘겨 추가하면 안 된다 — 넘기면 커넥션이 쪼개져 서로 kick 한다.
+
+    2026-08-24 에 실제로 80종목을 단일 키로 넣었다가 30종목이 10:58 에 끊겼다.
+    """
+    from scalp_it.realtime.collector import plan_additions
+
+    # 이미 49종목, 0B+0D 면 커넥션당 50 → 1자리만 남는다.
+    have = [str(i).zfill(6) for i in range(49)]
+    ok, rejected = plan_additions(have, ["900001", "900002"], ["0B", "0D"])
+    assert ok == ["900001"]
+    assert rejected == ["900002"]
+
+
+def test_pending_adds_skip_already_subscribed():
+    from scalp_it.realtime.collector import plan_additions
+
+    have = ["000001", "000002"]
+    ok, rejected = plan_additions(have, ["000001", "000003"], ["0B", "0D"])
+    assert ok == ["000003"]
+    assert rejected == []
