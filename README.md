@@ -33,7 +33,7 @@ DART 재료 필터 · 장중 궤적→익일 갭 · 청산 4기법(MFE·트레�
 
 ```bash
 uv sync --extra dev
-uv run pytest                       # 905 tests
+uv run pytest                       # 915 tests
 
 export $(grep -v '^#' ../kr-quant/.env | xargs)                        # KR_QUANT_DB
 export $(grep -E '^KIWOOM_APP_(KEY|SECRET)=' ../quant-airflow/.env | xargs)
