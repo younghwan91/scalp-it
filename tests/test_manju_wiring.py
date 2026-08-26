@@ -164,3 +164,50 @@ def test_unmeasurable_book_goes_last():
     d._book["KNOWN"] = ([(10_000.0, 10_000)] * 10, [(10_010.0, 10_000)] * 10)
     order = sorted(["UNKNOWN", "KNOWN"], key=lambda c: d._manju_priority(c, BASE))
     assert order[0] == "KNOWN"
+
+
+# ----- 낙폭 방어: 정점 대비 꺾이면 덜 건다 -------------------------------------
+
+def _cycle(g: RiskGuard, secs: float, follower: str, exit_px: float) -> None:
+    """알림 → 관통 체결 → 지정 가격에서 시간청산 한 사이클."""
+    a = _alert()
+    a = type(a)(**{**a.__dict__, "ts": BASE + timedelta(seconds=secs),
+                   "follower": follower,
+                   "exit_ts": BASE + timedelta(seconds=secs + 2)})
+    g.on_alert(a)
+    g.on_tick(follower, BASE + timedelta(seconds=secs + 1), 9_999)
+    g.on_tick(follower, BASE + timedelta(seconds=secs + 3), exit_px)
+
+
+def test_drawdown_cuts_size_after_giving_back_profit():
+    """만쥬: "과거 정점 대비 계좌가 꺾일 때 예수금을 1/3~1/5로 축소"."""
+    g = RiskGuard(RiskGuardConfig(
+        position_notional=1_000_000, daily_loss_limit=0.0, max_consecutive_losses=0,
+        max_positions=99, stop_file=None, drawdown_krw=30_000))
+    full = g.effective_notional()
+    _cycle(g, 0, "000002", 10_500)      # +5% → 실현 +5만, 정점 갱신
+    assert g.effective_notional() == full, "벌고 있는 동안은 그대로"
+    _cycle(g, 10, "000003", 9_600)      # −4% → 정점 대비 9만 반납
+    assert g.effective_notional() < full
+    assert g.effective_notional() == full / 3
+
+
+def test_drawdown_does_not_unwind_on_recovery():
+    """줄인 비중으로 조금 회복했다고 다시 키우면 손실 복구 심리 그대로다."""
+    g = RiskGuard(RiskGuardConfig(
+        position_notional=1_000_000, daily_loss_limit=0.0, max_consecutive_losses=0,
+        max_positions=99, stop_file=None, drawdown_krw=30_000))
+    _cycle(g, 0, "000002", 10_500)
+    _cycle(g, 10, "000003", 9_600)
+    cut = g.effective_notional()
+    _cycle(g, 20, "000004", 10_500)     # 회복
+    assert g.effective_notional() == cut, "한 번 걸리면 그날은 안 풀린다"
+
+
+def test_drawdown_is_off_by_default():
+    g = RiskGuard(RiskGuardConfig(
+        position_notional=1_000_000, daily_loss_limit=0.0, max_consecutive_losses=0,
+        max_positions=99, stop_file=None))
+    _cycle(g, 0, "000002", 10_500)
+    _cycle(g, 10, "000003", 9_000)
+    assert g.effective_notional() == 1_000_000

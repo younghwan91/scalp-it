@@ -124,6 +124,10 @@ class RiskGuardConfig:
     # **수익이 난 뒤에야** 켜진다 — 진입부터 켜면 2등주 자체 가격 노이즈에 털린다.
     trail_arm: float = 0.0                    # 이만큼 오르면 트레일링 무장. 0 = 끔
     trail_pct: float = 0.0                    # 무장 후 고점 대비 이만큼 밀리면 청산
+    # 낙폭 방어(만쥬): (비공개 회신 — 공개본에서 뺐다) 연속손절 킬스위치가 "오늘 그만"이라면 이건 "덜 걸고 계속"이다 — 정점을
+    # 찍고 밀리는 중인데 같은 크기로 계속 거는 걸 막는다. 0 = 끔.
+    drawdown_krw: float = 0.0                 # 실현손익이 정점 대비 이만큼 밀리면
+    drawdown_size_multiplier: float = 1.0 / 3  # 명목을 이 배수로 줄인다(만쥬: 1/3~1/5)
     max_positions: int = 2                    # 동시 보유 가상 포지션 상한
     fill_basis: str = "through"               # 'through'(보수·기본) | 'touch'(낙관)
     track_shadow_fill: bool = True            # 반대 가정을 그림자로 병행 추적(로그 전용)
@@ -284,6 +288,10 @@ class RiskGuard:
         self.day: date | None = None
         self.realized_krw: float = 0.0        # 당일 누적 실현손익(원)
         self.consecutive_losses: int = 0
+        # 낙폭 방어 — 실현손익의 그날 정점. 시드가 아니라 **정점**이 기준이라
+        # 벌었다가 토해내는 중인지가 판정 대상이 된다(만쥬 원문 그대로).
+        self.peak_realized_krw: float = 0.0
+        self.drawdown_capped: bool = False
         self.wins: int = 0
         self.losses: int = 0
         self.killed: bool = False
@@ -306,6 +314,8 @@ class RiskGuard:
         mult = self.size_multiplier
         if self.profit_capped:
             mult *= max(0.0, float(self.config.profit_size_multiplier))
+        if self.drawdown_capped:
+            mult *= max(0.0, float(self.config.drawdown_size_multiplier))
         return self.config.position_notional * mult
 
     def set_size_multiplier(self, mult: float) -> None:
@@ -332,6 +342,8 @@ class RiskGuard:
             self.day = d
             self.realized_krw = 0.0
             self.profit_capped = False
+            self.peak_realized_krw = 0.0
+            self.drawdown_capped = False
             self.consecutive_losses = 0
             self.wins = 0
             self.losses = 0
@@ -353,6 +365,13 @@ class RiskGuard:
         # 이익 목표는 **킬이 아니다** — 매매를 멈추지 않고 비중만 줄인다(§9-6).
         if cfg.daily_profit_target > 0 and self.realized_krw >= cfg.daily_profit_target:
             self.profit_capped = True
+        # 낙폭 방어도 킬이 아니다 — 덜 걸고 계속한다. **한 번 걸리면 그날 안 풀린다**:
+        # 줄인 비중으로 조금 회복했다고 다시 키우면 정확히 만쥬가 막으려는 행동
+        # (손실 복구 심리로 크게 거는 것)이 된다.
+        self.peak_realized_krw = max(self.peak_realized_krw, self.realized_krw)
+        if (cfg.drawdown_krw > 0
+                and self.peak_realized_krw - self.realized_krw >= cfg.drawdown_krw - _EPS):
+            self.drawdown_capped = True
         if self.killed:
             return
         if self._stop_file_present():

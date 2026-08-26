@@ -156,6 +156,8 @@ def build_guard(args: argparse.Namespace) -> RiskGuard | None:
         max_consecutive_losses=args.max_consecutive_losses,
         trail_arm=args.trail_arm,
         trail_pct=args.trail,
+        drawdown_krw=args.drawdown_krw,
+        drawdown_size_multiplier=args.drawdown_size,
         max_positions=args.max_positions,
         fill_basis=args.fill_basis,
         cost_rate=args.cost_rate,
@@ -1059,6 +1061,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="%% 손실한도·기록 기준 자본(원). 기본 100만")
     g.add_argument("--position-notional", type=float, default=100_000.0,
                    help="가상 포지션 1건 명목(원) — 수익률→원 환산. 기본 10만")
+    g.add_argument("--drawdown-krw", type=float, default=0.0,
+                   help="실현손익이 그날 정점 대비 이만큼(원) 밀리면 비중 축소 — 만쥬 "
+                        "\"과거 정점 대비 계좌가 꺾일 때 예수금을 1/3~1/5로\". 0 = 끔")
+    g.add_argument("--drawdown-size", type=float, default=1.0 / 3,
+                   help="낙폭 방어 발동 시 명목 배수(만쥬: 1/3~1/5). 기본 1/3")
     g.add_argument("--trail-arm", type=float, default=0.0,
                    help="이만큼 오르면 트레일링 무장(만쥬: 0.03 = +3%%). 0 = 끔")
     g.add_argument("--trail", type=float, default=0.0,
@@ -1125,10 +1132,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     pairs = resolve_pairs(args)
-    if not pairs:
-        raise SystemExit("감시할 쌍이 없다. --pairs 또는 워치리스트를 확인하라.")
-    detector = PairDetector(pairs, build_config(args),
-                            **build_universe_inputs(args))
+    uni = build_universe_inputs(args)
+    # 만쥬는 고정 쌍을 안 쓴다 — 그날 대장이 상한가로 가면 **그 자리에서** 같은 테마
+    # 2·3등주를 짝으로 삼는다. 그래서 워치리스트가 비어도 동적 모드면 정상이다.
+    # 동적 모드 성립 조건은 감지기와 같다: 유니버스와 섹터가 **둘 다** 있어야 한다.
+    if not pairs and not (uni.get("universe") and uni.get("sectors")):
+        raise SystemExit("감시할 쌍이 없다. --pairs·워치리스트 또는 유니버스를 확인하라.")
+    detector = PairDetector(pairs, build_config(args), **uni)
     guard = build_guard(args)
     # 주문 실행기 — 리플레이(과거 재현)에선 절대 만들지 않는다.
     executor = None if args.replay else build_order_executor(args, pairs)
