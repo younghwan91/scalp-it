@@ -152,3 +152,29 @@ def test_evaluate_gate_raises_when_no_data() -> None:
     conn = _make_db()
     with pytest.raises(ValueError):
         evaluate_gate(conn, "2026-08-26")
+
+
+# ----- 만쥬 §4-3 광기 구간 ----------------------------------------------------
+
+def test_mania_needs_both_turnover_and_limitups():
+    """광기 = 거래대금과 상한가가 **동시에** 극단 — 만쥬 §4-3.
+
+    원문: "시장의 광기가 극에 달한 구간에서는 최대 1시간 이내 단기 매매로 제한하고
+    오버나이트 절대 금지". 다만 원자료에 **판정 기준이 없다**(문서 44 §11 #12).
+    그래서 우리 1년 실측 분위로 정의한다 — 거래대금 90분위 16조, 상한가 90분위 15건.
+
+    한 축만 극단인 건 광기가 아니다. 거래대금만 크면 대형주 장세일 수 있고,
+    상한가만 많으면 특정 테마 하나가 뜬 것일 수 있다.
+    """
+    from scalp_it.market_regime import is_mania
+
+    assert is_mania(turnover_jo=18.0, limitups=20)
+    assert not is_mania(turnover_jo=18.0, limitups=5)      # 거래대금만
+    assert not is_mania(turnover_jo=9.0, limitups=20)      # 상한가만
+    assert not is_mania(turnover_jo=4.7, limitups=6)       # 오늘 같은 극침체
+
+
+def test_mania_thresholds_are_tunable():
+    from scalp_it.market_regime import is_mania
+
+    assert is_mania(turnover_jo=11.0, limitups=11, min_turnover_jo=10.0, min_limitups=10)

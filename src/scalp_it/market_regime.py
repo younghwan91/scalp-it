@@ -244,3 +244,53 @@ def evaluate_gate(
         leader_turnover_jo=leader[2] if leader else None,
         note=_note_for(regime, turnover),
     )
+
+
+#: 광기 구간 문턱 — 만쥬 §4-3 은 판정 기준을 말하지 않는다(문서 44 §11 #12 "정의 공백").
+#: 그래서 우리 1년 실측 분위(2025-08~2026-08, 259거래일)로 정한다:
+#:   코스닥 거래대금 중앙 10.1조 · 90% 16.0조 · 최대 25.3조
+#:   일별 상한가   중앙 9건  · 90% 15건  · 최대 25건
+#: 둘 다 90분위를 넘는 날을 광기로 본다. **한 축만 극단인 건 광기가 아니다** —
+#: 거래대금만 크면 대형주 장세일 수 있고, 상한가만 많으면 테마 하나가 뜬 것일 수 있다.
+MANIA_TURNOVER_JO = 16.0
+MANIA_LIMITUPS = 15
+
+
+def is_mania(*, turnover_jo: float, limitups: int,
+             min_turnover_jo: float = MANIA_TURNOVER_JO,
+             min_limitups: int = MANIA_LIMITUPS) -> bool:
+    """시장이 '광기 구간'인가(만쥬 §4-3).
+
+    > "시장의 광기가 극에 달한 구간에서는 **최대 1시간 이내 단기 매매로 제한**하고
+    > **오버나이트 절대 금지**" [04:29]
+
+    우리 보유 시간이 이미 4분이라 1시간 제한과 오버나이트 금지는 자동으로 지켜진다.
+    그래서 이 판정의 쓸모는 **기록**이다 — 그날이 광기였는지 알아야 나중에 성적을
+    제대로 읽는다. 광기 구간의 성적을 평상시와 섞으면 판단이 무너진다.
+    """
+    return turnover_jo >= min_turnover_jo and limitups >= min_limitups
+
+
+def count_limitups(conn: Any, day: date | str, market: str = KOSDAQ) -> int:
+    """그날 상한가 종목 수(전일종가 대비 +29.5% 이상).
+
+    ``daily_bars.close`` 가 **정수형**이라 ``::float`` 캐스팅이 없으면 정수 나눗셈이
+    되어 거의 안 걸린다 — 실제로 그 함정에 빠져 1년 2,313건을 5건으로 셌던 적이 있다.
+    """
+    ph = _ph(conn)
+    d = day if isinstance(day, str) else day.isoformat()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        with x as (
+          select b.code, b.date, cast(b.close as float) c,
+                 lag(cast(b.close as float)) over (partition by b.code order by b.date) pc
+          from daily_bars b join stocks s on s.code = b.code
+          where s.market = {ph} and b.date <= {ph}
+        )
+        select count(*) from x where date = {ph} and pc > 0 and c / pc >= 1.295
+        """,
+        [market, d, d],
+    )
+    row = cur.fetchone()
+    return int(row[0]) if row else 0

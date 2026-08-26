@@ -216,6 +216,22 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
         # 갈 때 이 판정을 강제로 바꿔야 한다.
         try:
             gate = evaluate_gate(conn, prev, target=today)
+            # 만쥬 §4-3 광기 구간 — 우리 보유 4분이라 "1시간 제한·오버나이트 금지"는
+            # 자동 충족이다. 그래서 이 판정의 쓸모는 **기록**이다: 그날이 광기였는지
+            # 알아야 나중에 성적을 제대로 읽는다.
+            try:
+                from .market_regime import count_limitups, is_mania
+
+                n_lim = count_limitups(conn, prev)
+                if is_mania(turnover_jo=gate.turnover_jo, limitups=n_lim):
+                    print(f"#   ⚠ 광기 구간 — 거래대금 {gate.turnover_jo:.1f}조 · "
+                          f"상한가 {n_lim}건(둘 다 1년 90분위 초과). 만쥬는 이때 "
+                          f"1시간 이내·오버나이트 금지라 했다(보유 4분이라 이미 충족).",
+                          file=sys.stderr)
+                else:
+                    print(f"#   상한가 {n_lim}건(전일)", file=sys.stderr)
+            except Exception as exc:  # noqa: BLE001 — 광기 판정 실패로 기동을 막지 않는다
+                print(f"[경고] 광기 구간 판정 실패(계속): {exc}", file=sys.stderr)
             print(f"# 시황 — {gate.asof} 코스닥 {gate.turnover_jo:.2f}조 · {gate.regime}"
                   f" · 매매권고 {'예' if gate.tradable else '아니오'}"
                   f" · 비중배수 {gate.size_multiplier:g}", file=sys.stderr)

@@ -70,8 +70,19 @@ def _regime(day: str) -> str:
                 return ""
             g = evaluate_gate(conn, prev, target=date.fromisoformat(day))
             tag = "매매 권고" if g.tradable else "**만쥬 기준 쉬는 날**"
+            extra = ""
+            try:
+                from scalp_it.market_regime import count_limitups, is_mania
+
+                n_lim = count_limitups(conn, prev)
+                extra = f" · 상한가 {n_lim}건"
+                if is_mania(turnover_jo=g.turnover_jo, limitups=n_lim):
+                    # 광기 구간의 성적을 평상시와 섞어 읽으면 판단이 무너진다(§4-3).
+                    extra += " · **광기 구간**"
+            except Exception:  # noqa: BLE001, S110 — 부가 정보라 없어도 된다
+                pass
             return (f"{g.asof} 코스닥 {g.turnover_jo:.2f}조 · {g.regime} · {tag}"
-                    f" (비중배수 {g.size_multiplier:g})")
+                    f" (비중배수 {g.size_multiplier:g}){extra}")
     except Exception as exc:  # noqa: BLE001 — 국면을 못 읽어도 일지는 나와야 한다
         print(f"[경고] 국면 조회 실패(일지는 계속 생성): {exc}", file=sys.stderr)
         return ""
