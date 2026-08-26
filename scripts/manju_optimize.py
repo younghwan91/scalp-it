@@ -64,6 +64,13 @@ class Rule:
     take: float | None = None     # 익절. None = 상한 없음(만쥬 손익 구조)
     leader_exit: bool = True      # 대장이 상한가 놓치면 손익 무관 즉시
     trail: float | None = None    # 고점 대비 이만큼 밀리면 청산(추세 추종). None = 끔
+    # 트레일링을 **언제 켜느냐**. 진입 즉시 켜면 진 적이 있다(승률 60%→40%) —
+    # 2등주 자체 가격 노이즈가 되돌림 문턱을 그냥 스치기 때문이다. 만쥬가 말한 건
+    # "2등주 +3% 도달 시 트레일링"이라 **수익이 난 뒤에야** 켜지는 물건이다.
+    trail_arm: float = 0.0        # 고점이 진입가 대비 이만큼 오른 뒤에만 트레일링
+    # 진입 슬리피지(틱). 만쥬는 "현재가 위 2~3호가 지정가 원클릭"으로 사고 호가가
+    # 튈 땐 +1~2틱 불리하게 체결된다고 했다. 분봉 종가 진입 가정은 그만큼 낙관이다.
+    entry_slip_ticks: float = 0.0
     # 대장이탈을 알아챈 뒤 **얼마나 빨리 나가느냐**. 분봉으론 초 단위를 못 본다.
     #   close = 그 분 종가 = 최대 60초 지연(비관, 기본)
     #   open  = 그 분 시가 = 즉시 반응(낙관 상한 — 실전 하한이 아니라 상한이다)
@@ -84,6 +91,8 @@ class Rule:
                 f"/tp{'' if self.take is None else f'{self.take:.3f}'}"
                 f"/{'LE' if self.leader_exit else 'noLE'}"
                 f"{'' if self.trail is None else f'/tr{self.trail:.3f}'}"
+                f"{'' if not self.trail_arm else f'@{self.trail_arm:.3f}'}"
+                f"{'' if not self.entry_slip_ticks else f'/es{self.entry_slip_ticks:g}'}"
                 f"{'/held' if self.require_held else ''}"
                 f"{'' if self.rank_mode == 'group' else '/uni'}")
 
@@ -143,6 +152,8 @@ def simulate(ev: pd.Series, paths: dict, rule: Rule) -> dict[str, Any] | None:
 
     prev_close = float((info.get(fol) or {}).get("prev_close") or entry)
     slip = _slip(entry, prev_close)
+    # 살 때도 스프레드를 넘어 산다 — 위 호가를 긁는 주문이라 불리하게 체결된다.
+    entry += rule.entry_slip_ticks * slip
     # 대장이 상한가를 놓친 분(`lead_brk`)을 진입 시점 기준 오프셋으로.
     brk = ev.get("lead_brk")
     brk_off = None
@@ -179,7 +190,8 @@ def simulate(ev: pd.Series, paths: dict, rule: Rule) -> dict[str, Any] | None:
         # 추세 추종 — "상승 탄력이 충분히 나왔다고 판단되는 시점에 매도"의 기계화.
         # 시계를 보고 파는 게 아니라 **오버슈팅이 꺾일 때** 판다. 고점 대비 되돌림이
         # 문턱을 넘으면 나간다. 진입가 위에 있을 때만 발동한다(손절은 별개 축).
-        if (rule.trail is not None and peak > entry
+        if (rule.trail is not None and peak >= entry * (1 + rule.trail_arm)
+                and peak > entry
                 and np.isfinite(lo) and lo <= peak * (1 - rule.trail)):
             exit_px, reason = peak * (1 - rule.trail) - slip, "추세청산"
             break
@@ -239,10 +251,12 @@ def build_grid(args: argparse.Namespace) -> list[Rule]:
                         for le in (True, False):
                             for tr in args.trails:
                                 for rm in args.rank_modes:
-                                    grid.append(Rule(
-                                        pick=pick, rank_max=rank, hold=hold, stop=stop,
-                                        take=take, leader_exit=le, trail=tr,
-                                        rank_mode=rm))
+                                    for arm in (args.trail_arms if tr else [0.0]):
+                                        grid.append(Rule(
+                                            pick=pick, rank_max=rank, hold=hold,
+                                            stop=stop, take=take, leader_exit=le,
+                                            trail=tr, trail_arm=arm, rank_mode=rm,
+                                            entry_slip_ticks=args.entry_slip_ticks))
     return grid
 
 
@@ -266,6 +280,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--takes", nargs="+", type=float, default=[0.0])
     p.add_argument("--trails", nargs="+", type=float, default=[0.0],
                    help="고점 대비 되돌림 청산(추세 추종). 0 = 끔")
+    p.add_argument("--trail-arms", nargs="+", type=float, default=[0.0],
+                   help="이만큼 오른 뒤에만 트레일링을 켠다(만쥬: +3%). 0 = 즉시")
+    p.add_argument("--entry-slip-ticks", type=float, default=0.0,
+                   help="진입 슬리피지(틱). 만쥬 실전은 위 호가를 긁어 1~2틱 불리")
     p.add_argument("--select-by", default="net64",
                    choices=["gross", "net34", "net64", "net94"],
                    help="트레인에서 무엇으로 최선 셀을 고를지. 기본은 세후 64bp")

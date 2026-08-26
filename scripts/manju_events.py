@@ -46,6 +46,7 @@ from limitup_timing import _load_env, limit_up_price
 
 from scalp_it.intraday.loader import load_minute_bars
 from scalp_it.intraday.store import connect
+from scalp_it.ticksize import tick_size
 
 EPS = 1e-6
 OPEN_M = 9 * 60
@@ -59,6 +60,7 @@ THEME_W = 60            # 테마를 만드는 직전 거래일 수
 SURGE = 0.05            # 동반 급등으로 셀 하루 등락률 문턱
 COSURGE_MIN = 2         # 이 횟수 이상 같이 뛰어야 같은 테마로 본다
 THEME_CORR_MIN = 0.25   # 잔차 상관이 이보다 낮으면 테마가 아니다
+NEAR_TICKS = 3          # "대장이 상한가 호가를 3개 남겨둔" 시점(만쥬 진입 타이밍)
 
 
 def q(conn, sql, params=()):
@@ -142,6 +144,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--start", default="2025-08-04")
     ap.add_argument("--end", default="2026-08-21")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--entry", default="lock", choices=["lock", "near"],
+                    help="lock=대장이 상한가에 잠긴 분(옛 기준) · near=상한가 3호가 "
+                         "남은 분(만쥬 실제 진입). near 는 **잠기지 않은 건도 포함**한다 "
+                         "— 살 때는 잠길지 모르기 때문이다(lock 만 세면 미래를 본다)")
     a = ap.parse_args(argv)
     _load_env()
     conn = connect(os.environ.get("KR_QUANT_DB"))
@@ -218,12 +224,28 @@ def main(argv: list[str] | None = None) -> int:
                 sub = sub[sub.index > t_lock]
                 bad = sub[sub < limit_s[code] - EPS]
                 brk = int(bad.index[0]) if len(bad) else None
-            if t_lock is None or t_lock > LAST_TRIG:
+            # ── 진입 시각 ────────────────────────────────────────────
+            # 만쥬는 상한가가 **잠긴 뒤**가 아니라 3호가 남은 순간에 산다. 잠긴 분에
+            # 사는 건 1분봉이 마감된 뒤라 2등주가 이미 2~4% 튄 자리다.
+            near_px = limit_s[code] - NEAR_TICKS * tick_size(float(prev_s[code]))
+            nearcol = hw[code] >= near_px
+            t_near = int(nearcol.idxmax()) if nearcol.any() else None
+            if a.entry == "near":
+                T = t_near
+                # 대장이 상한가 근처를 **벗어나는** 분 = 호가 훼손의 분봉 대용물.
+                # 잠긴 뒤 이탈(brk)만 보면 애초에 안 잠긴 건의 청산 신호가 없다.
+                after = cw[code].dropna()
+                after = after[after.index > (T if T is not None else -1)]
+                gone = after[after < near_px]
+                lead_out = int(gone.index[0]) if len(gone) else None
+            else:
+                T = t_lock
+                lead_out = brk
+            if T is None or T > LAST_TRIG:
                 continue
-            cum_tv_lock = float(tw[code].reindex([t_lock]).iloc[0]) if t_lock in tw.index else np.nan
+            cum_tv_lock = float(tw[code].reindex([T]).iloc[0]) if T in tw.index else np.nan
             if not np.isfinite(cum_tv_lock) or cum_tv_lock < LEAD_TV_MIN:
                 continue
-            T = t_lock
             if (T + 1) not in ow.index:
                 continue
             o1 = ow.loc[T + 1]
@@ -269,7 +291,12 @@ def main(argv: list[str] | None = None) -> int:
                 "date": d, "lead": code, "lead_name": name_of.get(code, code), "T": T,
                 "t_touch": t_touch, "lead_limit": float(limit_s[code]),
                 "lead_cum_tv": cum_tv_lock, "lead_sector": lead_sec,
-                "lead_market": market_of.get(code), "lead_held": held, "lead_brk": brk,
+                "lead_market": market_of.get(code), "lead_held": held,
+                # 하네스의 대장발 청산이 읽는 값. near 진입에선 "상한가 근처를 벗어난
+                # 분", lock 진입에선 "잠김 이탈 분"이다 — 진입 기준과 짝이 맞아야 한다.
+                "lead_brk": lead_out,
+                "lead_locked": t_lock is not None, "t_lock": t_lock,
+                "t_near": t_near, "lead_brk_locked": brk, "entry_mode": a.entry,
                 "n_cand": len(cand), "picks": picks,
                 "fol_info": {c: {
                     "ret": float(df.at[c, "ret"]),

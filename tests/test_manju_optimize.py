@@ -10,6 +10,7 @@
 """
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from manju_optimize import Rule, evaluate, simulate  # noqa: E402
+from manju_optimize import Rule, evaluate, simulate
 
 
 def _path(closes, opens=None):
@@ -148,3 +149,42 @@ def test_pl_ratio_is_avg_win_over_avg_loss():
                                      rank_mode="group"))
     assert r["n"] == 2
     assert r["pl_ratio"] == pytest.approx(2.0, rel=0.05)
+
+
+# ----- 트레일링은 **수익이 난 뒤에야** 켜져야 한다 ------------------------------
+
+def _trail_fixture():
+    """+1.5% 갔다 본전까지 밀린 뒤 +6% 로 분출하고 +3% 로 되돌아오는 경로."""
+    info = {"A": {"ret": 0.2, "prev_close": 1000.0}, "B": {"ret": 0.1, "prev_close": 1000.0}}
+    closes = [1000, 1015, 1000, 1060, 1030, 1030]
+    paths = {c: _path(closes) for c in "AB"}
+    return _event({"sector": ["A", "B"]}, info), paths
+
+
+def test_trailing_armed_from_entry_gets_shaken_out():
+    """진입부터 켜면 초반 노이즈에 털린다 — 실제로 승률 60%→40% 로 무너졌던 자리."""
+    ev, paths = _trail_fixture()
+    got = simulate(ev, paths, Rule(pick="sector", rank_max=2, hold=5, stop=None,
+                                   leader_exit=False, trail=0.01, trail_arm=0.0,
+                                   rank_mode="group"))
+    assert got["reason"] == "추세청산"
+    assert got["gross"] < 0.02, "초반 되돌림에 털려 뒤에 온 분출을 못 먹는다"
+
+
+def test_trailing_armed_at_three_percent_rides_the_overshoot():
+    """만쥬가 말한 건 "+3% 도달 시 트레일링" — 그때까지는 안 켜져야 한다."""
+    ev, paths = _trail_fixture()
+    got = simulate(ev, paths, Rule(pick="sector", rank_max=2, hold=5, stop=None,
+                                   leader_exit=False, trail=0.01, trail_arm=0.03,
+                                   rank_mode="group"))
+    assert got["gross"] > 0.02, "+6% 까지 태운 뒤에 나와야 한다"
+
+
+def test_entry_slippage_makes_every_trade_worse():
+    """위 호가를 긁어 사면 진입가가 불리해진다 — 분봉 종가 진입은 낙관이다."""
+    ev, paths = _trail_fixture()
+    base = Rule(pick="sector", rank_max=2, hold=5, stop=None, leader_exit=False,
+                rank_mode="group")
+    clean = simulate(ev, paths, base)["gross"]
+    slipped = simulate(ev, paths, replace(base, entry_slip_ticks=2))["gross"]
+    assert slipped < clean
