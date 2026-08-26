@@ -1169,3 +1169,54 @@ def test_big_trade_needs_positive_threshold():
     """big_trade_krw 를 0 으로 두면 모든 체결이 '대량'이 된다 — 그건 필터가 아니다."""
     det = _limit_det(limitup_touch=True, min_big_trades=1, big_trade_krw=0.0)
     assert _limit_timeline(det, 13_000.0, lead30=13_000.0) == []
+
+
+# ----- 만쥬 §5-1 VI 방아쇠 ----------------------------------------------------
+
+def test_vi_trigger_fires_near_static_vi_band():
+    """정적 VI(당일 기준가 ±10%) 근처를 방아쇠로 — 만쥬 §5-1.
+
+    원문: "대장주가 상한가에 안착하거나 상한가 직전 급등·**VI에 들어가는 순간**".
+    VI 는 상한가(+30%)보다 훨씬 이른 +10% 에서 걸리므로, 상한가만 보면 놓치는
+    구간이 있다.
+
+    실시간 VI 피드(`1h`)를 구독하면 종목당 등록 단위가 2→3 이 되어 구독 가능 종목이
+    50→33 으로 준다. 정적 VI 는 **가격만으로 계산**되므로 구독 비용 없이 근사한다.
+    """
+    det = _accel_det(vi_near_pct=0.01, limitup_near_pct=0.0)   # VI 까지 1%p 이내
+    _feed_series(det, "000002", _flat(-90, 40, 10_000))
+    # 그날 첫 체결가가 기준가가 된다 → 10,000. 정적 VI 상단 11,000, 1%p 이내는 10,890.
+    alerts = _feed_series(det, "000001", _flat(-90, 20, 10_000)
+                          + [(25, 10_500), (30, 10_900)])
+    assert alerts, "VI 근접 방아쇠가 안 터졌다"
+
+
+def test_vi_trigger_off_by_default():
+    det = _accel_det()
+    assert det.config.vi_near_pct == 0.0
+
+
+def test_vi_trigger_works_without_prev_close_but_ranking_does_not():
+    """VI 는 전일종가 없이도 되지만, 후속주 순위는 전일종가가 있어야 매겨진다.
+
+    상한가 방아쇠는 전일종가가 있어야 계산되는데(×1.3) **VI 는 당일 기준가만 쓴다**.
+    그래서 전일종가를 못 받은 종목도 VI 로는 대장이 될 수 있다 — 다만 후속주를
+    당일등락률로 고르는 단계에서 막힌다. 두 제약이 다른 자리에 있다는 뜻이다.
+    """
+    cfg = _manju_cfg_for_vi()
+    det = PairDetector([], cfg, universe=["000001", "000002"],
+                       sectors={"000001": "A", "000002": "A"}, prev_close={})
+    _feed_series(det, "000002", _flat(-90, 40, 10_000))
+    _feed_series(det, "000001", _flat(-90, 20, 10_000) + [(30, 10_900)])
+    # 대장 방아쇠 자체는 VI 로 성립한다(전일종가 불필요).
+    assert det._vi_kind("000001", 10_900) == "vi"
+    assert det.limit_up("000001") is None       # 상한가는 못 구한다
+    # 그러나 후속주를 등락률로 고를 수 없어 알림은 안 나간다.
+    assert det._dynamic_pairs("000001", BASE + timedelta(seconds=30)) == []
+
+
+def _manju_cfg_for_vi():
+    return DetectorConfig.stable(
+        vi_near_pct=0.01, limitup_near_pct=0.0, cosurge_min=0.0, premove_max=1.0,
+        min_buy_ratio=0.0, min_sl_ticks=0.0, max_roundtrip_bp=0.0, cooldown=0.0,
+        surge_ret=0.015, surge_window=30.0)

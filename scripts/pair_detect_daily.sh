@@ -27,6 +27,10 @@ while [ "$(date +%s)" -lt "$END" ]; do
   #   --limitup-near 0.05 = 상한가까지 5%p 이내(≈ 등락률 +25%), 원본 presurge 정의.
   #   --limitup-require-surge 로 모멘텀까지 AND — 없으면 상한가 근처에서 정체된
   #   종목에도 발동한다(원본은 +25% 교차 **그 분에 +1%** 올랐을 때만).
+  #   --vi-near 0.01 = 정적 VI 상단(당일 기준가 +10%) 1%p 이내. 만쥬는 상한가와 함께
+  #   "VI 에 들어가는 순간"도 방아쇠로 든다. VI 는 +10%라 상한가(+30%)보다 훨씬 이르다.
+  #   실시간 VI 피드(1h)를 구독하면 종목당 등록 단위가 2→3 이 되어 구독이 50→33 종목으로
+  #   줄고 FID 매핑도 미검증이라, 가격으로 계산한다(구독 비용 0).
   # 종목 선정(§3·§4-2) — 고정 쌍이 아니라 그날 유니버스에서 섹터별로 새로 고른다.
   #   유니버스 선정이 실패하면 기존 워치리스트로 자동 폴백한다(하루를 날리지 않는다).
   #   45종목 = 단일 앱키 한도 50 안. 넘기면 커넥션이 쪼개져 서로 kick 한다(08-24 사고).
@@ -49,7 +53,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
   /home/young/.local/bin/uv run --extra pg scalp-pair-detect \
     --live --live-order --duration "$(date '+%H:%M')-15:20" \
     --take-profit 0 --stop-loss -0.005 --hold 240 \
-    --limitup-near 0.05 --limitup-require-surge \
+    --limitup-near 0.05 --limitup-require-surge --vi-near 0.01 \
     --universe-size 45 --max-roundtrip-bp 20 --order-krw 10000000 \
     --lock-min-krw 300000000 --lock-wall-decay 0.5 \
     --dump-krw 300000000 --big-trades 1 \

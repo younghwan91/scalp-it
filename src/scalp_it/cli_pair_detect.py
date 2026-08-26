@@ -105,6 +105,8 @@ def build_config(args: argparse.Namespace) -> DetectorConfig:
         over["limitup_lock_secs"] = args.limitup_lock
     if args.limitup_require_surge:
         over["limitup_require_surge"] = True
+    if args.vi_near is not None:
+        over["vi_near_pct"] = args.vi_near
     if args.max_roundtrip_bp is not None:
         over["max_roundtrip_bp"] = args.max_roundtrip_bp
     if args.order_krw is not None:
@@ -823,6 +825,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stale-sector-limitups", type=int, default=0,
                    help="이 횟수를 넘게 상한가가 나온 섹터는 '소비된 테마'로 보고 배제"
                         "(만쥬 §5-5). 0 = 끔 — 문턱이 낮으면 유니버스가 거덜난다")
+    p.add_argument("--vi-near", type=float, default=None,
+                   help="정적 VI 상단(당일 기준가 +10%%)까지 이 비율 이내면 발동 — "
+                        "만쥬 §5-1 \"VI 에 들어가는 순간\". VI 는 +10%%라 상한가(+30%%)"
+                        "보다 훨씬 이르다. 실시간 VI 피드 없이 가격으로 계산한다. 0 = 끔")
     p.add_argument("--limitup-require-surge", action="store_true",
                    help="상한가 방아쇠에 서지 조건까지 AND — 상한가 근처에서 정체된 "
                         "종목에 발동하는 걸 막는다(원본 presurge 는 +25% 교차 AND "

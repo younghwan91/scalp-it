@@ -264,6 +264,14 @@ class DetectorConfig:
     #   전일종가를 모르는 종목은 상한가를 계산할 수 없으므로 **방아쇠 없음**(안전 스킵).
     limitup_touch: bool = False       # 현재가 ≥ 상한가
     limitup_near_pct: float = 0.0     # 상한가까지 이 비율 이내면 발동. 0.04 = 4%p. 0 = 끔
+    # VI 방아쇠(만쥬 §5-1 "상한가 안착하거나 상한가 직전 급등·**VI에 들어가는 순간**").
+    #   VI 는 +10% 에서 걸려 상한가(+30%)보다 훨씬 이르다 — 상한가만 보면 놓치는 구간이다.
+    #   실시간 VI 피드(`1h`)를 구독하면 종목당 등록 단위가 2→3 이 되어 구독 가능 종목이
+    #   50→33 으로 준다. 게다가 그 FID 매핑은 아직 장중 대조가 안 됐다(collector 주석).
+    #   정적 VI 는 **당일 기준가 대비 ±10%** 라 가격만으로 계산된다 — 구독 비용 0.
+    #   기준가는 그날 처음 본 체결가로 근사한다(시가를 따로 안 받으므로).
+    vi_band_pct: float = 0.10         # 정적 VI 발동 폭(기준가 대비). KRX 기준 10%
+    vi_near_pct: float = 0.0          # VI 상단까지 이 비율 이내면 발동. 0 = 끔
     limitup_lock_secs: float = 0.0    # 상한가를 이 초만큼 연속 유지(잠김 근사). 0 = 끔
     limitup_require_surge: bool = False  # 상한가 방아쇠에 서지 조건까지 AND 로 요구
     # 동적 대장/후속 선정(문서 44 §3·§4-2) — universe·sectors 를 주입했을 때만 돈다.
@@ -558,6 +566,10 @@ class PairDetector:
         self._sector_limitups: dict[str, int] = {}
         self.set_sector_limitup_counts(sector_limitup_counts)
         self._universe: set[str] = {str(c) for c in (universe or ())}
+        # 정적 VI 기준가 — 그날 처음 본 체결가로 근사한다(시가를 따로 안 받는다).
+        # 날짜가 바뀌면 비운다. 만쥬 §5-1 VI 방아쇠의 유일한 입력이다.
+        self._session_base: dict[str, float] = {}
+        self._session_day: Any = None
         # 동적 모드는 유니버스와 섹터가 **둘 다** 있어야 성립한다. 하나만 오면 고정 쌍만 돈다.
         self._dynamic = bool(self._universe and self._sectors)
         if self._dynamic:
@@ -668,6 +680,12 @@ class PairDetector:
         if code not in self._codes:
             return []
         price = float(price)
+        day = ts.date()
+        if self._session_day != day:
+            # 새 세션 — 어제 기준가로 오늘 VI 를 재면 안 된다.
+            self._session_day = day
+            self._session_base.clear()
+        self._session_base.setdefault(code, price)
         hist = self._prices[code]
         hist.append((ts, price))
         self._trim(hist, ts)
@@ -717,7 +735,8 @@ class PairDetector:
     @property
     def _limitup_on(self) -> bool:
         cfg = self.config
-        return bool(cfg.limitup_touch or cfg.limitup_near_pct > 0 or cfg.limitup_lock_secs > 0)
+        return bool(cfg.limitup_touch or cfg.limitup_near_pct > 0
+                    or cfg.limitup_lock_secs > 0 or cfg.vi_near_pct > 0)
 
     def limit_up(self, code: str) -> float | None:
         """그 종목의 상한가. 전일종가를 주입받지 못했으면 None(억지 추정 금지)."""
@@ -866,6 +885,17 @@ class PairDetector:
             return "near"
         return None
 
+    def _vi_kind(self, code: str, price: float) -> str | None:
+        """정적 VI 상단 근접 판정(만쥬 §5-1). 기준가를 모르면 None(억지 추정 금지)."""
+        cfg = self.config
+        if cfg.vi_near_pct <= 0:
+            return None
+        base = self._session_base.get(code)
+        if not base or base <= 0:
+            return None
+        upper = base * (1.0 + cfg.vi_band_pct)
+        return "vi" if price >= upper * (1.0 - cfg.vi_near_pct) else None
+
     def _leader_trigger(
         self, code: str, ts: datetime, price: float
     ) -> tuple[str, float] | None:
@@ -873,7 +903,8 @@ class PairDetector:
         cfg = self.config
         surge = self._ret(code, ts, cfg.surge_window)
         if self._limitup_on:
-            kind = self._limitup_kind(code, ts, price)
+            # 상한가 계열 → VI 순으로 본다. 상한가가 더 강한 신호라 먼저다.
+            kind = self._limitup_kind(code, ts, price) or self._vi_kind(code, price)
             if kind is None:
                 return None
             if cfg.limitup_require_surge and (surge is None or surge < cfg.surge_ret):
