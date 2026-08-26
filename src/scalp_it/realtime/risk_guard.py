@@ -182,6 +182,11 @@ class Position:
     follower_name: str = ""
     basis: str = "through"                    # 이 포지션이 굴러가는 체결 가정
     shadow: bool = False                      # True 면 회계 밖(로그 전용) 그림자
+    # 그림자에는 성격이 다른 둘이 섞인다:
+    #   (a) 체결가정 병기 — touch/through 를 나란히 재려고 만든 것. 실제로 **산** 알림이다.
+    #   (b) 국면 차단 — 만쥬 기준 쉬는 날이라 **안 산** 것의 "샀으면 어땠나".
+    # 집계에서 (a)는 가정별로 갈라 봐야 하고 (b)는 실적에서 빼야 하므로 표시를 나눈다.
+    blocked: bool = False
     leader_lost: bool = False                 # 대장이 상한가를 놓쳤다고 통보받았는가
     # 분할 매도(만쥬 §5-2). remaining 은 아직 안 판 비율 — 잔량 손익은 여기에 곱한다.
     remaining: float = 1.0
@@ -243,6 +248,13 @@ class Position:
             "exit_reason": self.exit_reason,
             "leader_lost": self.leader_lost,
             "manual": self.manual,
+            # **그림자인지 반드시 남긴다.** 안 남기면 일지·일일요약이 "안 산 것"을
+            # 실제 매매로 세어 그날 성적이 통째로 거짓이 된다. 쉬는 국면에 그림자만
+            # 쌓이는 지금은 그 차이가 전부다.
+            "shadow": self.shadow,
+            # 국면 차단으로 **안 산** 것. 체결가정 병기 그림자(실제로 산 알림)와
+            # 구분된다 — 집계는 이 값으로 걸러야 한다.
+            "blocked": self.blocked,
             # 체결 여부·지연 — 두 가정 병기
             "fill_basis": basis,
             "filled": self.is_filled(basis),
@@ -424,7 +436,8 @@ class RiskGuard:
                 # 0 짜리 그림자는 손익이 전부 0 이라 기록할 게 없다.
                 self.shadow_positions.append(
                     self._new_position(alert, self.config.fill_basis, shadow=True,
-                                       notional=self.config.position_notional))
+                                       notional=self.config.position_notional,
+                                       blocked=True))
             return Decision(allowed=False, reason=BLOCK_REGIME_ZERO)
         if len(self.open_positions) >= self.config.max_positions:
             return Decision(allowed=False, reason="max_positions")
@@ -440,7 +453,8 @@ class RiskGuard:
         return Decision(allowed=True)
 
     def _new_position(self, alert: Alert, basis: str, *, shadow: bool,
-                      notional: float | None = None) -> Position:
+                      notional: float | None = None,
+                      blocked: bool = False) -> Position:
         return Position(
             follower=alert.follower,
             leader=alert.leader,
@@ -454,6 +468,7 @@ class RiskGuard:
             follower_name=alert.follower_name,
             basis=basis,
             shadow=shadow,
+            blocked=blocked,
         )
 
     # ----- 틱 진입점(리허설 체결·청산) ---------------------------------------

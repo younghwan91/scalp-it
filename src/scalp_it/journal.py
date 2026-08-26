@@ -80,6 +80,7 @@ class JournalEntry:
     why_entry: str
     why_exit: str
     exit_reason: str
+    blocked: bool = False         # 안 산 것 — 국면 차단 중 "샀으면 어땠나" 기록
     entry: float | None = None
     exit_price: float | None = None
     pnl: float | None = None
@@ -184,6 +185,7 @@ def build_entries(alerts: Iterable[dict[str, Any]],
             why_entry=why_entered(a),
             why_exit=why_exited(c) if c else "아직 청산되지 않음",
             exit_reason=str(c.get("exit_reason") or "미청산") if c else "미청산",
+            blocked=bool(c.get("blocked")) if c else False,
             entry=a.get("entry"),
             exit_price=c.get("exit_price"),
             pnl=c.get("pnl"), pnl_krw=c.get("pnl_krw"),
@@ -211,7 +213,9 @@ def render_journal(entries: Sequence[JournalEntry], *, day: str,
     if note:
         lines += [note, ""]
 
-    traded = [e for e in entries if e.exit_reason != "배제"]
+    # 그림자는 **안 산 것**이다. 실제 매매와 같은 표에 섞으면 그날 성적이 거짓이 된다.
+    traded = [e for e in entries if e.exit_reason != "배제" and not e.blocked]
+    shadows = [e for e in entries if e.blocked]
     skipped = [e for e in entries if e.exit_reason == "배제"]
 
     if not traded:
@@ -230,6 +234,19 @@ def render_journal(entries: Sequence[JournalEntry], *, day: str,
                 f"- **왜 나왔나** — {e.why_exit}",
                 "",
             ]
+
+    if shadows:
+        # 쉬는 국면(거래대금 미달)에는 이것만 쌓인다. 만쥬 규칙대로 안 샀고, 안 산
+        # 자리에서 무슨 일이 있었는지만 남긴다 — 실현손익에는 1원도 안 들어간다.
+        tot = sum(e.pnl_krw or 0.0 for e in shadows)
+        win = sum(1 for e in shadows if (e.pnl_krw or 0.0) > 0)
+        lines += [f"## 안 샀지만 기록 {len(shadows)}건 (국면 차단 · 실계좌 무관)",
+                  (f"만쥬 기준 쉬는 날이라 진입하지 않았다. 샀다면 승 {win} · "
+                   f"합계 {tot:+,.0f}원."), ""]
+        for e in sorted(shadows, key=lambda x: -abs(x.pnl_krw or 0.0))[:10]:
+            pnl = f"{e.pnl_krw:+,.0f}원" if e.pnl_krw is not None else "—"
+            lines += [f"- {e.ts} {e.follower_name or e.follower} {pnl} — {e.why_exit}"]
+        lines += [""]
 
     if skipped:
         lines += [f"## 배제된 신호 {len(skipped)}건", ""]

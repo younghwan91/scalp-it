@@ -158,6 +158,7 @@ def _upsert_text(day: str, line: str) -> None:
 def main() -> int:
     day = sys.argv[1] if len(sys.argv) > 1 else str(date.today())  # noqa: DTZ011
     rows: list[dict[str, Any]] = []
+    shadows: list[dict[str, Any]] = []
     if not POS_LOG.exists():
         print(f"[{day}] 포지션 로그 없음")
         return 0
@@ -167,8 +168,21 @@ def main() -> int:
         r = json.loads(line)
         # close(체결 후 청산) + unfilled(미체결 만료) 둘 다 모집단. 구버전 로그는
         # 미체결도 event="close" 라 status 로 한 번 더 갈라낸다.
+        # 그림자(국면 차단 중 "샀으면 어땠나")는 실제 매매가 아니다 — 섞으면
+        # 그날 성적이 거짓이 된다. 따로 센다.
+        if r.get("blocked"):
+            shadows.append(r)
+            continue
         if r.get("event") in ("close", "unfilled") and str(r.get("ts", "")).startswith(day):
             rows.append(r)
+    same_day = [r for r in shadows
+                if r.get("event") in ("close", "unfilled")
+                and str(r.get("ts", "")).startswith(day)]
+    if same_day:
+        pnl = sum(float(r.get("pnl_krw") or 0.0) for r in same_day)
+        win = sum(1 for r in same_day if float(r.get("pnl_krw") or 0.0) > 0)
+        print(f"[{day}] 안 샀지만 기록 {len(same_day)}건 (국면 차단·실계좌 무관) — "
+              f"샀다면 승 {win} · 합계 {pnl:+,.0f}원")
     if not rows:
         print(f"[{day}] 청산 0건")
         return 0
