@@ -154,6 +154,9 @@ def build_guard(args: argparse.Namespace) -> RiskGuard | None:
         size_multiplier=args.size_multiplier,
         daily_profit_target=args.daily_profit_target,
         profit_size_multiplier=args.profit_size_multiplier,
+        partial_exit_ratio=args.partial_exit,
+        partial_exit_gain=args.partial_exit_gain,
+        partial_exit_after_s=args.partial_exit_after,
         stop_file=(None if args.no_stop_file else args.stop_file),
     )
     return RiskGuard(cfg)
@@ -557,6 +560,9 @@ def build_order_executor(
         size_multiplier=args.size_multiplier,
         daily_profit_target=args.daily_profit_target,
         profit_size_multiplier=args.profit_size_multiplier,
+        partial_exit_ratio=args.partial_exit,
+        partial_exit_gain=args.partial_exit_gain,
+        partial_exit_after_s=args.partial_exit_after,
                          notice=lambda s: print(s, flush=True))
 
 
@@ -931,6 +937,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="왕복 비용률(수익률에서 차감). 기본 0.0064 = 왕복 34bp + "
                         "슬리피지 왕복 30bp(레포 기본 가정, scripts/verify_pair.py). "
                         "0 = 끔(세전)")
+    g.add_argument("--partial-exit", type=float, default=0.0,
+                   help="1차 분할 매도 비율(0<r<1) — 만쥬 §5-2 \"분할 또는 전량 매도\". "
+                        "0 = 끔. **수량이 2주 이상일 때만 실효**(1주는 쪼갤 수 없다)")
+    g.add_argument("--partial-exit-gain", type=float, default=None,
+                   help="이 수익률에 닿으면 1차 분할(예 0.002 = +0.2%%)")
+    g.add_argument("--partial-exit-after", type=float, default=None,
+                   help="체결 후 이 초가 지나면 1차 분할(예 60)")
     g.add_argument("--daily-profit-target", type=float, default=0.0,
                    help="일일 이익 목표(원). 도달하면 이후 진입 비중을 줄인다 — 만쥬 "
                         "§9-6 \"오전 수익 뒤 오후에 무리하게 베팅하는 패턴을 가장 경계\". "
