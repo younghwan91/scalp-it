@@ -701,3 +701,45 @@ def fetch_new_disclosures(db_path: str, *, day: date | str,
                     conn.execute(sql, params).fetchall()]
     except sqlite3.Error:
         return []
+
+
+def ipo_day_avoid(listing_sectors: Mapping[str, str],
+                  candidates: Mapping[str, Mapping[str, Any]],
+                  *, min_pre_run_pct: float = 15.0,
+                  falling_pct: float = 0.0) -> set[str]:
+    """상장 당일 '재료 소멸' 관련주로 의심되는 종목(만쥬 §4-5).
+
+    > "대형 공모주 **상장 전**에는 관련주/테마주를 공략하되, **상장 당일**에는 기존
+    > 관련주가 **재료 소멸로 하락**할 가능성이 높으므로 상장 당사자에만 집중"
+
+    **'관련주' 식별은 정확히 못 한다** — 그건 재료 판단(등급 C)이다. 그래서 섹터만으로
+    거르지 않는다. 전기/전자에 신규상장이 하나 떴다고 그 섹터 전체가 그 공모주의
+    관련주는 아니고, 그렇게 거르면 멀쩡한 종목을 배제해 오히려 해롭다.
+
+    세 조건을 **AND** 로 건다:
+      ① 그날 신규상장 종목과 같은 섹터
+      ② 상장 전 구간에 ``min_pre_run_pct`` 이상 올랐다 — 기대감으로 오른 흔적
+      ③ 지금 ``falling_pct`` 아래로 빠지고 있다 — 재료 소멸이 실제로 일어나는 중
+
+    ②③ 이 함께 있어야 "기대감에 올랐다가 상장으로 재료가 소멸했다"는 이야기가 성립한다.
+    그래도 근사다 — 기본은 **꺼 두고**(호출부에서 옵트인) 켤 때 이 한계를 알고 켠다.
+    """
+    if not listing_sectors:
+        return set()
+    sectors = {str(v) for v in listing_sectors.values() if v}
+    if not sectors:
+        return set()
+    out: set[str] = set()
+    for code, info in candidates.items():
+        if str(code) in listing_sectors:
+            continue                       # 상장 당사자는 오히려 집중 대상이다
+        if str(info.get("sector") or "") not in sectors:
+            continue
+        try:
+            pre = float(info.get("pre_run_pct") or 0.0)
+            today = float(info.get("today_pct") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if pre >= min_pre_run_pct and today < falling_pct:
+            out.add(str(code))
+    return out

@@ -378,3 +378,41 @@ def test_breaking_materials_orders_by_strength():
 
     rows = [("100000", "시설투자"), ("200000", "공급계약")]
     assert breaking_materials(rows, min_weight=0.5) == ["200000", "100000"]
+
+
+# ----- 만쥬 §4-5 상장일 관련주 회피 -------------------------------------------
+
+def test_ipo_day_avoid_needs_all_three_conditions():
+    """상장 당일 '관련주'는 세 조건이 **동시에** 맞을 때만 배제한다 — 만쥬 §4-5.
+
+    원문: "대형 공모주 상장 전에는 관련주/테마주를 공략하되, **상장 당일에는 기존
+    관련주가 재료 소멸로 하락**할 가능성이 높아 상장 당사자에만 집중".
+
+    '관련주' 식별은 재료 판단(등급 C)이라 정확히는 못 한다. 그래서 **섹터만으로
+    거르지 않는다** — 전기/전자에 신규상장이 하나 떴다고 그 섹터 전체가 그 공모주의
+    관련주는 아니다. 세 조건을 AND 로 걸어 오탐을 줄인다:
+      ① 그날 신규상장한 종목과 같은 섹터
+      ② 상장 전 구간에 비정상적으로 올랐다(기대감)
+      ③ 지금 빠지고 있다(재료 소멸)
+    """
+    from scalp_it.universe import ipo_day_avoid
+
+    listings = {"900001": "전기/전자"}
+    cands = {
+        # 같은 섹터 + 사전 급등 + 현재 하락 → 배제
+        "100000": {"sector": "전기/전자", "pre_run_pct": 25.0, "today_pct": -3.0},
+        # 같은 섹터지만 사전 급등 없음 → 유지
+        "200000": {"sector": "전기/전자", "pre_run_pct": 2.0, "today_pct": -3.0},
+        # 같은 섹터 + 사전 급등이지만 오늘도 오름 → 유지(재료 소멸 아님)
+        "300000": {"sector": "전기/전자", "pre_run_pct": 25.0, "today_pct": +4.0},
+        # 다른 섹터 → 유지
+        "400000": {"sector": "금융", "pre_run_pct": 25.0, "today_pct": -3.0},
+    }
+    got = ipo_day_avoid(listings, cands, min_pre_run_pct=15.0)
+    assert got == {"100000"}
+
+
+def test_ipo_day_avoid_is_off_without_listings():
+    from scalp_it.universe import ipo_day_avoid
+
+    assert ipo_day_avoid({}, {"100000": {"sector": "전기/전자"}}) == set()
