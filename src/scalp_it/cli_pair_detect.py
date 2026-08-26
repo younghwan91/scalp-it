@@ -498,23 +498,22 @@ def _feed(detector: PairDetector, bus: AlertBus, rows: list[tuple],
 
 
 def build_order_executor(
-    args: argparse.Namespace, pairs: list[Pair]
+    args: argparse.Namespace, pairs: list[Pair], *, client: Any | None = None
 ) -> OrderExecutor | None:
     """``--live-order`` 일 때만 실계좌 주문 실행기를 만든다.
 
     이중 안전: ``--live-order`` 는 실행기를 켤 뿐 어댑터는 **dry-run** 이라 실주문이
     안 나간다. 진짜 발주는 ``--confirm-real`` 까지 있어야(어댑터 ``live=True``).
     시작 시 계좌 자동조회 + 보유 전종목 블록리스트 병합(fail-closed).
+
+    ``client`` 를 주면 인증·계좌조회를 건너뛰고 그걸 쓴다 — 배선 스모크 테스트용이다.
+    이 함수를 부르는 테스트가 하나도 없어서 2026-08-26 에 인자 오배선을 못 잡았고,
+    ``--live-order`` 가 TypeError 로 죽는 상태로 커밋됐다.
     """
     if not args.live_order:
         return None
-    from .adapters.kiwoom import KiwoomError, api_credentials
     from .adapters.kiwoom_order import (
-        KIWOOM_BASE,
-        KIWOOM_MOCK_BASE,
-        KiwoomOrderClient,
         OrderGuardConfig,
-        OrderLogSink,
     )
 
     whitelist = frozenset(p.follower for p in pairs)  # 등록 쌍 후속주만 허용
@@ -525,27 +524,13 @@ def build_order_executor(
         max_orders_total=args.max_orders_total,
         whitelist=whitelist,
     )
-    # 전용 키 우선(감지 소켓과 동일 정책).
-    env = dict(os.environ)
-    if os.environ.get("PAIR_DETECT_APP_KEY"):
-        env["KIWOOM_APP_KEY"] = os.environ["PAIR_DETECT_APP_KEY"]
-        env["KIWOOM_APP_SECRET"] = os.environ.get("PAIR_DETECT_APP_SECRET", "")
-    try:
-        appkey, secret = api_credentials(env)
-    except KiwoomError as exc:
-        print(f"[주문] 인증 정보 없음 → 주문 실행기 비활성: {exc}", file=sys.stderr)
-        return None
-    base = KIWOOM_MOCK_BASE if args.mock else KIWOOM_BASE
-    log = OrderLogSink(args.order_log)
-    client = KiwoomOrderClient(appkey, secret, guard=guard, base_url=base, on_order=log.emit)
-    # 계좌 자동조회 + 실시간 보유 병합(fail-closed): 실패하면 주문 실행기를 끈다.
-    try:
-        client.account_number()
-        held = client.refresh_blocklist_from_account()
-    except KiwoomError as exc:
-        print(f"[주문] 계좌/잔고 조회 실패 → 안전상 주문 실행기 비활성(fail-closed): {exc}",
-              file=sys.stderr)
-        return None
+    if client is not None:
+        # 주입된 클라이언트 — 인증·계좌조회를 건너뛴다(배선 스모크 테스트용).
+        held = ()
+    else:
+        client, held = _connect_order_client(args, guard)
+        if client is None:
+            return None
     real = args.confirm_real
     mode = "🔴 실발주(LIVE)" if real else "🧪 DRY-RUN(발주 안 함)"
     print(f"# 주문 실행기 ON — {mode} · 계좌 {client.masked_account()} · 수량 {args.qty}주 "
@@ -557,13 +542,47 @@ def build_order_executor(
                          unfilled_timeout=args.unfilled_timeout,
                          fill_basis=args.fill_basis,   # 가드 회계와 같은 체결 가정
                          leader_exit=not args.no_leader_exit,
-        size_multiplier=args.size_multiplier,
-        daily_profit_target=args.daily_profit_target,
-        profit_size_multiplier=args.profit_size_multiplier,
-        partial_exit_ratio=args.partial_exit,
-        partial_exit_gain=args.partial_exit_gain,
-        partial_exit_after_s=args.partial_exit_after,
+                         size_multiplier=args.size_multiplier,
+                         # 일일 이익 절제(§9-6)는 **가드 전용**이다 — 실행기는 그 개념을
+                         # 갖지 않는다. 여기에 넘기면 TypeError 로 기동이 죽는다.
+                         partial_exit_ratio=args.partial_exit,
+                         partial_exit_gain=args.partial_exit_gain,
+                         partial_exit_after_s=args.partial_exit_after,
                          notice=lambda s: print(s, flush=True))
+
+
+def _connect_order_client(args: argparse.Namespace, guard: Any) -> tuple[Any, Any]:
+    """인증 → 클라이언트 → 계좌·잔고 조회. 실패하면 ``(None, ())`` (fail-closed)."""
+    from .adapters.kiwoom import KiwoomError, api_credentials
+    from .adapters.kiwoom_order import (
+        KIWOOM_BASE,
+        KIWOOM_MOCK_BASE,
+        KiwoomOrderClient,
+        OrderLogSink,
+    )
+
+    # 전용 키 우선(감지 소켓과 동일 정책).
+    env = dict(os.environ)
+    if os.environ.get("PAIR_DETECT_APP_KEY"):
+        env["KIWOOM_APP_KEY"] = os.environ["PAIR_DETECT_APP_KEY"]
+        env["KIWOOM_APP_SECRET"] = os.environ.get("PAIR_DETECT_APP_SECRET", "")
+    try:
+        appkey, secret = api_credentials(env)
+    except KiwoomError as exc:
+        print(f"[주문] 인증 정보 없음 → 주문 실행기 비활성: {exc}", file=sys.stderr)
+        return None, ()
+    base = KIWOOM_MOCK_BASE if args.mock else KIWOOM_BASE
+    log = OrderLogSink(args.order_log)
+    client = KiwoomOrderClient(appkey, secret, guard=guard, base_url=base, on_order=log.emit)
+    # 계좌 자동조회 + 실시간 보유 병합(fail-closed): 실패하면 주문 실행기를 끈다.
+    try:
+        client.account_number()
+        held = client.refresh_blocklist_from_account()
+    except KiwoomError as exc:
+        print(f"[주문] 계좌/잔고 조회 실패 → 안전상 주문 실행기 비활성(fail-closed): {exc}",
+              file=sys.stderr)
+        return None, ()
+    return client, held
 
 
 def build_poslog(args: argparse.Namespace, guard: RiskGuard | None) -> PositionLogSink | None:
