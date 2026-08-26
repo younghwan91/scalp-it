@@ -63,6 +63,13 @@ class Rule:
     stop: float | None = -0.005   # 손절(음수). None = 없음
     take: float | None = None     # 익절. None = 상한 없음(만쥬 손익 구조)
     leader_exit: bool = True      # 대장이 상한가 놓치면 손익 무관 즉시
+    trail: float | None = None    # 고점 대비 이만큼 밀리면 청산(추세 추종). None = 끔
+    # 대장이탈을 알아챈 뒤 **얼마나 빨리 나가느냐**. 분봉으론 초 단위를 못 본다.
+    #   close = 그 분 종가 = 최대 60초 지연(비관, 기본)
+    #   open  = 그 분 시가 = 즉시 반응(낙관 상한 — 실전 하한이 아니라 상한이다)
+    #   mid   = 둘의 중간(중립 추정)
+    # 만쥬는 호가 훼손을 보고 초 안에 나간다. 실제값은 open 과 close 사이 어딘가다.
+    lead_exit_at: str = "close"
     require_held: bool = False    # 대장이 끝까지 굳힌 건만
 
     def key(self) -> str:
@@ -70,6 +77,7 @@ class Rule:
                 f"/sl{'' if self.stop is None else f'{self.stop:.3f}'}"
                 f"/tp{'' if self.take is None else f'{self.take:.3f}'}"
                 f"/{'LE' if self.leader_exit else 'noLE'}"
+                f"{'' if self.trail is None else f'/tr{self.trail:.3f}'}"
                 f"{'/held' if self.require_held else ''}")
 
 
@@ -126,10 +134,14 @@ def simulate(ev: pd.Series, paths: dict, rule: Rule) -> dict[str, Any] | None:
         if off >= 0:
             brk_off = off
 
+    self_at = rule.lead_exit_at
     last = min(rule.hold, a.shape[1] - 1)
     exit_px, reason = None, "시간청산"
+    peak = entry
     for i in range(1, last + 1):
         hi, lo, close = a[H][i], a[L][i], a[C][i]
+        if np.isfinite(hi):
+            peak = max(peak, float(hi))
         if rule.take is not None and np.isfinite(hi) and hi >= entry * (1 + rule.take):
             exit_px, reason = entry * (1 + rule.take), "익절"   # 지정가라 레벨 그대로
             break
@@ -138,7 +150,21 @@ def simulate(ev: pd.Series, paths: dict, rule: Rule) -> dict[str, Any] | None:
             exit_px, reason = entry * (1 + rule.stop) - slip, "손절"
             break
         if brk_off is not None and i >= brk_off:
-            exit_px, reason = (close if np.isfinite(close) else entry) - slip, "대장이탈"
+            op = a[O][i]
+            if self_at == "open" and np.isfinite(op):
+                px = float(op)
+            elif self_at == "mid" and np.isfinite(op) and np.isfinite(close):
+                px = (float(op) + float(close)) / 2
+            else:
+                px = close if np.isfinite(close) else entry
+            exit_px, reason = px - slip, "대장이탈"
+            break
+        # 추세 추종 — "상승 탄력이 충분히 나왔다고 판단되는 시점에 매도"의 기계화.
+        # 시계를 보고 파는 게 아니라 **오버슈팅이 꺾일 때** 판다. 고점 대비 되돌림이
+        # 문턱을 넘으면 나간다. 진입가 위에 있을 때만 발동한다(손절은 별개 축).
+        if (rule.trail is not None and peak > entry
+                and np.isfinite(lo) and lo <= peak * (1 - rule.trail)):
+            exit_px, reason = peak * (1 - rule.trail) - slip, "추세청산"
             break
     if exit_px is None:
         # 미완결은 **마지막 관측가**로 청산한다. MFE 로 닫으면 항상 +가 되어
@@ -167,10 +193,16 @@ def evaluate(events: pd.DataFrame, paths_by_key: dict, rule: Rule) -> dict[str, 
         "rule": rule.key(), "n": len(df), "days": df["date"].nunique(),
         "gross_pct": float(g.mean() * 100),
         "win_pct": float((g > 0).mean() * 100),
+        # 만쥬가 준 실전 지표는 승률 45~55% · **손익비 2.5~4:1** 이다. 승률은 우리와
+        # 맞는데 손익비가 1.3~1.4 로 갈린다 — 오버슈팅을 못 먹고 있다는 신호다.
+        "avg_win_pct": float(g[g > 0].mean() * 100) if (g > 0).any() else 0.0,
+        "avg_loss_pct": float(g[g <= 0].mean() * 100) if (g <= 0).any() else 0.0,
         "reasons": df["reason"].value_counts().to_dict(),
     }
     for name, cost in COSTS.items():
         out[f"{name}_pct"] = float((g - cost).mean() * 100)
+    aw, al = out["avg_win_pct"], abs(out["avg_loss_pct"])
+    out["pl_ratio"] = float(aw / al) if al > 0 else float("nan")
     # 같은 날 이벤트는 독립이 아니다 — 일 단위로 접고 t 를 낸다.
     daily = df.groupby("date")["gross"].mean()
     if len(daily) > 1 and daily.std(ddof=1) > 0:
@@ -188,8 +220,10 @@ def build_grid(args: argparse.Namespace) -> list[Rule]:
                 for stop in args.stops:
                     for take in args.takes:
                         for le in (True, False):
-                            grid.append(Rule(pick=pick, rank_max=rank, hold=hold,
-                                             stop=stop, take=take, leader_exit=le))
+                            for tr in args.trails:
+                                grid.append(Rule(pick=pick, rank_max=rank, hold=hold,
+                                                 stop=stop, take=take, leader_exit=le,
+                                                 trail=tr))
     return grid
 
 
@@ -211,6 +245,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--holds", nargs="+", type=int, default=[1, 3, 5, 10, 30])
     p.add_argument("--stops", nargs="+", type=float, default=[-0.005, -0.01, -0.02])
     p.add_argument("--takes", nargs="+", type=float, default=[0.0])
+    p.add_argument("--trails", nargs="+", type=float, default=[0.0],
+                   help="고점 대비 되돌림 청산(추세 추종). 0 = 끔")
     p.add_argument("--select-by", default="net64",
                    choices=["gross", "net34", "net64", "net94"],
                    help="트레인에서 무엇으로 최선 셀을 고를지. 기본은 세후 64bp")
@@ -218,6 +254,7 @@ def main(argv: list[str] | None = None) -> int:
     a = p.parse_args(argv)
     a.stops = [None if s == 0 else s for s in a.stops]
     a.takes = [None if t == 0 else t for t in a.takes]
+    a.trails = [None if t == 0 else t for t in a.trails]
 
     with Path(a.data).open("rb") as fh:
         blob = pickle.load(fh)
