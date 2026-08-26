@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import signal
 import sys
@@ -294,8 +295,12 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
 
             from .universe import fetch_recent_materials
 
+            # `until` 을 **오늘**로 둔다. 전일까지만 보면 07:30~09:00 에 접수된 공시 —
+            # 그날 가장 신선한 재료 — 가 유니버스에서 빠지고, 장중 감시자도 기동
+            # 시점을 커서로 잡아 건너뛰므로 **양쪽 어디에서도 안 쓰인다**.
             materials = fetch_recent_materials(
-                args.dart_db, since=prev - timedelta(days=args.material_days), until=prev)
+                args.dart_db, since=prev - timedelta(days=args.material_days),
+                until=today)
             print(f"# 재료 공시 {len(materials)}종목(최근 {args.material_days}일, "
                   f"{args.dart_db})", file=sys.stderr)
             # 만쥬 §2-1 은 "명확한 재료 및 **미래 가치**", "관심을 **지속**시킬 강력한
@@ -305,8 +310,14 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
             if args.material_llm:
                 from .material_llm import score_disclosures
 
-                rows = _disclosure_rows(args.dart_db, prev, args.material_days)
-                llm_scores = score_disclosures(rows, cache_path=args.llm_cache)
+                # 전 종목 5일치를 그대로 넘기면 수천 건이라, 캐시가 빈 첫 실행에서
+                # 08:55 기동이 동기 LLM 루프에 묶여 개장을 놓친다. 재료가 있는 종목만
+                # 넘기고 상한도 건다 — 유니버스는 45종목이라 그 이상은 어차피 안 쓴다.
+                rows = [r for r in _disclosure_rows(args.dart_db, prev,
+                                                    args.material_days)
+                        if str(r.get("code") or "") in materials]
+                llm_scores = score_disclosures(rows, cache_path=args.llm_cache,
+                                               limit=args.material_llm_max)
                 if llm_scores:
                     llm_materials = llm_scores
                     print(f"#   LLM 재료 채점 {len(llm_scores)}종목", file=sys.stderr)
@@ -371,6 +382,66 @@ def _cap_codes_for_single_key(codes: list[str], types: list[str], *, dedicated: 
     return codes[:cap]
 
 
+def _advance_cursor(rows: list[tuple[str, str, str]], take: list[str],
+                    defer: list[str], cursor: str | None) -> str | None:
+    """이번에 처리한 데까지만 커서를 민다.
+
+    상한에 걸려 미룬 종목(``defer``)이 있으면 그 종목의 **첫 공시 직전**까지만
+    전진시킨다 — 끝까지 밀면 다음 사이클에 후보로 다시 안 올라와 영영 놓친다.
+    """
+    if not defer:
+        return rows[-1][0] if rows else cursor
+    deferred = set(defer)
+    for rcept, code, _mtype in rows:
+        if code in deferred:
+            return cursor if rcept == rows[0][0] else _prev_rcept(rows, rcept)
+    return rows[-1][0]
+
+
+def _prev_rcept(rows: list[tuple[str, str, str]], rcept: str) -> str:
+    """``rcept`` 바로 앞 접수번호(없으면 그대로)."""
+    prev = rcept
+    for r, _c, _m in rows:
+        if r == rcept:
+            return prev
+        prev = r
+    return prev
+
+
+def _breaking_meta(args: argparse.Namespace, codes: list[str]) -> dict[str, Any]:
+    """장중 편입 종목의 섹터·전일종가를 읽어 온다. 실패하면 빈 dict(편입은 계속)."""
+    try:
+        from .intraday.store import connect
+
+        conn = connect(args.dsn or os.environ.get("KR_QUANT_DB"))
+    except Exception:  # noqa: BLE001 — 메타 조회 실패로 감시를 죽이지 않는다
+        return {}
+    try:
+        ph = _placeholder(conn)
+        marks = ",".join([ph] * len(codes))
+        cur = conn.cursor()
+        cur.execute(f"select code, sector from stocks where code in ({marks})", codes)
+        sectors = {str(c): str(s) for c, s in cur.fetchall() if s}
+        cur.execute(
+            f"select code, max(date) from daily_bars where code in ({marks}) group by code",
+            codes)
+        last = dict(cur.fetchall())
+        prev: dict[str, float] = {}
+        for code, day in last.items():
+            cur.execute(
+                f"select close from daily_bars where code = {ph} and date = {ph}",
+                [code, day])
+            row = cur.fetchone()
+            if row and row[0]:
+                prev[str(code)] = float(row[0])
+        return {"sectors": sectors, "prev_close": prev}
+    except Exception:  # noqa: BLE001
+        return {}
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
 async def _watch_breaking_materials(
     collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
 ) -> None:
@@ -402,16 +473,24 @@ async def _watch_breaking_materials(
             rows = fetch_new_disclosures(args.dart_db, day=day, after_rcept=cursor)
             if not rows:
                 continue
-            cursor = rows[-1][0]
             codes = breaking_materials([(c, m) for _, c, m in rows],
                                        min_weight=args.breaking_min_weight)
             fresh = [c for c in codes if c not in detector.codes]
-            if not fresh:
+            take, defer = fresh[:args.breaking_max], fresh[args.breaking_max:]
+            # 커서는 **이번에 실제로 처리한 데까지만** 전진시킨다. 먼저 끝까지 밀면
+            # 상한(breaking_max)에 걸려 못 붙인 종목이 영영 후보에 다시 안 오른다.
+            cursor = _advance_cursor(rows, take, defer, cursor)
+            if not take:
                 continue
-            added, rejected = await collector.add_codes(fresh[:args.breaking_max])
+            added, rejected = await collector.add_codes(take)
             if added:
-                bus.notice(f"[돌발재료] 장중 구독 추가 {len(added)}종목: "
-                           f"{', '.join(added)} — 강한 재료 공시 접수")
+                # **구독만 늘리면 아무 일도 안 일어난다** — 감지기가 모르는 코드의
+                # 틱은 on_tick 첫 줄에서 버려진다. 섹터·전일종가를 같이 넣어야
+                # 그 종목이 대장이 될 수 있다(§6 의 목적).
+                meta = _breaking_meta(args, added)
+                det_added = detector.add_codes(added, **meta)
+                bus.notice(f"[돌발재료] 장중 편입 {len(det_added)}종목: "
+                           f"{', '.join(det_added)} — 강한 재료 공시 접수")
             if rejected:
                 bus.notice(f"[돌발재료] 구독 자리 없어 놓침 {len(rejected)}종목: "
                            f"{', '.join(rejected[:5])}")
@@ -902,6 +981,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="재료를 LLM 으로 채점한다(만쥬 §2-1 \"미래 가치·지속시킬 스토리\"). "
                         "유형 가중치표보다 판단이 세다. 키가 없으면 조용히 규칙 기반으로 "
                         "폴백한다. SWING_LLM_PROVIDER·API 키 필요")
+    p.add_argument("--material-llm-max", type=int, default=300,
+                   help="한 번에 LLM 으로 채점할 공시 최대 건수(기동 지연 방지). 0 = 무제한")
     p.add_argument("--llm-cache", default="data/llm_material_cache.db",
                    help="LLM 채점 캐시(같은 공시를 두 번 부르지 않는다)")
     p.add_argument("--material-weight", type=float, default=0.5,

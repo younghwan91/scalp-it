@@ -70,16 +70,12 @@ def test_guard_builds_from_cron_flags(cron_args):
     assert g.config.leader_exit is True
 
 
-def test_order_executor_builds_from_cron_flags(cron_args, monkeypatch):
+def test_order_executor_builds_from_cron_flags(cron_args):
     """**이 테스트가 없어서 TypeError 를 놓쳤다.**
 
     `build_order_executor` 는 인증·화이트리스트를 거쳐 `OrderExecutor(...)` 를 부른다.
     인증 단계에서 조기 반환되면 그 호출을 안 지나므로, 클라이언트를 주입해 끝까지 태운다.
     """
-    import scalp_it.cli_pair_detect as cli
-
-    monkeypatch.setattr(cli, "_build_order_client", lambda *a, **k: _FakeOrderClient(),
-                        raising=False)
     ex = build_order_executor(cron_args, resolve_pairs(cron_args),
                               client=_FakeOrderClient())
     assert ex is not None

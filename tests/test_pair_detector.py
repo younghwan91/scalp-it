@@ -1220,3 +1220,63 @@ def _manju_cfg_for_vi():
         vi_near_pct=0.01, limitup_near_pct=0.0, cosurge_min=0.0, premove_max=1.0,
         min_buy_ratio=0.0, min_sl_ticks=0.0, max_roundtrip_bp=0.0, cooldown=0.0,
         surge_ret=0.015, surge_window=30.0)
+
+
+# ----- 만쥬 §6 장중 종목 추가 · §5-2 매수벽 거부 우회 -------------------------
+
+def test_add_codes_makes_detector_accept_their_ticks():
+    """장중에 추가한 종목의 틱을 감지기가 받아야 한다 — 만쥬 §6.
+
+    2026-08-26: 수집기 구독만 늘리고 감지기에는 안 넣어서, 추가한 종목의 틱이
+    `if code not in self._codes: return []` 로 전부 버려졌다. 로그에는 "장중 구독
+    추가"가 찍히는데 알림은 영원히 안 나오는 **완전한 무동작**이었다.
+    """
+    det = PairDetector([], DetectorConfig.stable(min_sl_ticks=0.0),
+                       universe=["000001", "000002"],
+                       sectors={"000001": "A", "000002": "A"},
+                       prev_close={"000001": 10_000, "000002": 10_000})
+    assert "000009" not in det.codes
+    det.on_tick("000009", BASE, 5_000)          # 모르는 종목 → 무시돼야 정상
+    assert "000009" not in det._prices
+
+    added = det.add_codes(["000009"], sectors={"000009": "A"},
+                          prev_close={"000009": 5_000})
+    assert added == ["000009"]
+    assert "000009" in det.codes
+    det.on_tick("000009", BASE + timedelta(seconds=1), 5_100)
+    assert "000009" in det._prices, "추가한 종목의 틱이 여전히 버려진다"
+    assert det.limit_up("000009") == 6_500      # 전일종가 5,000 → 상한가
+
+
+def test_add_codes_is_idempotent_and_reports_only_new():
+    det = PairDetector([], DetectorConfig.stable(),
+                       universe=["000001"], sectors={"000001": "A"},
+                       prev_close={"000001": 10_000})
+    assert det.add_codes(["000001"]) == []      # 이미 있는 건 안 센다
+    assert det.add_codes(["000007"], sectors={"000007": "B"}) == ["000007"]
+
+
+def test_wall_rejection_is_not_bypassed_by_vi():
+    """매수벽이 얇아 상한가 방아쇠가 거부되면 VI 로 되살아나면 안 된다 — §5-2.
+
+    상한가에 붙은 종목은 정적 VI 상단(기준가 +10%)을 당연히 넘으므로, 벽 거부를
+    `or self._vi_kind(...)` 로 덮으면 **얇은 종목이 그대로 통과**한다. 게다가 실제로는
+    상한가 터치인 건이 "VI근접"으로 기록돼 복기까지 틀어진다.
+    """
+    cfg = DetectorConfig.stable(
+        limitup_touch=True, vi_near_pct=0.01, lock_min_krw=300_000_000,
+        cosurge_min=0.0, premove_max=1.0, min_buy_ratio=0.0, min_sl_ticks=0.0,
+        max_roundtrip_bp=0.0, cooldown=0.0, surge_ret=0.0)
+    det = PairDetector([], cfg, universe=["000001", "000002"],
+                       sectors={"000001": "A", "000002": "A"},
+                       prev_close={"000001": 10_000, "000002": 10_000})
+    # 상한가 13,000. 매수벽이 얇다(1호가 1,000원어치) → 굳힘 실패.
+    # 기준가(그날 첫 체결가) 10,000 → 정적 VI 상단 11,000. 상한가 13,000 은 그보다
+    # 한참 위라 VI 조건을 **자동으로** 만족한다 — 벽 거부를 덮을 수 있는 상황이다.
+    det.on_quote("000001", BASE, 13_000, bids=[(13_000.0, 1.0)], asks=[])
+    _feed_series(det, "000002", _flat(-90, 30, 10_000))
+    _feed_series(det, "000001", _flat(-90, 20, 10_000) + [(30, 13_000)])
+    assert det._vi_kind("000001", 13_000) == "vi", "VI 는 성립하는 상황이어야 한다"
+    assert det._limitup_kind("000001", BASE + timedelta(seconds=30), 13_000) is None
+    assert det._leader_trigger("000001", BASE + timedelta(seconds=30), 13_000) is None, (
+        "벽 거부가 VI 로 우회됐다")

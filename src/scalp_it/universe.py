@@ -115,12 +115,12 @@ class UniverseConfig:
     """점수에서 변동성 항의 가중. 거래대금(log10)이 주항이고 변동성이 보조다 —
     §2-1 이 거래대금을 '가장 우선시되는 기준'이라 못 박았기 때문이다."""
 
+    #: lookback 상한가 일수당 가산. 테마 대장 이력의 대용.
     weight_limitup: float = 0.2
     #: 재료 가중치(만쥬 §2-1 3대 요건의 세 번째). 거래대금·변동성만으로 고르면
     #: "수급은 있는데 이야기가 없는" 종목이 올라온다 — 만쥬는 그걸 주도주로 안 본다.
     #: 재료는 DART 공시에서 온다(뉴스 크롤러 금지 정책, docs/research/manju/17).
     weight_material: float = 0.5
-    """lookback 상한가 일수당 가산. 테마 대장 이력의 대용."""
 
 
 @dataclass(frozen=True)

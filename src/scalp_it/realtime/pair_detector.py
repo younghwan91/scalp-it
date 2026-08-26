@@ -750,6 +750,44 @@ class PairDetector:
         return bool(cfg.limitup_touch or cfg.limitup_near_pct > 0
                     or cfg.limitup_lock_secs > 0 or cfg.vi_near_pct > 0)
 
+    def add_codes(self, codes: Sequence[str], *,
+                  sectors: Mapping[str, str] | None = None,
+                  prev_close: Mapping[str, float] | None = None,
+                  session_base: Mapping[str, float] | None = None) -> list[str]:
+        """장중에 감시 종목을 추가한다 → 실제로 새로 들어온 코드 목록(만쥬 §6).
+
+        수집기 구독만 늘리는 걸로는 아무 일도 일어나지 않는다 — :meth:`on_tick` 과
+        :meth:`on_quote` 가 첫 줄에서 ``code not in self._codes`` 로 되돌아가기
+        때문이다. 2026-08-26 에 실제로 그 상태였다: 로그에는 "장중 구독 추가"가
+        찍히는데 알림은 영원히 안 나오는 완전한 무동작.
+
+        섹터·전일종가를 같이 줘야 대장이 될 수 있다 — 섹터가 없으면 후속주를 못 고르고
+        전일종가가 없으면 상한가를 못 구한다(둘 다 억지 추정 금지 원칙).
+        """
+        added: list[str] = []
+        for raw in codes:
+            code = str(raw)
+            if not code or code in self._codes:
+                continue
+            self._codes.add(code)
+            added.append(code)
+            sec = (sectors or {}).get(code)
+            if sec:
+                self._sectors[code] = str(sec)
+                self._by_sector[str(sec)].append(code)
+            pc = (prev_close or {}).get(code)
+            if pc:
+                self._prev_close[code] = float(pc)
+            base = (session_base or {}).get(code)
+            if base:
+                self._session_base[code] = float(base)
+        if added and self._dynamic:
+            # 동적 모드는 유니버스를 대장 후보로 쓴다 — 추가분도 대장이 될 수 있어야
+            # "돌발 재료 종목이 대장이 되는" §6 의 목적이 성립한다.
+            self._universe |= set(added)
+            self._leader_codes |= set(added)
+        return added
+
     def limit_up(self, code: str) -> float | None:
         """그 종목의 상한가. 전일종가를 주입받지 못했으면 None(억지 추정 금지)."""
         prev = self._prev_close.get(code)
@@ -897,6 +935,11 @@ class PairDetector:
             return "near"
         return None
 
+    def _at_limit(self, code: str, price: float) -> bool:
+        """지금 상한가 이상인가. 상한가를 모르면 False(억지 추정 금지)."""
+        limit = self.limit_up(code)
+        return bool(limit and price >= limit)
+
     def _vi_kind(self, code: str, price: float) -> str | None:
         """정적 VI 상단 근접 판정(만쥬 §5-1). 기준가를 모르면 None(억지 추정 금지)."""
         cfg = self.config
@@ -916,7 +959,14 @@ class PairDetector:
         surge = self._ret(code, ts, cfg.surge_window)
         if self._limitup_on:
             # 상한가 계열 → VI 순으로 본다. 상한가가 더 강한 신호라 먼저다.
-            kind = self._limitup_kind(code, ts, price) or self._vi_kind(code, price)
+            # 상한가 계열 → VI 순으로 본다. 상한가가 더 강한 신호라 먼저다.
+            # **다만 상한가에 붙었는데 매수벽이 얇아 거부된 건은 VI 로 되살리지
+            # 않는다.** 상한가는 정적 VI 상단(기준가 +10%)을 당연히 넘으므로, 그냥
+            # or 로 이으면 §5-2 굳힘 판정이 통째로 무력해지고 실제로는 상한가 터치인
+            # 건이 "VI근접"으로 기록돼 복기까지 틀어진다.
+            kind = self._limitup_kind(code, ts, price)
+            if kind is None and not self._at_limit(code, price):
+                kind = self._vi_kind(code, price)
             if kind is None:
                 return None
             if cfg.limitup_require_surge and (surge is None or surge < cfg.surge_ret):
