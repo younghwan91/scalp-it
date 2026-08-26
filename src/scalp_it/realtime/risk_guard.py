@@ -120,6 +120,10 @@ class RiskGuardConfig:
     #: 국면 배수(§8-1)와 이익 절제(§9-6)만 이 값을 **줄이는** 방향으로 곱한다.
     position_notional: float = 100_000.0      # 가상 포지션 1건 명목(원) — 수익률→원 환산
     max_consecutive_losses: int = 3           # 연속 손절 상한(킬 트리거 b)
+    # 추세 추종(만쥬). "+0.5% 고정 청산이 아니라 2등주 +3% 도달 시 트레일링 스탑".
+    # **수익이 난 뒤에야** 켜진다 — 진입부터 켜면 2등주 자체 가격 노이즈에 털린다.
+    trail_arm: float = 0.0                    # 이만큼 오르면 트레일링 무장. 0 = 끔
+    trail_pct: float = 0.0                    # 무장 후 고점 대비 이만큼 밀리면 청산
     max_positions: int = 2                    # 동시 보유 가상 포지션 상한
     fill_basis: str = "through"               # 'through'(보수·기본) | 'touch'(낙관)
     track_shadow_fill: bool = True            # 반대 가정을 그림자로 병행 추적(로그 전용)
@@ -183,6 +187,8 @@ class Position:
     touch_fill_ts: datetime | None = None
     through_fill_ts: datetime | None = None
     last_price: float | None = None           # 마지막으로 관측한 체결가(flush 계상용)
+    trail_armed: bool = False                 # +N% 를 찍어 트레일링이 켜졌는가
+    peak: float = 0.0                         # 체결 후 최고가(트레일링 기준)
     manual: bool = False                      # 사용자가 실제 체결로 표시
     manual_entry: float | None = None
     manual_ts: datetime | None = None
@@ -472,6 +478,18 @@ class RiskGuard:
         if pos.take_profit is not None and price >= pos.take_profit - _EPS:
             self._close(pos, ts, pos.take_profit, "익절", filled=True)
             return True
+        # 추세 청산(만쥬): "+3% 도달 시 트레일링". 손절보다 위에 둔다 — 무장은
+        # 이익 구간에서만 되므로 손절선과 겹치지 않고, 겹치는 순간이 온다면 그건
+        # 이미 고점에서 내려온 것이라 트레일링이 먼저 잡는 게 맞다.
+        cfg_trail = self.config.trail_pct
+        if cfg_trail > 0:
+            pos.peak = max(pos.peak, price)
+            if not pos.trail_armed and pos.peak >= entry * (1 + self.config.trail_arm):
+                pos.trail_armed = True
+            if pos.trail_armed and price <= pos.peak * (1 - cfg_trail) + _EPS:
+                # 고점에서 밀린 걸 확인하고 파는 시장가라 트리거 틱이 실현가다.
+                self._close(pos, ts, price, "추세청산", filled=True)
+                return True
         if pos.stop_loss is not None and price <= pos.stop_loss + _EPS:
             self._close(pos, ts, price, "손절", filled=True)
             return True

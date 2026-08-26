@@ -98,6 +98,8 @@ def build_config(args: argparse.Namespace) -> DetectorConfig:
         over["accel_min_ratio"] = args.accel
     if args.volume_burst is not None:
         over["volume_burst_ratio"] = args.volume_burst
+    if args.entry_ticks_up:
+        over["entry_ticks_up"] = args.entry_ticks_up
     if args.limitup_touch:
         over["limitup_touch"] = True
     if args.limitup_near is not None:
@@ -148,6 +150,8 @@ def build_guard(args: argparse.Namespace) -> RiskGuard | None:
         daily_capital=args.capital,
         position_notional=args.position_notional,
         max_consecutive_losses=args.max_consecutive_losses,
+        trail_arm=args.trail_arm,
+        trail_pct=args.trail,
         max_positions=args.max_positions,
         fill_basis=args.fill_basis,
         cost_rate=args.cost_rate,
@@ -265,7 +269,16 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
             if not gate.tradable:
                 print("#   ↑ 만쥬 기준으론 쉬는 날이다. dry-run 이라 계속 진행하되, "
                       "이 결과는 '쉬라고 한 국면'의 것으로 해석해야 한다.", file=sys.stderr)
-            if args.size_by_regime:
+            # 만쥬: "코스닥 거래대금이 7~8조 원 이하(침체장)이면 짝꿍 신호가 떠도
+            # 진입하지 않는다." 기존 `tradable` 은 5조(극침체)에서만 꺼지므로 5~8조
+            # 구간이 그대로 통과했다. 배수 0 이면 **신규 진입만** 막히고 이미 열린
+            # 포지션의 청산은 계속 돈다 — 장중에 국면이 나빠져도 손절은 나가야 한다.
+            if args.halt_below_jo > 0 and gate.turnover_jo < args.halt_below_jo:
+                args.size_multiplier = 0.0
+                print(f"#   ↑ 거래대금 {gate.turnover_jo:.2f}조 < "
+                      f"{args.halt_below_jo:g}조 — 만쥬 기준 진입 금지. 신규 진입을 "
+                      f"막는다(청산은 계속).", file=sys.stderr)
+            elif args.size_by_regime:
                 # 만쥬 §8-1 — 국면이 나빠지면 시드를 줄인다("1억을 그대로 베팅하지
                 # 않고 3천만 이하로"). 배수 0 이면 신규 진입만 막고 기존 청산은 돈다.
                 args.size_multiplier = gate.size_multiplier
@@ -944,12 +957,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--hold", type=float, default=None, help="시간청산 초 덮기 (기본 90)")
     p.add_argument("--surge", type=float, default=None, help="대장 서지 임계 덮기 (기본 0.015)")
     p.add_argument("--cooldown", type=float, default=None, help="쌍 재알림 억제 초 (기본 90)")
+    p.add_argument("--halt-below-jo", type=float, default=0.0,
+                   help="코스닥 전일 거래대금이 이 조원 미만이면 신규 진입 금지 "
+                        "(만쥬: 7~8조 이하 침체장에선 신호가 떠도 안 산다). 0 = 끔")
     p.add_argument("--min-turnover", type=float, default=None,
                    help="후속 당일 누적 체결대금 하한(원). 0 = 끔")
     p.add_argument("--no-universe", action="store_true",
                    help="만쥬 동적 모드 끄기 — 그날 유니버스 대신 고정 워치리스트 사용")
     p.add_argument("--universe-size", type=int, default=45,
                    help="그날 유니버스 종목 수. 단일 앱키 한도가 50이라 기본 45")
+    p.add_argument("--entry-ticks-up", type=int, default=0,
+                   help="진입 지정가를 현재가 위 몇 호가에 낼지 (만쥬: 2~3). "
+                        "0 = 매수호가에 걸고 기다린다")
     p.add_argument("--limitup-touch", action="store_true",
                    help="상한가 터치를 방아쇠로 (만쥬 §5-1)")
     p.add_argument("--limitup-near", type=float, default=None,
@@ -1030,6 +1049,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="%% 손실한도·기록 기준 자본(원). 기본 100만")
     g.add_argument("--position-notional", type=float, default=100_000.0,
                    help="가상 포지션 1건 명목(원) — 수익률→원 환산. 기본 10만")
+    g.add_argument("--trail-arm", type=float, default=0.0,
+                   help="이만큼 오르면 트레일링 무장(만쥬: 0.03 = +3%%). 0 = 끔")
+    g.add_argument("--trail", type=float, default=0.0,
+                   help="무장 후 고점 대비 이만큼 밀리면 청산. 0 = 끔")
     g.add_argument("--max-consecutive-losses", type=int, default=3,
                    help="연속 손절 상한(킬 트리거). 기본 3")
     g.add_argument("--max-positions", type=int, default=2,

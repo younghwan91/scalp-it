@@ -288,6 +288,9 @@ class DetectorConfig:
     limitup_require_surge: bool = False  # 상한가 방아쇠에 서지 조건까지 AND 로 요구
     # 동적 대장/후속 선정(문서 44 §3·§4-2) — universe·sectors 를 주입했을 때만 돈다.
     #   대장 = 방아쇠가 터진 종목, 후속 = 같은 섹터 당일등락률 2~3위(대장 제외).
+    # 진입 지정가를 현재가 위 몇 호가에 낼지. 0 = 매수호가(bid1)에 수동으로 건다.
+    # 만쥬는 2~3 이다 — "현재가 기준 위 2~3호가 지정가 원클릭 주문".
+    entry_ticks_up: int = 0
     follower_rank_min: int = 2        # 후속 후보 순위 하한(1 = 대장 자리)
     follower_rank_max: int = 3        # 후속 후보 순위 상한
     # 호가 두께 — 만쥬가 **최우선**이라 한 필터(§4-1).
@@ -1162,7 +1165,13 @@ class PairDetector:
             return None                        # 쿨다운
         self._last_alert[key] = ts
         bid1 = self._bid.get(fol, cur)
+        # 진입 지정가. 기본은 매수호가에 걸고 기다리는 수동 주문이지만, 만쥬는
+        # **현재가 위 2~3호가를 지정가로 긁어서** 산다 — 2등주가 대장을 따라 뛰는
+        # 순간엔 걸어두고 기다리면 호가가 위로 도망가 아예 못 산다. 위 호가 주문은
+        # 매도 최우선 잔량부터 즉시 체결되므로 사실상 시장가이되 상한이 있는 주문이다.
         entry = bid1
+        if cfg.entry_ticks_up > 0:
+            entry = cur + cfg.entry_ticks_up * tick_size(cur)
         # 마지막 두 관문은 쿨다운을 이미 소비한 자리에 둔다. 가격대·호가 두께는 90초
         # 안에 크게 안 변해 어차피 다시 통과 못 하고, 그래야 서지 한 번에 배제 기록이
         # 수십 줄 쌓이지 않는다(알림과 같은 빈도로 한 줄).
