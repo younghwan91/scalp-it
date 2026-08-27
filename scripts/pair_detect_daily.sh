@@ -96,7 +96,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --take-profit 0 --stop-loss -0.005 --hold 180 \
     --trail-arm 0.03 --trail 0.015 --entry-ticks-up 2 --halt-below-jo 8 \
     --limitup-near-ticks 3 --limitup-require-surge --vi-near 0.01 \
-    --follower-priority manju --stale-sector-limitups 3 --stale-sector-days 10 \
+    --follower-priority manju \
     --partial-exit 0.5 --partial-exit-gain 0.03 \
     --universe-size 45 --max-roundtrip-bp 20 --order-krw 10000000 \
     --position-notional 10000000 \
