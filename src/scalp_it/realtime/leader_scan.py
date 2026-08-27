@@ -122,9 +122,13 @@ def leader_candidates(rows: Sequence[ScanRow], *, min_flu_rt: float = 20.0,
 
 
 def sector_followers(rows: Sequence[ScanRow], leader: str,
-                     sectors: Mapping[str, str], *, rank_min: int = 2,
+                     groups: Mapping[str, str], *, rank_min: int = 2,
                      rank_max: int = 3) -> list[str]:
-    """대장과 같은 섹터에서 등락률 ``rank_min~rank_max`` 위를 짝꿍으로.
+    """대장과 같은 무리에서 등락률 ``rank_min~rank_max`` 위를 짝꿍으로.
+
+    ``groups`` 는 ``{종목: 무리키}`` 다. 호출부가 실전 테마를 알면 테마 코드를,
+    모르면 27종 섹터를 넣는다 — 감지기 :meth:`PairDetector.peers` 와 **같은 무리**
+    여야 스캐너가 붙인 짝꿍을 감지기가 그대로 고른다.
 
     순위는 **대장을 포함해** 매기고 대장 자신만 뺀다 — 감지기의 `_dynamic_pairs` 와
     같은 규칙이라야 "2·3등주"라는 말이 두 곳에서 같은 뜻이 된다.
@@ -132,10 +136,10 @@ def sector_followers(rows: Sequence[ScanRow], leader: str,
     이미 잠긴 종목은 짝꿍에서 뺀다. 상한가에 붙어 있으면 살 수가 없고, 만쥬가
     사는 것도 **아직 안 간** 2·3등주다.
     """
-    sec = sectors.get(leader)
-    if not sec:
+    key = groups.get(leader)
+    if not key:
         return []
-    same = [r for r in rows if sectors.get(r.code) == sec]
+    same = [r for r in rows if groups.get(r.code) == key]
     same.sort(key=lambda r: (-r.flu_rt, r.code))
     out: list[str] = []
     for rank, row in enumerate(same, start=1):

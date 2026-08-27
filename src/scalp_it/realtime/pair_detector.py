@@ -562,6 +562,7 @@ class PairDetector:
         universe: Iterable[str] | None = None,
         names: Mapping[str, str] | None = None,
         sector_limitup_counts: Mapping[str, int] | None = None,
+        themes: Mapping[str, Any] | None = None,
     ) -> None:
         """``pairs`` 는 사람이 큐레이션한 고정 쌍(기존 모드).
 
@@ -588,6 +589,11 @@ class PairDetector:
             str(k): float(v) for k, v in (prev_close or {}).items() if v}
         self._sectors: dict[str, str] = {
             str(k): str(v) for k, v in (sectors or {}).items() if v}
+        # 종목 → 소속 테마 코드들. 만쥬가 "27종으론 실전 테마를 못 잡는다"고 한 자리를
+        # 메운다. 없으면 섹터로 떨어지므로 주입은 선택이다.
+        self._themes: dict[str, frozenset[str]] = {
+            str(k): frozenset(str(t) for t in v)
+            for k, v in (themes or {}).items() if v}
         self._names: dict[str, str] = {str(k): str(v) for k, v in (names or {}).items()}
         self._sector_limitups: dict[str, int] = {}
         self.set_sector_limitup_counts(sector_limitup_counts)
@@ -607,6 +613,7 @@ class PairDetector:
                     self._by_sector[sec].append(code)
         else:
             self._by_sector = defaultdict(list)
+        self._rebuild_themes()
         # 대장 상태를 추적할 종목 — 고정 쌍의 대장 + (동적 모드면) 유니버스 전부.
         # 후속주만인 종목까지 통보하면 가드가 쓰지도 않을 이벤트를 받는다.
         self._leader_codes: set[str] = set(self._by_leader)
@@ -768,7 +775,8 @@ class PairDetector:
     def add_codes(self, codes: Sequence[str], *,
                   sectors: Mapping[str, str] | None = None,
                   prev_close: Mapping[str, float] | None = None,
-                  session_base: Mapping[str, float] | None = None) -> list[str]:
+                  session_base: Mapping[str, float] | None = None,
+                  themes: Mapping[str, Any] | None = None) -> list[str]:
         """장중에 감시 종목을 추가한다 → 실제로 새로 들어온 코드 목록(만쥬 §6).
 
         수집기 구독만 늘리는 걸로는 아무 일도 일어나지 않는다 — :meth:`on_tick` 과
@@ -790,6 +798,9 @@ class PairDetector:
             if sec:
                 self._sectors[code] = str(sec)
                 self._by_sector[str(sec)].append(code)
+            th = (themes or {}).get(code)
+            if th:
+                self._themes[code] = frozenset(str(t) for t in th)
             pc = (prev_close or {}).get(code)
             if pc:
                 self._prev_close[code] = float(pc)
@@ -801,6 +812,10 @@ class PairDetector:
             # "돌발 재료 종목이 대장이 되는" §6 의 목적이 성립한다.
             self._universe |= set(added)
             self._leader_codes |= set(added)
+        if added:
+            # 테마 역인덱스는 구독이 바뀌면 다시 만들어야 한다 — 안 그러면 장중에
+            # 붙은 종목이 테마 무리에서 빠져 짝꿍 후보가 되지 못한다.
+            self._rebuild_themes()
         return added
 
     def limit_up(self, code: str) -> float | None:
@@ -1009,18 +1024,50 @@ class PairDetector:
         start = ts - timedelta(seconds=self.config.big_trade_window)
         return sum(1 for t in self._big.get(code, ()) if start <= t <= ts)
 
+    def _rebuild_themes(self) -> None:
+        """테마 → 소속 종목 역인덱스. 구독이 바뀔 때마다 다시 만든다."""
+        self._by_theme: dict[str, list[str]] = defaultdict(list)
+        for code in sorted(self._codes):
+            for theme in self._themes.get(code, ()):
+                self._by_theme[theme].append(code)
+
+    def themes_of(self, code: str) -> frozenset[str]:
+        """그 종목의 실전 테마 코드들. 주입 안 됐으면 빈 집합."""
+        return self._themes.get(code, frozenset())
+
+    def peers(self, leader: str) -> list[str]:
+        """대장과 **같은 무리**. 테마 소속이 있으면 테마, 없으면 27종 섹터.
+
+        만쥬: "27종 표준 산업분류로는 실전 테마를 절대 잡아낼 수 없습니다." 맞는
+        말이라 테마가 있으면 그걸 먼저 쓴다. 다만 우리가 가진 테마 스냅샷은 전
+        종목의 25% 만 덮어서(643/2700) 주 선택자로는 못 쓴다 — 있으면 쓰고 없으면
+        섹터로 떨어진다. **섹터보다 나쁠 일은 없다.**
+        """
+        mine = self._themes.get(leader)
+        if mine:
+            peers = {c for t in mine for c in self._by_theme.get(t, ())}
+            peers.discard(leader)
+            if peers:
+                return sorted(peers)
+        sec = self._sectors.get(leader)
+        return list(self._by_sector.get(sec, ())) if sec else []
+
     def _dynamic_pairs(self, leader: str, ts: datetime) -> list[Pair]:
-        """대장과 같은 섹터에서 당일등락률 ``follower_rank_min~max`` 위를 후속으로.
+        """대장과 같은 무리에서 당일등락률 ``follower_rank_min~max`` 위를 후속으로.
 
         순위는 대장을 **포함해** 매기고(대장이 1위인 게 보통이다) 대장 자신만 뺀다 —
         그래야 "2~3등주"라는 말이 만쥬의 관심종목 창 정렬과 같은 뜻이 된다.
+        무리는 :meth:`peers` 가 정한다 — 테마가 있으면 테마, 없으면 섹터.
         """
         cfg = self.config
-        sec = self._sectors.get(leader)
-        if not sec:
+        group = self.peers(leader)
+        if not group:
             return []
         ranked: list[tuple[float, str]] = []
-        for code in self._by_sector.get(sec, ()):
+        # 순위는 대장을 **포함해** 매긴다. 섹터 무리에는 대장이 이미 들어 있고 테마
+        # 무리에는 빠져 있으므로, 합집합으로 한 번 맞춘 뒤 센다 — 안 그러면 대장이
+        # 두 번 세어져 2·3등주가 한 칸씩 밀린다.
+        for code in sorted({leader, *group}):
             ret = self.day_return(code, ts)
             if ret is not None:
                 ranked.append((ret, code))

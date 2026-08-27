@@ -359,6 +359,16 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
         out: dict[str, Any] = {"universe": uni.pairable_codes,
                                "sectors": uni.sector_by_code,
                                "prev_close": uni.prev_close_by_code}
+        # 실전 테마 — 만쥬: "27종 표준 산업분류로는 실전 테마를 절대 잡아낼 수
+        # 없습니다." 키움 테마 스냅샷이 있으면 짝꿍을 그 무리에서 고른다. 전 종목의
+        # 25% 만 덮으므로(643/2700) 주 선택자는 못 되고, 없는 종목은 섹터로 떨어진다.
+        if not args.no_themes:
+            themes = _fetch_themes(conn)
+            if themes:
+                out["themes"] = themes
+                covered = sum(1 for c in uni.pairable_codes if c in themes)
+                print(f"# 실전 테마 — {len(themes)}종목 매핑 · 유니버스 커버 "
+                      f"{covered}/{len(uni.pairable_codes)}", file=sys.stderr)
         # 만쥬 §5-5 테마 신선도 — 최근 상한가가 잦은 섹터는 '소비된 테마'로 본다.
         # 정확한 재현이 아니라 대용치다(신선도는 등급 C, 자동화 불가 항목).
         if args.stale_sector_limitups > 0:
@@ -456,7 +466,10 @@ def _breaking_meta(args: argparse.Namespace, codes: list[str]) -> dict[str, Any]
             row = cur.fetchone()
             if row and row[0]:
                 prev[str(code)] = float(row[0])
-        return {"sectors": sectors, "prev_close": prev}
+        # 실전 테마도 같이 넣는다 — 장중에 붙은 종목이 테마 무리에 안 들어가면
+        # 감지기가 27종 섹터로만 짝꿍을 고르게 되어 규칙이 갈린다.
+        themes = {c: t for c, t in _fetch_themes(conn).items() if c in set(codes)}
+        return {"sectors": sectors, "prev_close": prev, "themes": themes}
     except Exception:  # noqa: BLE001
         return {}
     finally:
@@ -509,13 +522,16 @@ async def _watch_leader_scan(
                 continue
             now = loop.time()
             sectors = _scan_sectors(args, [r.code for r in scanned])
+            # 무리는 **감지기와 같은 규칙**으로 정한다 — 실전 테마가 있으면 테마,
+            # 없으면 27종 섹터. 다른 규칙이면 스캐너가 붙인 짝꿍을 감지기가 안 산다.
+            groups = {c: _group_key(c, detector, sectors) for c in sectors}
             want: list[str] = []
             for lead in leaders[:args.leader_scan_max]:
                 hot[lead.code] = now
                 want.append(lead.code)
                 # 순위 범위는 **감지기 설정 하나**를 쓴다 — 스캐너가 붙이는 짝꿍과
                 # 감지기가 고르는 짝꿍이 다른 규칙이면 붙여놓고 안 사는 일이 생긴다.
-                for fol in sector_followers(scanned, lead.code, sectors,
+                for fol in sector_followers(scanned, lead.code, groups,
                                             rank_min=detector.config.follower_rank_min,
                                             rank_max=detector.config.follower_rank_max):
                     hot[fol] = now
@@ -557,6 +573,34 @@ def _stale_scan_codes(hot: dict[str, float], base: set[str], guard: RiskGuard | 
             p.leader for p in guard.open_positions}
     return sorted(c for c, seen in hot.items()
                   if seen < keep_after and c not in base and c not in live)
+
+
+def _group_key(code: str, detector: PairDetector, sectors: dict[str, str]) -> str:
+    """그 종목이 속한 무리의 키 — 실전 테마가 있으면 테마 코드, 없으면 섹터."""
+    themes = detector.themes_of(code)
+    if themes:
+        return f"T:{min(themes)}"
+    return f"S:{sectors.get(code, '')}"
+
+
+def _fetch_themes(conn: Any) -> dict[str, frozenset[str]]:
+    """``theme_members`` 최신 스냅샷 → ``{종목: {테마코드}}``. 없으면 빈 dict.
+
+    스냅샷은 매일 장 마감 뒤 `scalp-theme-snapshot` cron 이 쌓는다. 최신 하루만
+    쓴다 — 테마 편입은 며칠 단위로 바뀌고, 옛 스냅샷을 섞으면 이미 빠진 종목이
+    무리에 남는다.
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute("select code, theme_code from theme_members where snapshot_date = "
+                    "(select max(snapshot_date) from theme_members)")
+        rows = cur.fetchall()
+    except Exception:  # noqa: BLE001 — 테마 테이블이 없어도 기동을 막지 않는다
+        return {}
+    grouped: dict[str, set[str]] = {}
+    for code, theme in rows:
+        grouped.setdefault(str(code), set()).add(str(theme))
+    return {c: frozenset(t) for c, t in grouped.items()}
 
 
 def _scan_sectors(args: argparse.Namespace, codes: list[str]) -> dict[str, str]:
@@ -1125,6 +1169,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--big-trades", type=int, default=None,
                    help="대장에 필요한 대량체결(기본 5천만원↑) 최소 건수 — 만쥬 §5-1 "
                         "순간 체결량 확인. 0 = 끔")
+    p.add_argument("--no-themes", action="store_true",
+                   help="실전 테마(키움 theme_members) 주입 끄기 — 27종 섹터만 쓴다")
     p.add_argument("--leader-scan-interval", type=float, default=0.0,
                    help="장중 시장 전체 대장 스캔 주기(초) — 만쥬 §2. ka10027 등락률 "
                         "상위를 훑어 대장·짝꿍을 구독에 추가한다. 0 = 끔")

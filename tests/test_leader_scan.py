@@ -152,3 +152,46 @@ def test_nothing_to_drop_is_empty_not_error():
     from scalp_it.cli_pair_detect import _stale_scan_codes
 
     assert _stale_scan_codes({}, base=set(), guard=None, keep_after=100.0) == []
+
+
+# ----- 실전 테마가 있으면 27종 섹터보다 먼저 쓴다 ------------------------------
+
+def _det(themes=None, sectors=None, universe=("L", "A", "B", "X")):
+    from scalp_it.realtime.pair_detector import DetectorConfig, PairDetector
+
+    return PairDetector([], DetectorConfig(),
+                        sectors=sectors or {c: "전기/전자" for c in universe},
+                        universe=universe, themes=themes)
+
+
+def test_peers_fall_back_to_sector_without_themes():
+    """테마 스냅샷은 전 종목의 25% 만 덮는다 — 없으면 섹터로 떨어져야 한다."""
+    d = _det()
+    assert set(d.peers("L")) == {"L", "A", "B", "X"}
+
+
+def test_peers_prefer_the_real_theme_over_the_27_sector():
+    """만쥬: "27종 표준 산업분류로는 실전 테마를 절대 잡아낼 수 없습니다"."""
+    d = _det(themes={"L": ["T1"], "A": ["T1"], "B": ["T2"], "X": ["T2"]})
+    assert set(d.peers("L")) == {"A"}, "같은 테마만 무리로 본다"
+
+
+def test_peers_use_sector_when_the_leader_has_no_theme():
+    """대장이 테마에 없으면 섹터로 — 섹터보다 나쁠 일은 없어야 한다."""
+    d = _det(themes={"A": ["T1"], "B": ["T1"]})
+    assert set(d.peers("L")) == {"L", "A", "B", "X"}
+
+
+def test_peers_use_sector_when_the_theme_has_nobody_else():
+    """혼자 있는 테마는 짝꿍이 없다 — 그 경우도 섹터로 떨어져야 한다."""
+    d = _det(themes={"L": ["T9"]})
+    assert set(d.peers("L")) == {"L", "A", "B", "X"}
+
+
+def test_theme_index_rebuilds_when_codes_are_added_intraday():
+    """장중에 붙은 종목이 테마 무리에 안 들어가면 짝꿍 후보가 못 된다."""
+    d = _det(themes={"L": ["T1"]})
+    assert set(d.peers("L")) == {"L", "A", "B", "X"}      # 아직 T1 동료가 없다
+    d.add_codes(["NEW"], sectors={"NEW": "화학"}, prev_close={"NEW": 1000.0},
+                themes={"NEW": ["T1"]})
+    assert set(d.peers("L")) == {"NEW"}
