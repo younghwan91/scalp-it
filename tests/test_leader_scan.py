@@ -229,3 +229,85 @@ def test_malformed_window_does_not_block_the_day():
     from scalp_it.realtime.leader_scan import in_adoption_window
 
     assert in_adoption_window("1400", "쓰레기") is True
+
+
+# ----- 감시 구독과 주문 허용은 다른 목록이다 -----------------------------------
+
+def test_intraday_codes_reach_the_order_whitelist():
+    """구독만 늘리면 신호는 나는데 주문이 전부 차단된다 — 2026-08-27 실측 사고."""
+    from scalp_it.adapters.kiwoom_order import OrderGuardConfig
+    from scalp_it.cli_pair_detect import _allow_orders
+
+    class _Client:
+        def __init__(self):
+            self.guard = OrderGuardConfig(whitelist=frozenset({"000001"}))
+
+        def allow_codes(self, codes):
+            self.guard = self.guard.with_allowed(set(codes))
+
+    class _Exec:
+        def __init__(self, c):
+            self._client = c
+
+    c = _Client()
+    _allow_orders(_Exec(c), ["000002", "000003"])
+    assert c.guard.whitelist == frozenset({"000001", "000002", "000003"})
+
+
+def test_allow_orders_is_a_noop_without_an_executor():
+    """dry-run·리플레이엔 실행기가 없다 — 거기서 터지면 안 된다."""
+    from scalp_it.cli_pair_detect import _allow_orders
+
+    _allow_orders(None, ["000002"])          # 예외 없이 지나가야 한다
+
+
+def test_with_allowed_keeps_the_original_entries():
+    from scalp_it.adapters.kiwoom_order import OrderGuardConfig
+
+    g = OrderGuardConfig(whitelist=frozenset({"000001"}))
+    assert g.with_allowed({"000002"}).whitelist == frozenset({"000001", "000002"})
+    assert g.whitelist == frozenset({"000001"}), "원본은 그대로여야 한다(frozen)"
+
+
+# ----- 종목코드 정규화: 알파벳이 든 코드를 다른 회사로 바꾸면 안 된다 ------------
+
+def test_letters_inside_the_code_survive():
+    """``0155E0``(해치텍) → ``001550``(조비) 로 바뀌던 버그. 실주문이 걸린 경로다.
+
+    KRX 코드에는 가운데 알파벳이 들어가는 것이 실재한다(2026-08-27 기준 55종목).
+    이게 뭉개지면 보유종목 차단이 **진짜 보유분을 놓치고 엉뚱한 종목을 막는다**.
+    """
+    from scalp_it.adapters.kiwoom_order import normalize_code
+
+    assert normalize_code("0155E0") == "0155E0"
+    assert normalize_code("0220W0") == "0220W0"
+
+
+def test_kt00018_letter_prefix_is_still_stripped():
+    """계좌 조회 응답은 ``A000010`` 형식이다 — 접두 한 글자는 그대로 떼야 한다."""
+    from scalp_it.adapters.kiwoom_order import normalize_code
+
+    assert normalize_code("A000010") == "000010"
+    assert normalize_code(" a000010 ") == "000010"
+
+
+def test_short_numeric_codes_are_zero_padded():
+    from scalp_it.adapters.kiwoom_order import normalize_code
+
+    assert normalize_code("10") == "000010"
+    assert normalize_code(43200) == "043200"
+
+
+def test_empty_code_stays_empty():
+    from scalp_it.adapters.kiwoom_order import normalize_code
+
+    assert normalize_code("") == "" and normalize_code(None) == ""
+
+
+def test_blocklist_matches_the_real_holding_not_a_lookalike():
+    """보유종목 차단이 실제로 그 종목을 막는지 — 이게 이 함수의 존재 이유다."""
+    from scalp_it.adapters.kiwoom_order import OrderGuardConfig
+
+    g = OrderGuardConfig(whitelist=frozenset()).with_blocked({"0155E0"})
+    assert "0155E0" in g.blocklist
+    assert "001550" not in g.blocklist, "엉뚱한 회사를 막으면 안 된다"

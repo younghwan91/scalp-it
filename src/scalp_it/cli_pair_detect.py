@@ -33,7 +33,7 @@ import os
 import signal
 import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import date, datetime
 from datetime import time as dtime
 from pathlib import Path
@@ -529,7 +529,7 @@ async def _watch_program_flow(
 
 async def _watch_leader_scan(
     collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
-    guard: RiskGuard | None = None,
+    guard: RiskGuard | None = None, executor: OrderExecutor | None = None,
 ) -> None:
     """장중 시장 전체 대장 스캔 — 만쥬가 등락률 상위 창으로 하는 일(§2).
 
@@ -609,6 +609,9 @@ async def _watch_leader_scan(
             added, rejected = await collector.add_codes(fresh)
             if added:
                 det_added = detector.add_codes(added, **_breaking_meta(args, added))
+                # **주문 화이트리스트도 같이 넓힌다.** 안 그러면 감지기는 신호를
+                # 내는데 주문이 전부 차단된다 — 스캔을 붙여놓고 못 사는 상태다.
+                _allow_orders(executor, det_added)
                 names = ", ".join(f"{r.name}({r.code})" for r in leaders[:3])
                 bus.notice(f"[대장스캔] 장중 편입 {len(det_added)}종목 — 상위 {names}")
             if rejected:
@@ -633,6 +636,21 @@ def _stale_scan_codes(hot: dict[str, float], base: set[str], guard: RiskGuard | 
             p.leader for p in guard.open_positions}
     return sorted(c for c, seen in hot.items()
                   if seen < keep_after and c not in base and c not in live)
+
+
+def _allow_orders(executor: OrderExecutor | None, codes: Sequence[str]) -> None:
+    """장중 편입 종목을 주문 화이트리스트에 더한다.
+
+    감시 구독과 주문 허용은 **다른 목록**이다. 구독만 늘리면 감지기는 신호를 내는데
+    실행기가 전부 차단한다 — 2026-08-27 실측에서 스캔이 11종목을 붙였는데 화이트리스트는
+    장전 11종목 그대로였다.
+    """
+    if executor is None or not codes:
+        return
+    client = getattr(executor, "_client", None)
+    allow = getattr(client, "allow_codes", None)
+    if callable(allow):
+        allow(list(codes))
 
 
 def _group_key(code: str, detector: PairDetector, sectors: dict[str, str]) -> str:
@@ -680,6 +698,7 @@ def _scan_sectors(args: argparse.Namespace, codes: list[str]) -> dict[str, str]:
 
 async def _watch_breaking_materials(
     collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
+    executor: OrderExecutor | None = None,
 ) -> None:
     """장중 돌발 재료 감시 — 만쥬 §6.
 
@@ -725,6 +744,7 @@ async def _watch_breaking_materials(
                 # 그 종목이 대장이 될 수 있다(§6 의 목적).
                 meta = _breaking_meta(args, added)
                 det_added = detector.add_codes(added, **meta)
+                _allow_orders(executor, det_added)
                 bus.notice(f"[돌발재료] 장중 편입 {len(det_added)}종목: "
                            f"{', '.join(det_added)} — 강한 재료 공시 접수")
             if rejected:
@@ -1109,12 +1129,12 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             # 만쥬 §2 — 시장 전체에서 대장을 찾는다. 이게 없으면 전날 고른 45종목
             # 안에서만 대장을 기다리게 되고, 실측 커버리지는 2% 였다.
             watchers.append(asyncio.create_task(
-                _watch_leader_scan(collector, detector, bus, args, guard)))
+                _watch_leader_scan(collector, detector, bus, args, guard, executor)))
         watcher = None
         if args.breaking_interval > 0:
             # 만쥬 §6 — 장중 돌발 재료. 수집과 나란히 돌고, 죽어도 수집은 계속된다.
             watcher = asyncio.create_task(
-                _watch_breaking_materials(collector, detector, bus, args))
+                _watch_breaking_materials(collector, detector, bus, args, executor))
         try:
             await collector.run(duration=duration)
         finally:

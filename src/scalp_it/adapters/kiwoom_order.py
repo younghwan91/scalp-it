@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
@@ -124,16 +124,27 @@ class OrderBlocked(KiwoomError):
 def normalize_code(code: Any) -> str:
     """종목코드를 6자리로 정규화한다.
 
-    kt00018 응답은 ``"A000010"`` 처럼 알파벳 접두가 붙는다. 접두·공백을 떼고
-    숫자 6자리만 남긴다. 우리 블록/화이트리스트·주문은 전부 이 6자리 기준.
+    kt00018 응답은 ``"A000010"`` 처럼 알파벳 **접두**가 붙는다. 그것만 떼고 6자리를
+    그대로 둔다. 우리 블록/화이트리스트·주문은 전부 이 6자리 기준이다.
+
+    **알파벳을 무조건 지우면 안 된다.** KRX 코드에는 가운데에 알파벳이 들어가는
+    것이 실재한다(2026-08-27 기준 55종목). 숫자만 남기는 옛 구현은
+    ``0155E0``(해치텍) → ``001550``(조비) 로 **완전히 다른 회사 코드**를 만들었다.
+    그 코드가 보유종목이면 진짜 보유분이 차단에서 빠지고 엉뚱한 종목이 대신 막힌다 —
+    실주문이 걸린 경로라 조용히 넘길 자리가 아니다.
     """
     text = str(code if code is not None else "").strip().upper()
-    # 앞의 알파벳 접두(A 등)를 제거
-    digits = text.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-    digits = "".join(ch for ch in digits if ch.isdigit())
-    if len(digits) > 6:
-        digits = digits[-6:]
-    return digits.zfill(6) if digits else ""
+    text = "".join(ch for ch in text if ch.isalnum())
+    if not text:
+        return ""
+    # 7자리 + 알파벳 접두 = kt00018 형식("A000010"). 접두 한 글자만 뗀다.
+    if len(text) == 7 and text[0].isalpha():
+        text = text[1:]
+    if len(text) > 6:
+        text = text[-6:]
+    # 숫자만인 코드는 6자리로 채운다("10" → "000010"). 알파벳이 섞인 코드는
+    # 이미 6자리 규격이라 그대로 둔다.
+    return text.zfill(6) if text.isdigit() else text
 
 
 # --------------------------------------------------------------------- 설정
@@ -161,6 +172,16 @@ class OrderGuardConfig:
         object.__setattr__(
             self, "whitelist", frozenset(normalize_code(c) for c in self.whitelist if normalize_code(c))
         )
+
+    def with_allowed(self, codes: set[str]) -> OrderGuardConfig:
+        """화이트리스트에 종목을 **더한** 사본.
+
+        장중에 대장 스캔·돌발재료로 붙은 종목은 장전 화이트리스트에 없다. 그대로
+        두면 감지기는 신호를 내는데 주문은 전부 차단된다 — 스캔을 붙여놓고 못 사는
+        상태다(2026-08-27 실측: 스캔 11종목 편입, 화이트리스트 11종목 그대로).
+        """
+        merged = set(self.whitelist) | {normalize_code(c) for c in codes}
+        return replace(self, whitelist=frozenset(c for c in merged if c))
 
     def with_blocked(self, codes: set[str]) -> OrderGuardConfig:
         """계좌 보유분을 블록리스트에 병합한 새 설정."""
@@ -390,6 +411,15 @@ class KiwoomOrderClient:
             name = HELD_STOCK_NAMES.get(intent.code, "")
             return f"실시간 보유종목 차단{': ' + name if name else ''} — {intent.code}"
         return None
+
+    def allow_codes(self, codes: Sequence[str]) -> None:
+        """장중에 붙은 종목을 주문 화이트리스트에 더한다.
+
+        대장 스캔·돌발재료로 감시에 들어온 종목은 장전 화이트리스트에 없다. 이걸
+        안 하면 신호는 나는데 주문이 전부 차단된다.
+        """
+        if codes:
+            self.guard = self.guard.with_allowed(set(codes))
 
     def refresh_blocklist_from_account(self) -> set[str]:
         """계좌 보유 전체를 **매수 차단** 집합에 동적 병합. 보유 종목 매수 사고를 이중 차단.
