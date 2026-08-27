@@ -463,6 +463,116 @@ def _breaking_meta(args: argparse.Namespace, codes: list[str]) -> dict[str, Any]
             conn.close()
 
 
+async def _watch_leader_scan(
+    collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
+    guard: RiskGuard | None = None,
+) -> None:
+    """장중 시장 전체 대장 스캔 — 만쥬가 등락률 상위 창으로 하는 일(§2).
+
+    우리는 전날 밤에 유니버스를 고르고 그것만 구독했다. 그런데 선정 기준이 **전날
+    거래대금**이라 오늘 상한가로 가는 종목과 거의 안 겹친다 — 실측 커버리지 2%
+    (최근 7거래일 상한가 52건 중 1건). 방아쇠를 아무리 정확히 맞춰도 대장을 안
+    보고 있으면 신호가 안 뜬다.
+
+    그래서 ``ka10027`` 등락률 상위를 주기적으로 훑어 **시장 전체에서** 대장 후보를
+    찾고, 그 종목과 같은 섹터 2·3등주를 장중에 구독에 추가한다.
+
+    등록 한도가 있어 자리가 차면 **이 스캐너가 붙였던 것 중 식은 것부터** 내린다.
+    장전 유니버스와 열린 포지션 종목은 절대 안 내린다.
+    """
+    import asyncio
+
+    from .adapters.kiwoom import KiwoomClient
+    from .realtime.leader_scan import leader_candidates, parse_scan_rows, sector_followers
+
+    appkey = os.environ.get("KIWOOM_APP_KEY", "")
+    secret = os.environ.get("KIWOOM_APP_SECRET", "")
+    if not appkey or not secret:
+        bus.notice("[대장스캔] 인증 정보 없음 → 스캔 비활성")
+        return
+    client = KiwoomClient(appkey, secret)
+    base = set(detector.codes)          # 장전 유니버스 — 절대 안 내린다
+    hot: dict[str, float] = {}          # 스캐너가 붙인 코드 → 마지막으로 뜨거웠던 시각
+    loop = asyncio.get_running_loop()
+
+    while True:
+        await asyncio.sleep(max(5.0, args.leader_scan_interval))
+        try:
+            rows = await asyncio.to_thread(
+                client.fetch_rank_rows, market=args.leader_scan_market)
+            scanned = parse_scan_rows(rows)
+            leaders = leader_candidates(
+                scanned, min_flu_rt=args.leader_scan_min_rt,
+                min_buy_qty=args.leader_scan_min_wall)
+            if not leaders:
+                continue
+            now = loop.time()
+            sectors = _scan_sectors(args, [r.code for r in scanned])
+            want: list[str] = []
+            for lead in leaders[:args.leader_scan_max]:
+                hot[lead.code] = now
+                want.append(lead.code)
+                # 순위 범위는 **감지기 설정 하나**를 쓴다 — 스캐너가 붙이는 짝꿍과
+                # 감지기가 고르는 짝꿍이 다른 규칙이면 붙여놓고 안 사는 일이 생긴다.
+                for fol in sector_followers(scanned, lead.code, sectors,
+                                            rank_min=detector.config.follower_rank_min,
+                                            rank_max=detector.config.follower_rank_max):
+                    hot[fol] = now
+                    want.append(fol)
+            fresh = [c for c in dict.fromkeys(want) if c not in detector.codes]
+            if not fresh:
+                continue
+            # 자리를 먼저 비운다 — 붙일 게 있는데 한도에 걸리면 그날 나머지 대장을
+            # 영영 못 본다. 내리는 건 **이 스캐너가 붙였고 식은 것**뿐이다.
+            stale = _stale_scan_codes(hot, base, guard, keep_after=now - args.leader_scan_ttl)
+            if stale:
+                await collector.remove_codes(stale)
+                for c in stale:
+                    hot.pop(c, None)
+            added, rejected = await collector.add_codes(fresh)
+            if added:
+                det_added = detector.add_codes(added, **_breaking_meta(args, added))
+                names = ", ".join(f"{r.name}({r.code})" for r in leaders[:3])
+                bus.notice(f"[대장스캔] 장중 편입 {len(det_added)}종목 — 상위 {names}")
+            if rejected:
+                bus.notice(f"[대장스캔] 자리 없어 거절 {len(rejected)}종목 "
+                           f"— --universe-size 를 줄여 스캔 자리를 늘려라")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 스캔 실패로 감지를 죽이지 않는다
+            bus.notice(f"[대장스캔] 실패(계속): {exc}")
+
+
+def _stale_scan_codes(hot: dict[str, float], base: set[str], guard: RiskGuard | None,
+                      *, keep_after: float) -> list[str]:
+    """내려도 되는 코드 — 스캐너가 붙였고, 장전 유니버스가 아니고, 식은 것.
+
+    **열린 포지션이 있는 종목은 절대 안 내린다** — 구독을 끊으면 틱이 안 와서
+    청산 판정이 멈춘다(대장이탈도 손절도 못 하고 그대로 물린다).
+    """
+    live: set[str] = set()
+    if guard is not None:
+        live = {p.follower for p in guard.open_positions} | {
+            p.leader for p in guard.open_positions}
+    return sorted(c for c, seen in hot.items()
+                  if seen < keep_after and c not in base and c not in live)
+
+
+def _scan_sectors(args: argparse.Namespace, codes: list[str]) -> dict[str, str]:
+    """스캔된 종목의 섹터. 못 읽으면 빈 dict(짝꿍은 못 붙고 대장만 붙는다)."""
+    try:
+        from .intraday.store import connect
+
+        conn = connect(args.dsn or os.environ.get("KR_QUANT_DB"))
+        ph = _placeholder(conn)
+        cur = conn.cursor()
+        cur.execute(f"select code, sector from stocks where code in "
+                    f"({','.join([ph] * len(codes))})", codes)
+        return {str(c): str(sec) for c, sec in cur.fetchall() if sec}
+    except Exception:  # noqa: BLE001 — 섹터 조회 실패로 스캔을 죽이지 않는다
+        return {}
+
+
 async def _watch_breaking_materials(
     collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
 ) -> None:
@@ -885,6 +995,12 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
                 loop.add_signal_handler(sig, collector.stop)
             except (NotImplementedError, ValueError):
                 pass
+        watchers: list[Any] = []
+        if args.leader_scan_interval > 0:
+            # 만쥬 §2 — 시장 전체에서 대장을 찾는다. 이게 없으면 전날 고른 45종목
+            # 안에서만 대장을 기다리게 되고, 실측 커버리지는 2% 였다.
+            watchers.append(asyncio.create_task(
+                _watch_leader_scan(collector, detector, bus, args, guard)))
         watcher = None
         if args.breaking_interval > 0:
             # 만쥬 §6 — 장중 돌발 재료. 수집과 나란히 돌고, 죽어도 수집은 계속된다.
@@ -895,6 +1011,8 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
         finally:
             if watcher is not None:
                 watcher.cancel()
+            for task in watchers:
+                task.cancel()
 
     try:
         asyncio.run(_main())
@@ -1006,6 +1124,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--big-trades", type=int, default=None,
                    help="대장에 필요한 대량체결(기본 5천만원↑) 최소 건수 — 만쥬 §5-1 "
                         "순간 체결량 확인. 0 = 끔")
+    p.add_argument("--leader-scan-interval", type=float, default=0.0,
+                   help="장중 시장 전체 대장 스캔 주기(초) — 만쥬 §2. ka10027 등락률 "
+                        "상위를 훑어 대장·짝꿍을 구독에 추가한다. 0 = 끔")
+    p.add_argument("--leader-scan-min-rt", type=float, default=20.0,
+                   help="대장 후보 최소 등락률(%%). 만쥬 \"20%% 이상으로 수직 상승\"")
+    p.add_argument("--leader-scan-min-wall", type=float, default=0.0,
+                   help="상한가에 잠긴 종목에 요구할 최소 매수 잔량(주). 0 = 끔")
+    p.add_argument("--leader-scan-max", type=int, default=6,
+                   help="한 번에 붙일 대장 후보 수. 짝꿍까지 붙으니 자리를 보고 정한다")
+    p.add_argument("--leader-scan-market", default="101",
+                   help="000 전체 · 001 코스피 · 101 코스닥(기본)")
+    p.add_argument("--leader-scan-ttl", type=float, default=900.0,
+                   help="스캔으로 붙인 종목을 이 초 동안 상위에서 못 보면 자리를 비운다")
     p.add_argument("--breaking-interval", type=float, default=0.0,
                    help="장중 돌발 재료 감시 주기(초) — 만쥬 §6. 새 재료 공시 종목을 "
                         "구독에 추가한다. 0 = 끔. 켤 거면 60 이상 권장")

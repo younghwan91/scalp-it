@@ -85,6 +85,22 @@ while [ "$(date +%s)" -lt "$END" ]; do
   #                      2등주 시장가 청산." 종전 3억은 우리 임의값이라 너무 굼떴다.
   # 매도 폭탄(§5-4 "프로그램 매도 폭탄이 쏟아져 막히면") — 분당 매도 체결대금 실측
   #   중앙 3,887만 / 95% 9.7억 / 99% 112억. 10초 창에서 3억이면 상위권 투매다.
+  #   --leader-scan-interval 20 --leader-scan-min-rt 20 --leader-scan-max 6
+  #                      **장중 시장 전체 대장 스캔**(만쥬 §2). ka10027 등락률 상위를
+  #                      20초마다 훑어 20% 이상 오른 종목을 대장 후보로 잡고, 그 종목과
+  #                      같은 섹터 2·3등주를 장중에 구독에 추가한다. 만쥬가 HTS 등락률
+  #                      상위·순간체결량 창으로 하는 일이 이것이다.
+  #                      켠 이유는 실측 한 줄이다 — **커버리지 2%**: 최근 7거래일 상한가
+  #                      52건 중 우리 유니버스 안에 있던 건 1건. 전날 거래대금으로 45종목을
+  #                      미리 고르면 오늘 상한가로 가는 종목과 거의 안 겹친다. 방아쇠를
+  #                      아무리 정확히 맞춰도 대장을 안 보고 있으면 신호가 안 뜬다
+  #                      (2026-08-27 알림 0건의 진짜 이유).
+  #   --universe-size 12 (종전 45) — 등록 한도가 커넥션당 50종목이라, 장전에 45를 채우면
+  #                      스캔이 붙일 자리가 없다. 12 로 줄여 나머지를 스캔에 내준다.
+  #                      대장 6 × (본인+짝꿍 2) = 18 + 유니버스 12 = 30, 여유 20.
+  #                      자리가 차면 스캔이 붙였던 것 중 식은 것부터 내린다
+  #                      (--leader-scan-ttl 900초). **열린 포지션과 장전 유니버스는
+  #                      절대 안 내린다** — 구독을 끊으면 청산 판정이 멈춘다.
   #   --position-notional 10000000 — 만쥬 "사전 세팅된 (비공개 회신 — 공개본에서 뺐다) 기본값 10만원은 만쥬의
   #                      1/100 이라 가상 손익도 낙폭 문턱도 만쥬 크기가 아니었다.
   #                      (--qty 는 **실주문** 안전캡이라 그대로 1주. --confirm-real 이
@@ -112,7 +128,8 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --limitup-near-ticks 3 --limitup-require-surge --vi-near 0.01 \
     --follower-priority manju \
     --partial-exit 0.5 --partial-exit-gain 0.03 \
-    --universe-size 45 --max-roundtrip-bp 20 --order-krw 10000000 \
+    --universe-size 12 --max-roundtrip-bp 20 --order-krw 10000000 \
+    --leader-scan-interval 20 --leader-scan-min-rt 20 --leader-scan-max 6 \
     --position-notional 10000000 \
     --lock-min-krw 300000000 --lock-wall-decay 0.7 \
     --dump-krw 100000000 --big-trades 2 --drawdown-krw 100000 \

@@ -367,6 +367,20 @@ class KiwoomClient:
         )
         return rows, cont, key
 
+    def fetch_rank_rows(self, *, market: str = "101") -> list[dict]:
+        """``ka10027`` 전일대비등락률상위 — **시장 전체**를 한 번에 훑는다.
+
+        만쥬가 HTS 등락률 상위·순간체결량 창으로 대장을 낙점하는 자리다. 응답에
+        등락률·매도잔량(0 이면 상한가 잠김)·매수잔량·체결강도가 같이 온다.
+        페이지네이션은 안 한다 — 첫 페이지(최대 200행)면 대장 후보는 다 들어온다.
+        """
+        from ..realtime.leader_scan import RANK_API_ID, RANK_PATH, RANK_ROWS_KEY, rank_body
+
+        rows, _cont, _key, _payload = self._fetch_rows(
+            RANK_PATH, RANK_API_ID, rank_body(market), RANK_ROWS_KEY, "등락률 상위",
+        )
+        return rows
+
     def minute_chart(
         self,
         code: str,

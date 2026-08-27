@@ -1,0 +1,145 @@
+"""장중 시장 전체 대장 스캔 — 만쥬가 HTS 순간체결량·등락률 상위 창으로 하는 일.
+
+만쥬는 대장을 **시장 전체에서** 찾는다:
+
+> "오전 09:00~09:30 사이, (비공개 회신 — 공개본에서 뺐다)
+
+우리는 전날 밤에 45종목을 골라 그것만 구독했다(키움 단일 앱키 = 50종목 제약).
+게다가 선정 기준이 **전날 거래대금**이라, 오늘 상한가로 가는 종목과 거의 안 겹친다:
+
+    최근 7거래일 상한가 52건 중 우리 유니버스 안에 있던 것 1건 = **커버리지 2%**
+
+방아쇠를 아무리 정확히 맞춰도 대장을 안 보고 있으면 신호가 안 뜬다. 그래서
+등락률 상위 조회(``ka10027``)를 주기적으로 돌려 **시장 전체에서** 대장 후보를
+찾고, 그 종목과 짝꿍을 장중에 구독에 추가한다.
+
+응답에 마침 만쥬가 보는 것이 다 들어 있다:
+
+    flu_rt      등락률 — "20% 이상으로 수직 상승"
+    sel_req     매도 잔량 — **0 이면 상한가 잠김**
+    buy_req     매수 잔량 — 만쥬의 "상한가 잔량"
+    cntr_str    체결강도 — "매수 호가로 가장 빠르게 반응하는 종목"
+
+DB 도 시계도 모른다 — 응답 행을 받아 판정만 한다(다른 realtime 모듈과 같은 계약).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+
+__all__ = [
+    "RANK_API_ID",
+    "RANK_PATH",
+    "RANK_ROWS_KEY",
+    "ScanRow",
+    "leader_candidates",
+    "parse_scan_rows",
+    "rank_body",
+    "sector_followers",
+]
+
+#: 전일대비등락률상위요청. 코스닥 전체를 등락률 순으로 최대 200행 준다.
+RANK_API_ID = "ka10027"
+RANK_PATH = "/api/dostk/rkinfo"
+#: 응답의 행 배열 키.
+RANK_ROWS_KEY = "pred_pre_flu_rt_upper"
+
+
+def rank_body(market: str = "101") -> dict[str, str]:
+    """``ka10027`` 요청 바디. ``market`` 은 000 전체 · 001 코스피 · 101 코스닥.
+
+    상한가·하한가를 **포함**해서 받는다(``updown_incls="1"``) — 이미 잠긴 대장도
+    짝꿍매매의 방아쇠라 빼면 안 된다.
+    """
+    return {
+        "mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": "0000", "stk_cnd": "0",
+        "crd_cnd": "0", "updown_incls": "1", "pric_cnd": "0", "trde_prica_cnd": "0",
+        "stex_tp": "3",
+    }
+
+
+def _num(value: object) -> float:
+    """``"+29.98"`` · ``"-1331"`` 같은 부호 붙은 문자열을 숫자로. 못 읽으면 0."""
+    try:
+        return float(str(value).replace("+", "").replace(",", "").strip() or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _code(value: object) -> str:
+    """``"043200_AL"`` → ``"043200"``. 응답 종목코드에 거래소 접미사가 붙어 온다."""
+    return str(value or "").strip().split("_")[0]
+
+
+@dataclass(frozen=True)
+class ScanRow:
+    """등락률 상위 한 행. 만쥬가 창에서 읽는 것만 남긴다."""
+
+    code: str
+    name: str
+    price: float
+    flu_rt: float          # 등락률(%)
+    sell_qty: float        # 매도 잔량 — 0 이면 상한가 잠김
+    buy_qty: float         # 매수 잔량 — 만쥬의 "상한가 잔량"
+    cntr_str: float        # 체결강도
+    volume: float
+
+    @property
+    def locked(self) -> bool:
+        """상한가 잠김 — 매도 잔량이 0 이고 매수가 쌓여 있다."""
+        return self.sell_qty <= 0 and self.buy_qty > 0
+
+
+def parse_scan_rows(rows: Iterable[Mapping[str, object]]) -> list[ScanRow]:
+    """``ka10027`` 응답 행들을 :class:`ScanRow` 로. 코드가 없는 행은 버린다."""
+    out: list[ScanRow] = []
+    for r in rows:
+        code = _code(r.get("stk_cd"))
+        if not code:
+            continue
+        out.append(ScanRow(
+            code=code, name=str(r.get("stk_nm") or "").strip(),
+            price=abs(_num(r.get("cur_prc"))), flu_rt=_num(r.get("flu_rt")),
+            sell_qty=_num(r.get("sel_req")), buy_qty=_num(r.get("buy_req")),
+            cntr_str=_num(r.get("cntr_str")), volume=_num(r.get("now_trde_qty")),
+        ))
+    return out
+
+
+def leader_candidates(rows: Sequence[ScanRow], *, min_flu_rt: float = 20.0,
+                      min_buy_qty: float = 0.0) -> list[ScanRow]:
+    """대장 후보 — 만쥬의 "20% 이상으로 수직 상승".
+
+    등락률 내림차순으로 준다. ``min_buy_qty`` 를 주면 잠긴 종목에 한해 매수 잔량이
+    그만큼은 쌓여 있어야 한다(만쥬 §5-2 "수십만~수백만 주를 안정적으로 굳히면").
+    아직 안 잠긴 종목은 상한가 호가가 없어 잔량을 잴 수 없으니 이 조건을 안 건다.
+    """
+    picked = [r for r in rows if r.flu_rt >= min_flu_rt]
+    if min_buy_qty > 0:
+        picked = [r for r in picked if not r.locked or r.buy_qty >= min_buy_qty]
+    return sorted(picked, key=lambda r: (-r.flu_rt, r.code))
+
+
+def sector_followers(rows: Sequence[ScanRow], leader: str,
+                     sectors: Mapping[str, str], *, rank_min: int = 2,
+                     rank_max: int = 3) -> list[str]:
+    """대장과 같은 섹터에서 등락률 ``rank_min~rank_max`` 위를 짝꿍으로.
+
+    순위는 **대장을 포함해** 매기고 대장 자신만 뺀다 — 감지기의 `_dynamic_pairs` 와
+    같은 규칙이라야 "2·3등주"라는 말이 두 곳에서 같은 뜻이 된다.
+
+    이미 잠긴 종목은 짝꿍에서 뺀다. 상한가에 붙어 있으면 살 수가 없고, 만쥬가
+    사는 것도 **아직 안 간** 2·3등주다.
+    """
+    sec = sectors.get(leader)
+    if not sec:
+        return []
+    same = [r for r in rows if sectors.get(r.code) == sec]
+    same.sort(key=lambda r: (-r.flu_rt, r.code))
+    out: list[str] = []
+    for rank, row in enumerate(same, start=1):
+        if row.code == leader or rank < rank_min or rank > rank_max or row.locked:
+            continue
+        out.append(row.code)
+    return out

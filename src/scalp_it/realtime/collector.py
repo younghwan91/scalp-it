@@ -349,6 +349,23 @@ def build_reg_message(
     }
 
 
+def build_remove_message(
+    codes: Sequence[str], types: Sequence[str], grp_no: str
+) -> dict:
+    """구독 해제 메시지. ``REG`` 와 모양이 같고 ``trnm`` 만 다르다.
+
+    자리를 비우는 용도다 — 커넥션당 등록 한도(:data:`REG_LIMIT`)가 있어서, 장중에
+    시장 전체를 훑어 새 대장을 붙이려면 식은 종목을 내려야 한다. 해제를 못 하면
+    자리가 차는 순간부터 그날 나머지 대장을 영영 못 본다.
+    """
+    return {
+        "trnm": "REMOVE",
+        "grp_no": str(grp_no),
+        "refresh": "0",
+        "data": [{"item": list(codes), "type": list(types)}],
+    }
+
+
 def quote_levels(row: Mapping[str, Any]) -> tuple[list[tuple[float, float]],
                                                   list[tuple[float, float]]]:
     """0D 행 → ``(bids, asks)`` — 각 원소가 ``(가격, 잔량)``, 1호가부터.
@@ -458,6 +475,7 @@ class KiwoomRealtimeCollector:
         self._live_ws: dict[str, tuple[Any, list[str]]] = {}
         self.added_codes: list[str] = []      # 장중에 붙인 종목(집계·복기용)
         self.rejected_codes: list[str] = []   # 자리가 없어 못 붙인 종목
+        self.removed_codes: list[str] = []    # 자리를 비우려 내린 종목
 
     # ------------------------------------------------------------- 공개 API
 
@@ -566,6 +584,31 @@ class KiwoomRealtimeCollector:
         self.added_codes.extend(ok)
         self._log(f"[conn{grp_no}] 장중 구독 추가 {len(ok)}종목: {', '.join(ok)}")
         return ok, rejected
+
+    async def remove_codes(self, codes: Sequence[str]) -> list[str]:
+        """장중에 종목 구독을 **해제**한다 → 실제로 내린 것.
+
+        등록 한도가 있어 새 대장을 붙이려면 식은 종목을 내려야 한다. 실패해도
+        수집을 죽이지 않는다 — 자리를 못 비웠을 뿐이고, 그러면 다음 추가가 거절될
+        뿐이다(거절은 이미 기록으로 남는다).
+        """
+        if not self._live_ws or not codes:
+            return []
+        grp_no = min(self._live_ws)
+        ws, have = self._live_ws[grp_no]
+        drop = [c for c in codes if c in have]
+        if not drop:
+            return []
+        try:
+            await ws.send(json.dumps(build_remove_message(drop, self._types, grp_no)))
+        except Exception as exc:  # noqa: BLE001 — 해제 실패로 수집을 죽이지 않는다
+            self._log(f"[conn{grp_no}] 장중 REMOVE 실패: {exc}")
+            return []
+        for c in drop:
+            have.remove(c)
+        self.removed_codes.extend(drop)
+        self._log(f"[conn{grp_no}] 장중 구독 해제 {len(drop)}종목: {', '.join(drop)}")
+        return drop
 
     async def _login_and_reg(self, ws, grp_no: str, codes: list[str]) -> None:
         await ws.send(json.dumps(build_login_message(self._token)))
