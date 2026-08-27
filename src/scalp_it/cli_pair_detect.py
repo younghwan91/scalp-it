@@ -159,6 +159,7 @@ def build_guard(args: argparse.Namespace) -> RiskGuard | None:
         trail_pct=args.trail,
         drawdown_krw=args.drawdown_krw,
         shadow_when_blocked=args.shadow_when_blocked,
+        stop_needs_leader_weak=args.stop_needs_leader_weak,
         drawdown_size_multiplier=args.drawdown_size,
         max_positions=args.max_positions,
         fill_basis=args.fill_basis,
@@ -1201,6 +1202,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="%% 손실한도·기록 기준 자본(원). 기본 100만")
     g.add_argument("--position-notional", type=float, default=100_000.0,
                    help="가상 포지션 1건 명목(원) — 수익률→원 환산. 기본 10만")
+    g.add_argument("--stop-needs-leader-weak", action="store_true",
+                   help="대장이 상한가를 굳히고 있는 동안은 가격 손절을 잠근다 — 만쥬 "
+                        "\"2등주 가격 지표로 손절하지 말고 대장 이탈을 트리거로\". "
+                        "재난선은 그대로 산다")
     g.add_argument("--shadow-when-blocked", action="store_true",
                    help="국면 차단(거래대금 미달)으로 안 산 신호도 그림자로 굴려 "
                         "\"샀으면 어땠나\"를 기록한다. 실현손익·킬스위치·주문엔 "

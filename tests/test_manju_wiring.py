@@ -262,3 +262,64 @@ def test_shadow_off_by_default():
     g = _blocked_guard()
     g.on_alert(_alert())
     assert g.shadow_positions == []
+
+
+# ----- 대장이 굳히고 있으면 후속주 가격으로 손절하지 않는다 ---------------------
+
+def _stop_guard(**kw) -> RiskGuard:
+    base = {"daily_loss_limit": 0.0, "max_consecutive_losses": 0, "max_positions": 99,
+            "stop_file": None, "position_notional": 10_000_000.0}
+    base.update(kw)
+    g = RiskGuard(RiskGuardConfig(**base))
+    a = _alert()
+    g.on_alert(type(a)(**{**a.__dict__, "stop_loss": 9_950.0, "disaster_line": 9_700.0}))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 9_999)      # through 체결
+    return g
+
+
+def test_stop_fires_when_leader_state_is_unknown():
+    """대장 통보를 한 번도 못 받았으면 종전대로 손절한다 — 하위호환."""
+    g = _stop_guard(stop_needs_leader_weak=True)
+    _tick(g, 10, 9_940)
+    assert len(g.open_positions) == 0
+    assert g.closed_positions[-1].exit_reason == "손절"
+
+
+def test_stop_is_locked_while_the_leader_holds_the_limit():
+    """만쥬: "2등주의 가격 지표로 손절하지 말고 대장주 이탈을 트리거로"."""
+    from scalp_it.realtime.risk_guard import LEADER_HOLDING
+
+    g = _stop_guard(stop_needs_leader_weak=True)
+    g.on_leader_state("000001", BASE + timedelta(seconds=5), LEADER_HOLDING)
+    _tick(g, 10, 9_940)                                    # 손절선 아래 — 그래도 버틴다
+    assert len(g.open_positions) == 1, "대장이 굳히는 동안은 스프레드 노이즈로 안 나간다"
+
+
+def test_disaster_line_still_fires_while_the_leader_holds():
+    """재난선은 대장 상태와 무관한 진짜 사고 대비다 — 같이 잠기면 안 된다."""
+    from scalp_it.realtime.risk_guard import LEADER_HOLDING
+
+    g = _stop_guard(stop_needs_leader_weak=True)
+    g.on_leader_state("000001", BASE + timedelta(seconds=5), LEADER_HOLDING)
+    _tick(g, 10, 9_600)
+    assert len(g.open_positions) == 0
+    assert g.closed_positions[-1].exit_reason == "재난선"
+
+
+def test_leader_losing_the_limit_reopens_the_stop_and_exits():
+    """대장이 흔들리면 손익 무관 전량 — 잠금은 그때 풀린다."""
+    from scalp_it.realtime.risk_guard import LEADER_HOLDING, LEADER_LOST
+
+    g = _stop_guard(stop_needs_leader_weak=True)
+    g.on_leader_state("000001", BASE + timedelta(seconds=5), LEADER_HOLDING)
+    _tick(g, 10, 9_940)
+    g.on_leader_state("000001", BASE + timedelta(seconds=15), LEADER_LOST)
+    assert len(g.open_positions) == 0
+    assert g.closed_positions[-1].exit_reason == "대장이탈"
+
+
+def test_lock_is_off_by_default():
+    g = _stop_guard()
+    g.on_leader_state("000001", BASE + timedelta(seconds=5), "holding")
+    _tick(g, 10, 9_940)
+    assert g.closed_positions[-1].exit_reason == "손절"

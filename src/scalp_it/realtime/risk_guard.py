@@ -133,6 +133,13 @@ class RiskGuardConfig:
     # "샀으면 어땠나"가 기록으로 남는다. 쉬는 국면이 몇 달 이어지면 표본이 0 이라
     # 규칙이 맞는지조차 확인이 안 되기 때문이다.
     shadow_when_blocked: bool = False
+    # 만쥬: "2등주의 가격 지표로 손절하지 말고, **대장주의 상한가 이탈**을 2등주의
+    # 시장가 매도 트리거로 연결하라." 대장이 상한가를 굳히고 있는 동안 후속주가
+    # 스프레드 노이즈로 −0.5% 를 찍는 건 매수 이유가 사라진 게 아니다 — 그 자리에서
+    # 나가면 만쥬가 먹는 오버슈팅을 못 먹는다. 대장이 흔들리면 `on_leader_state` 가
+    # 손익 무관 전량 청산하므로 방어는 그쪽이 한다.
+    # **재난선은 그대로 살아 있다** — 대장 상태와 무관한 진짜 사고 대비다.
+    stop_needs_leader_weak: bool = False
     max_positions: int = 2                    # 동시 보유 가상 포지션 상한
     fill_basis: str = "through"               # 'through'(보수·기본) | 'touch'(낙관)
     track_shadow_fill: bool = True            # 반대 가정을 그림자로 병행 추적(로그 전용)
@@ -188,6 +195,7 @@ class Position:
     # 집계에서 (a)는 가정별로 갈라 봐야 하고 (b)는 실적에서 빼야 하므로 표시를 나눈다.
     blocked: bool = False
     leader_lost: bool = False                 # 대장이 상한가를 놓쳤다고 통보받았는가
+    leader_holding: bool = False              # 대장이 상한가를 굳히고 있다고 통보받았는가
     # 분할 매도(만쥬 §5-2). remaining 은 아직 안 판 비율 — 잔량 손익은 여기에 곱한다.
     remaining: float = 1.0
     partial_done: bool = False
@@ -536,7 +544,10 @@ class RiskGuard:
                 # 고점에서 밀린 걸 확인하고 파는 시장가라 트리거 틱이 실현가다.
                 self._close(pos, ts, price, "추세청산", filled=True)
                 return True
-        if pos.stop_loss is not None and price <= pos.stop_loss + _EPS:
+        # 대장이 굳히고 있으면 후속주 가격만으로는 안 나간다(만쥬). 대장이 흔들리는
+        # 순간 `on_leader_state` 가 손익 무관 전량 청산하므로 방어는 그쪽이 한다.
+        stop_locked = self.config.stop_needs_leader_weak and pos.leader_holding
+        if pos.stop_loss is not None and not stop_locked and price <= pos.stop_loss + _EPS:
             self._close(pos, ts, price, "손절", filled=True)
             return True
         if pos.disaster_line is not None and price <= pos.disaster_line + _EPS:
@@ -649,6 +660,13 @@ class RiskGuard:
         ``state`` 는 :data:`LEADER_HOLDING` / :data:`LEADER_LOST`. 유지 중은 무동작이고
         모르는 값도 무시한다(하위호환: 한 번도 안 먹이면 기존 동작 그대로).
         """
+        if state == LEADER_HOLDING:
+            # 굳힘 통보 — 손절을 잠그는 근거가 된다(만쥬: 2등주 가격으로 손절 금지).
+            self._observe_date(ts)
+            for pos in (*self.open_positions, *self.shadow_positions):
+                if pos.leader == leader_code:
+                    pos.leader_holding = True
+            return
         if state != LEADER_LOST or not self.config.leader_exit:
             return
         self._observe_date(ts)
@@ -667,6 +685,7 @@ class RiskGuard:
                 still.append(pos)
                 continue
             pos.leader_lost = True
+            pos.leader_holding = False
             if not pos.is_filled(pos.basis):
                 # 아직 안 붙은 지정가 — 살 이유가 사라졌으니 그대로 소멸시킨다.
                 self._close(pos, ts, None, "미체결(대장이탈)", filled=False)

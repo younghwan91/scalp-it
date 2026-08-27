@@ -105,6 +105,21 @@ while [ "$(date +%s)" -lt "$END" ]; do
   #                      1/100 이라 가상 손익도 낙폭 문턱도 만쥬 크기가 아니었다.
   #                      (--qty 는 **실주문** 안전캡이라 그대로 1주. --confirm-real 이
   #                      없어 실주문은 0건이고, 가상 회계는 이 명목으로 돈다.)
+  #   --disaster-line -0.02 — **손절을 잠근 이상 반드시 있어야 한다.** 아래
+  #                      --stop-needs-leader-weak 로 대장이 굳히는 동안 가격 손절이
+  #                      꺼지는데, 재난선까지 없으면 대장이 상한가에 붙어 있는 채로
+  #                      후속주만 무너질 때 방어선이 0 이고 180초 타임스탑까지 그냥
+  #                      들고 있게 된다. 만쥬가 절대 수치를 안 준 자리라 그가 준 다른
+  #                      값에서 잡았다: 실패 건이 −0.3~−0.8% 이므로 그 서너 배인 −2%
+  #                      아래는 "짝꿍매매가 아니라 사고"다.
+  #   --stop-needs-leader-weak — 대장이 상한가를 굳히고 있는 동안은 **가격 손절을
+  #                      잠근다**. 만쥬: "2등주의 가격 지표로 손절하지 말고, 대장주의
+  #                      상한가 이탈을 2등주의 시장가 매도 트리거로 연결하라."
+  #                      후속주가 스프레드 노이즈로 −0.5% 를 찍는 건 매수 이유가
+  #                      사라진 게 아니다 — 거기서 나가면 만쥬가 먹는 +3~7% 오버슈팅을
+  #                      영영 못 먹는다. 대장이 흔들리면 대장이탈이 손익 무관 전량
+  #                      청산하므로 방어는 그쪽이 한다. **재난선(-0.7%)은 그대로 산다** —
+  #                      대장 상태와 무관한 진짜 사고 대비다.
   #   --shadow-when-blocked — 만쥬 기준 쉬는 국면(8조 미만)에도 신호를 **그림자로**
   #                      굴려 "샀으면 어땠나"를 남긴다. 안 사는 건 그대로다 —
   #                      실현손익·승패·연속손절·킬스위치·주문 어디에도 안 닿는다.
@@ -123,7 +138,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
   #   전환할 때 이 플래그를 켜야 한다.
   /home/young/.local/bin/uv run --extra pg scalp-pair-detect \
     --live --live-order --confirm-real --duration "$(date '+%H:%M')-15:20" \
-    --take-profit 0 --stop-loss -0.005 --hold 180 \
+    --take-profit 0 --stop-loss -0.005 --disaster-line -0.02 --hold 180 \
     --trail-arm 0.03 --trail 0.015 --entry-ticks-up 2 --halt-below-jo 5 \
     --limitup-near-ticks 3 --limitup-require-surge --vi-near 0.01 \
     --follower-priority manju \
@@ -133,7 +148,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --position-notional 10000000 \
     --lock-min-krw 300000000 --lock-wall-decay 0.7 \
     --dump-krw 100000000 --big-trades 2 --drawdown-krw 100000 \
-    --shadow-when-blocked \
+    --shadow-when-blocked --stop-needs-leader-weak \
     --new-listing-days 5 \
     --breaking-interval 90 --breaking-min-weight 0.7 --breaking-max 3 \
     >> data/pair_detect.log 2>&1
