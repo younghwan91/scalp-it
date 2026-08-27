@@ -381,6 +381,25 @@ class KiwoomClient:
         )
         return rows
 
+    def fetch_program_rows(self, *, day: str, market: str = "P101") -> list[dict]:
+        """``ka90005`` 프로그램매매추이 — 분 단위 시장 전체 프로그램 수급.
+
+        만쥬가 "외인/기관 프로그램이 쏟아내는 장세면 진입을 거른다"고 한 자리다.
+        장중에는 첫 행이 직전 분이라 첫 페이지만 받으면 된다.
+        """
+        from ..realtime.program_flow import (
+            PROGRAM_API_ID,
+            PROGRAM_PATH,
+            PROGRAM_ROWS_KEY,
+            program_body,
+        )
+
+        rows, _cont, _key, _payload = self._fetch_rows(
+            PROGRAM_PATH, PROGRAM_API_ID, program_body(day, market),
+            PROGRAM_ROWS_KEY, "프로그램 매매추이",
+        )
+        return rows
+
     def minute_chart(
         self,
         code: str,

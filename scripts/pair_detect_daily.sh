@@ -95,6 +95,15 @@ while [ "$(date +%s)" -lt "$END" ]; do
   #                      미리 고르면 오늘 상한가로 가는 종목과 거의 안 겹친다. 방아쇠를
   #                      아무리 정확히 맞춰도 대장을 안 보고 있으면 신호가 안 뜬다
   #                      (2026-08-27 알림 0건의 진짜 이유).
+  #   --program-interval 60 --program-dump-qty 700 — 장중 프로그램 수급(ka90005).
+  #                      만쥬: (비공개 회신 — 공개본에서 뺐다) 70~80만 주 = 700~800천주. 종전엔
+  #                      **대장 종목**의 매도 폭탄(--dump-krw)만 봤고 시장 전체 수급은
+  #                      안 봤다. 킬이 아니라 신규 진입만 막는다 — 수급이 돌아오면
+  #                      그 자리에서 풀리고, 열린 포지션의 청산은 계속 돈다.
+  #   대장 낙점 시간 창(--leader-scan-window)은 **안 건다**. 만쥬가 09:00~09:30 에
+  #                      대장을 낙점한다고는 했지만 오후에 매매를 안 한다고 한 적은
+  #                      없다. 기능은 만들어 뒀으니 오전 신호만 남는지 며칠 보고
+  #                      결정한다 — 지금 걸면 표본이 더 줄어든다.
   #   --universe-size 12 (종전 45) — 등록 한도가 커넥션당 50종목이라, 장전에 45를 채우면
   #                      스캔이 붙일 자리가 없다. 12 로 줄여 나머지를 스캔에 내준다.
   #                      대장 6 × (본인+짝꿍 2) = 18 + 유니버스 12 = 30, 여유 20.
@@ -145,6 +154,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --partial-exit 0.5 --partial-exit-gain 0.03 \
     --universe-size 12 --max-roundtrip-bp 20 --order-krw 10000000 \
     --leader-scan-interval 20 --leader-scan-min-rt 20 --leader-scan-max 6 \
+    --program-interval 60 --program-dump-qty 700 \
     --position-notional 10000000 \
     --lock-min-krw 300000000 --lock-wall-decay 0.7 \
     --dump-krw 100000000 --big-trades 2 --drawdown-krw 100000 \

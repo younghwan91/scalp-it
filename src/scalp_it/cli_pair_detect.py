@@ -477,6 +477,56 @@ def _breaking_meta(args: argparse.Namespace, codes: list[str]) -> dict[str, Any]
             conn.close()
 
 
+async def _watch_program_flow(
+    guard: RiskGuard | None, bus: AlertBus, args: argparse.Namespace,
+) -> None:
+    """장중 프로그램 수급 감시 — 만쥬 "쏟아내는 장세면 진입을 거릅니다".
+
+    우리는 지금까지 **대장 종목**의 매도 폭탄(`--dump-krw`)만 봤다. 만쥬가 말한 건
+    시장 전체 프로그램 수급이라 종목 단위로는 표현이 안 된다.
+
+    **킬이 아니다** — 신규 진입만 막고 열린 포지션은 규칙대로 청산된다. 수급이
+    돌아오면 그 자리에서 풀린다.
+    """
+    import asyncio
+    from datetime import date as _date
+
+    from .adapters.kiwoom import KiwoomClient
+    from .realtime.program_flow import latest_flow
+
+    if guard is None:
+        return
+    appkey = os.environ.get("KIWOOM_APP_KEY", "")
+    secret = os.environ.get("KIWOOM_APP_SECRET", "")
+    if not appkey or not secret:
+        bus.notice("[프로그램수급] 인증 정보 없음 → 감시 비활성")
+        return
+    client = KiwoomClient(appkey, secret)
+    day = _date.today().strftime("%Y%m%d")  # noqa: DTZ011 — KST naive, 프로젝트 표준
+    was = False
+    while True:
+        await asyncio.sleep(max(30.0, args.program_interval))
+        try:
+            rows = await asyncio.to_thread(
+                client.fetch_program_rows, day=day, market=args.program_market)
+            flow = latest_flow(rows)
+            if flow is None:
+                continue
+            now = flow.dumping(min_net_qty=args.program_dump_qty)
+            if now != was:
+                guard.set_program_dumping(now)
+                bus.notice(
+                    f"[프로그램수급] {flow.time} 순매수 {flow.net_qty:+,.0f}천주"
+                    f"(비차익 {flow.nondiff_net_qty:+,.0f}) — "
+                    + ("**쏟아내는 장세, 신규 진입 차단**(만쥬)" if now
+                       else "회복 — 신규 진입 재개"))
+                was = now
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 수급 조회 실패로 감지를 죽이지 않는다
+            bus.notice(f"[프로그램수급] 조회 실패(계속): {exc}")
+
+
 async def _watch_leader_scan(
     collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
     guard: RiskGuard | None = None,
@@ -497,7 +547,12 @@ async def _watch_leader_scan(
     import asyncio
 
     from .adapters.kiwoom import KiwoomClient
-    from .realtime.leader_scan import leader_candidates, parse_scan_rows, sector_followers
+    from .realtime.leader_scan import (
+        in_adoption_window,
+        leader_candidates,
+        parse_scan_rows,
+        sector_followers,
+    )
 
     appkey = os.environ.get("KIWOOM_APP_KEY", "")
     secret = os.environ.get("KIWOOM_APP_SECRET", "")
@@ -512,6 +567,11 @@ async def _watch_leader_scan(
     while True:
         await asyncio.sleep(max(5.0, args.leader_scan_interval))
         try:
+            # 만쥬는 오전에 그날 대장을 낙점한다. 창을 벗어나면 **새 대장만** 안
+            # 받는다 — 이미 붙은 종목은 종일 그대로 돈다.
+            hhmm = datetime.now().strftime("%H%M")  # noqa: DTZ005 — KST naive
+            if not in_adoption_window(hhmm, args.leader_scan_window):
+                continue
             rows = await asyncio.to_thread(
                 client.fetch_rank_rows, market=args.leader_scan_market)
             scanned = parse_scan_rows(rows)
@@ -1041,6 +1101,10 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             except (NotImplementedError, ValueError):
                 pass
         watchers: list[Any] = []
+        if args.program_interval > 0:
+            # 만쥬 — 프로그램이 쏟아내는 장세면 신호가 떠도 안 산다.
+            watchers.append(asyncio.create_task(
+                _watch_program_flow(guard, bus, args)))
         if args.leader_scan_interval > 0:
             # 만쥬 §2 — 시장 전체에서 대장을 찾는다. 이게 없으면 전날 고른 45종목
             # 안에서만 대장을 기다리게 되고, 실측 커버리지는 2% 였다.
@@ -1169,6 +1233,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--big-trades", type=int, default=None,
                    help="대장에 필요한 대량체결(기본 5천만원↑) 최소 건수 — 만쥬 §5-1 "
                         "순간 체결량 확인. 0 = 끔")
+    p.add_argument("--program-interval", type=float, default=0.0,
+                   help="장중 프로그램 수급 감시 주기(초) — 만쥬 \"쏟아내는 장세면 "
+                        "진입을 거릅니다\". 0 = 끔")
+    p.add_argument("--program-dump-qty", type=float, default=700.0,
+                   help="이만큼(천주) 이상 순매도면 신규 진입 차단. 만쥬 (비공개 회신 — 공개본에서 뺐다) = 700~800")
+    p.add_argument("--program-market", default="P101",
+                   help="P001 코스피 · P101 코스닥(기본)")
     p.add_argument("--no-themes", action="store_true",
                    help="실전 테마(키움 theme_members) 주입 끄기 — 27종 섹터만 쓴다")
     p.add_argument("--leader-scan-interval", type=float, default=0.0,
@@ -1180,6 +1251,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="상한가에 잠긴 종목에 요구할 최소 매수 잔량(주). 0 = 끔")
     p.add_argument("--leader-scan-max", type=int, default=6,
                    help="한 번에 붙일 대장 후보 수. 짝꿍까지 붙으니 자리를 보고 정한다")
+    p.add_argument("--leader-scan-window", default="",
+                   help="새 대장을 받아들이는 시간 창 (예 0900-0930) — 만쥬는 오전에 "
+                        "그날 대장을 낙점한다. 이미 붙은 종목은 종일 그대로 돈다. "
+                        "빈 값 = 종일 열림")
     p.add_argument("--leader-scan-market", default="101",
                    help="000 전체 · 001 코스피 · 101 코스닥(기본)")
     p.add_argument("--leader-scan-ttl", type=float, default=900.0,

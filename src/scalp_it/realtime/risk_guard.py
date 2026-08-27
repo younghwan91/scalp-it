@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from .pair_detector import Alert
 
 __all__ = [
+    "BLOCK_PROGRAM_DUMP",
     "BLOCK_REGIME_ZERO",
     "KILL_CONSECUTIVE",
     "KILL_DAILY_LOSS",
@@ -95,6 +96,9 @@ LEADER_LOST = "lost"         # 상한가를 못 말거나 풀리고 꺾임 = 매
 # 신규 알림 억제 사유 — 킬스위치가 **아니다**. 국면 배수가 0(극침체)이면 그날 신규
 # 진입만 막고, 배수를 되돌리면 즉시 재개된다. 킬은 하루를 접는 것이라 성격이 다르다.
 BLOCK_REGIME_ZERO = "regime_zero"
+#: 프로그램이 쏟아내는 장세라 신규 진입만 막는다 — 만쥬 "진입을 거릅니다".
+#: 킬이 아니다. 수급이 돌아오면 그 자리에서 다시 통과한다.
+BLOCK_PROGRAM_DUMP = "program_dump"
 
 _EPS = 1e-9
 
@@ -316,6 +320,9 @@ class RiskGuard:
         # 낙폭 방어 — 실현손익의 그날 정점. 시드가 아니라 **정점**이 기준이라
         # 벌었다가 토해내는 중인지가 판정 대상이 된다(만쥬 원문 그대로).
         self.peak_realized_krw: float = 0.0
+        # 프로그램이 쏟아내는 장세인가(만쥬). 외부에서 주입받는다 — 가드는 시장
+        # 수급을 조회할 방법이 없다(DB·네트워크를 모르는 게 이 모듈의 계약이다).
+        self.program_dumping: bool = False
         self.drawdown_capped: bool = False
         self.wins: int = 0
         self.losses: int = 0
@@ -342,6 +349,14 @@ class RiskGuard:
         if self.drawdown_capped:
             mult *= max(0.0, float(self.config.drawdown_size_multiplier))
         return self.config.position_notional * mult
+
+    def set_program_dumping(self, dumping: bool) -> None:
+        """프로그램 수급 상태를 주입한다(만쥬 — 쏟아내는 장세면 진입을 거른다).
+
+        **킬이 아니다.** 신규 진입만 막고, 이미 열린 포지션의 청산 경로는 여기를
+        안 지나므로 규칙대로 계속 나간다. 수급이 돌아오면 그 자리에서 다시 통과한다.
+        """
+        self.program_dumping = bool(dumping)
 
     def set_size_multiplier(self, mult: float) -> None:
         """국면 배수를 갱신한다(만쥬 §8-1). CLI 가 ``market_regime`` 판정을 주입한다.
@@ -438,7 +453,7 @@ class RiskGuard:
         # 카운터도 건드리지 않고, 배수가 돌아오면 그 자리에서 다시 통과한다.
         # 기존 포지션의 청산 경로(on_tick/on_leader_state/flush)는 여기를 안 지나므로
         # 배수가 0이어도 들고 있는 건 규칙대로 정상 청산된다.
-        if self.size_multiplier <= _EPS:
+        if self.size_multiplier <= _EPS or self.program_dumping:
             if self.config.shadow_when_blocked:
                 # 명목은 **기본값**을 쓴다 — 배수가 0 이라 effective_notional 도 0 이고,
                 # 0 짜리 그림자는 손익이 전부 0 이라 기록할 게 없다.
@@ -446,7 +461,9 @@ class RiskGuard:
                     self._new_position(alert, self.config.fill_basis, shadow=True,
                                        notional=self.config.position_notional,
                                        blocked=True))
-            return Decision(allowed=False, reason=BLOCK_REGIME_ZERO)
+            return Decision(allowed=False,
+                            reason=(BLOCK_PROGRAM_DUMP if self.program_dumping
+                                    else BLOCK_REGIME_ZERO))
         if len(self.open_positions) >= self.config.max_positions:
             return Decision(allowed=False, reason="max_positions")
         # 통과 — 가상 포지션 등록

@@ -195,3 +195,37 @@ def test_theme_index_rebuilds_when_codes_are_added_intraday():
     d.add_codes(["NEW"], sectors={"NEW": "화학"}, prev_close={"NEW": 1000.0},
                 themes={"NEW": ["T1"]})
     assert set(d.peers("L")) == {"NEW"}
+
+
+# ----- 새 대장을 받아들이는 시간 창 -------------------------------------------
+
+def test_adoption_window_matches_manju_morning():
+    """만쥬: "오전 09:00~09:30 사이 ... 대장 후보로 즉시 낙점"."""
+    from scalp_it.realtime.leader_scan import in_adoption_window
+
+    assert in_adoption_window("0905", "0900-0930") is True
+    assert in_adoption_window("0900", "0900-0930") is True
+    assert in_adoption_window("0930", "0900-0930") is True
+    assert in_adoption_window("0931", "0900-0930") is False
+    assert in_adoption_window("1400", "0900-0930") is False
+
+
+def test_empty_window_is_always_open():
+    """창을 안 걸면 종일 새 대장을 받는다(기본값)."""
+    from scalp_it.realtime.leader_scan import in_adoption_window
+
+    assert in_adoption_window("1400", "") is True
+    assert in_adoption_window("1400", "   ") is True
+
+
+def test_colon_form_is_accepted():
+    from scalp_it.realtime.leader_scan import in_adoption_window
+
+    assert in_adoption_window("09:05", "09:00-09:30") is True
+
+
+def test_malformed_window_does_not_block_the_day():
+    """오타 하나로 하루를 날리지 않는다 — 형식이 틀리면 막지 않는다."""
+    from scalp_it.realtime.leader_scan import in_adoption_window
+
+    assert in_adoption_window("1400", "쓰레기") is True

@@ -33,6 +33,7 @@ __all__ = [
     "RANK_PATH",
     "RANK_ROWS_KEY",
     "ScanRow",
+    "in_adoption_window",
     "leader_candidates",
     "parse_scan_rows",
     "rank_body",
@@ -57,6 +58,25 @@ def rank_body(market: str = "101") -> dict[str, str]:
         "crd_cnd": "0", "updown_incls": "1", "pric_cnd": "0", "trde_prica_cnd": "0",
         "stex_tp": "3",
     }
+
+
+def in_adoption_window(now_hhmm: str, window: str) -> bool:
+    """지금이 **새 대장을 받아들이는 창** 안인가. ``window`` 는 ``"0900-0930"``.
+
+    만쥬: "오전 09:00~09:30 사이, HTS 순간체결량 창과 당일 거래대금 상위 창을 본다.
+    ... (비공개 회신 — 공개본에서 뺐다)
+
+    창을 벗어나도 **이미 받아들인 대장은 종일 그대로 돈다** — 만쥬가 오후에 매매를
+    안 한다고 말한 적은 없다. 여기서 막는 건 '새 대장 낙점'뿐이다.
+    빈 문자열이면 항상 열려 있다(창 없음).
+    """
+    if not window.strip():
+        return True
+    try:
+        start, end = (p.strip().replace(":", "") for p in window.split("-", 1))
+        return start <= now_hhmm.replace(":", "") <= end
+    except ValueError:
+        return True     # 형식이 틀리면 막지 않는다 — 오타로 하루를 날리지 않는다
 
 
 def _num(value: object) -> float:
