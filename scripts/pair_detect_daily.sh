@@ -57,9 +57,13 @@ while [ "$(date +%s)" -lt "$END" ]; do
   #                      호가 두께 → 당일 틱 체결강도 → 가벼운 소형주.
   #   --stale-sector-limitups 3 --stale-sector-days 10 = "이미 (비공개 회신 — 공개본에서 뺐다)
   #                      안 따라오므로 제외."
-  #   --partial-exit 0.5 --partial-exit-gain 0.03 = "탄력이 충분히 나온 시점에서 분할
-  #                      매도." +3% 에서 절반을 실현하고 나머지는 트레일링으로 굴린다 —
-  #                      만쥬가 말한 "분할 또는 전량"의 분할 쪽이다.
+  #   분할 매도는 **껐다**(--partial-exit 없음). 만쥬는 "탄력이 나온 시점에서 분할
+  #                      또는 전량"이라 했지만 우리는 **1주씩만** 매매한다(사용자 결정,
+  #                      2026-08-27). 1주는 쪼갤 수 없어 실주문은 전량 한 번에 나가는데
+  #                      가드의 가상 회계만 절반을 실현하면 **회계와 실주문이 서로 다른
+  #                      전략을 재게 된다** — 체결가정(touch/through)이 갈려 같은 알림이
+  #                      익절이자 손절로 기록된 사고와 같은 종류다. 수량을 늘릴 때
+  #                      다시 켠다. 만쥬가 말한 "전량" 쪽으로 도는 셈이다.
   #   --limitup-require-surge 로 모멘텀까지 AND — 없으면 상한가 근처에서 정체된
   #   종목에도 발동한다(원본은 +25% 교차 **그 분에 +1%** 올랐을 때만).
   #   --vi-near 0.01 = 정적 VI 상단(당일 기준가 +10%) 1%p 이내. 만쥬는 상한가와 함께
@@ -151,7 +155,6 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --trail-arm 0.03 --trail 0.015 --entry-ticks-up 2 --halt-below-jo 5 \
     --limitup-near-ticks 3 --limitup-require-surge --vi-near 0.01 \
     --follower-priority manju \
-    --partial-exit 0.5 --partial-exit-gain 0.03 \
     --universe-size 12 --max-roundtrip-bp 20 --order-krw 10000000 \
     --leader-scan-interval 20 --leader-scan-min-rt 20 --leader-scan-max 6 \
     --program-interval 60 --program-dump-qty 700 \
