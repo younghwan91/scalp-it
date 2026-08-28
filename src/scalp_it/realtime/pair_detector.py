@@ -819,9 +819,26 @@ class PairDetector:
         return added
 
     def limit_up(self, code: str) -> float | None:
-        """그 종목의 상한가. 전일종가를 주입받지 못했으면 None(억지 추정 금지)."""
+        """그 종목의 상한가. 전일종가를 주입받지 못했으면 None(억지 추정 금지).
+
+        **전일종가가 오늘 가격과 앞뒤가 안 맞으면 그것도 None 이다.** 거래정지 후
+        재개나 기준가 재산정이 있으면 일봉이 며칠째 옛 값에 멈춰 있는 일이 있다.
+        실제로 2026-08-28 체리부로가 그랬다 — 일봉 670 이 6일째 고정인데 그날
+        체결은 1,574~1,639 였다. 그 값으로 상한가를 구하면 871 이 나와 **모든 틱이
+        "상한가 위"로 읽히고**, 방아쇠가 통째로 엉뚱한 자리에서 터진다.
+
+        하루 변동폭은 ±30% 로 막혀 있으므로, 오늘 본 가격이 전일종가의 [0.65, 1.35]
+        밖이면 그 전일종가는 오늘 것이 아니다. 판단을 안 하는 게 맞다.
+        """
         prev = self._prev_close.get(code)
-        return limit_up_price(prev) if prev else None
+        if not prev:
+            return None
+        hist = self._prices.get(code)
+        if hist:
+            seen = hist[-1][1]
+            if not (prev * 0.65 <= seen <= prev * 1.35):
+                return None
+        return limit_up_price(prev)
 
     def day_return(self, code: str, ts: datetime) -> float | None:
         """당일등락률 = 현재가/전일종가 − 1. 전일종가나 가격이 없으면 None."""

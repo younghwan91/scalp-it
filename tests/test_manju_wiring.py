@@ -323,3 +323,43 @@ def test_lock_is_off_by_default():
     g.on_leader_state("000001", BASE + timedelta(seconds=5), "holding")
     _tick(g, 10, 9_940)
     assert g.closed_positions[-1].exit_reason == "손절"
+
+
+# ----- 전일종가가 오늘 것이 아니면 상한가를 계산하지 않는다 --------------------
+
+def test_limit_up_is_none_when_prev_close_is_stale():
+    """2026-08-28 체리부로 재현.
+
+    일봉 전일종가가 670 으로 6일째 고정인데 그날 체결은 1,574~1,639 였다(거래정지 후
+    재개로 보인다). 그 값으로 상한가를 구하면 871 이 나와 **모든 틱이 "상한가 위"로
+    읽히고** 방아쇠가 통째로 엉뚱한 자리에서 터진다. 하루 변동폭은 ±30% 로 막혀
+    있으므로 앞뒤가 안 맞으면 판단을 안 하는 게 맞다.
+    """
+    from scalp_it.realtime.pair_detector import DetectorConfig, PairDetector
+
+    d = PairDetector([], DetectorConfig(), prev_close={"066360": 670.0},
+                     sectors={"066360": "음식료"}, universe={"066360"})
+    assert d.limit_up("066360") == 871, "틱을 보기 전엔 그대로 계산한다"
+    d.on_tick("066360", BASE, 1_600.0)
+    assert d.limit_up("066360") is None, "오늘 가격과 앞뒤가 안 맞으면 판단 보류"
+
+
+def test_limit_up_survives_a_normal_limit_up_move():
+    """상한가(+30%)까지 올라도 계산은 살아 있어야 한다 — 그게 방아쇠의 자리다."""
+    from scalp_it.realtime.pair_detector import DetectorConfig, PairDetector
+
+    d = PairDetector([], DetectorConfig(), prev_close={"000002": 10_000.0},
+                     sectors={"000002": "전기/전자"}, universe={"000002"})
+    lim = d.limit_up("000002")
+    d.on_tick("000002", BASE, lim)
+    assert d.limit_up("000002") == lim, "정상 상한가는 막으면 안 된다"
+
+
+def test_limit_up_survives_a_lower_limit_move():
+    """하한가(−30%)도 정상 범위다."""
+    from scalp_it.realtime.pair_detector import DetectorConfig, PairDetector
+
+    d = PairDetector([], DetectorConfig(), prev_close={"000002": 10_000.0},
+                     sectors={"000002": "전기/전자"}, universe={"000002"})
+    d.on_tick("000002", BASE, 7_000.0)
+    assert d.limit_up("000002") is not None

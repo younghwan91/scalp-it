@@ -89,7 +89,14 @@ while [ "$(date +%s)" -lt "$END" ]; do
   #                      2등주 시장가 청산." 종전 3억은 우리 임의값이라 너무 굼떴다.
   # 매도 폭탄(§5-4 "프로그램 매도 폭탄이 쏟아져 막히면") — 분당 매도 체결대금 실측
   #   중앙 3,887만 / 95% 9.7억 / 99% 112억. 10초 창에서 3억이면 상위권 투매다.
-  #   --leader-scan-interval 20 --leader-scan-min-rt 20 --leader-scan-max 6
+  #   --leader-scan-interval 10 --leader-scan-min-rt 12 --leader-scan-max 8
+  #                      2026-08-28 실측으로 20초/20% 에서 조정했다. 커버리지는
+  #                      2%→38% 로 올랐는데(그날 상한가 21종목 중 8종목 구독),
+  #                      **만쥬 방아쇠 구간(상한가 3호가 이내, 잠기기 전)에 틱이
+  #                      들어온 종목은 단 2개**였다. 20% 에서 잡으면 이미 상한가로
+  #                      치고 들어가는 중이라 3호가 구간을 지나친 뒤에 붙는다.
+  #                      12% 로 낮추고 10초로 좁혀 **올라가는 길에** 붙는다.
+  #                      자리는 회전(--leader-scan-ttl)이 감당한다.
   #                      **장중 시장 전체 대장 스캔**(만쥬 §2). ka10027 등락률 상위를
   #                      20초마다 훑어 20% 이상 오른 종목을 대장 후보로 잡고, 그 종목과
   #                      같은 섹터 2·3등주를 장중에 구독에 추가한다. 만쥬가 HTS 등락률
@@ -156,7 +163,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --limitup-near-ticks 3 --limitup-require-surge --vi-near 0.01 \
     --follower-priority manju \
     --universe-size 12 --max-roundtrip-bp 20 --order-krw 10000000 \
-    --leader-scan-interval 20 --leader-scan-min-rt 20 --leader-scan-max 6 \
+    --leader-scan-interval 10 --leader-scan-min-rt 12 --leader-scan-max 8 \
     --program-interval 60 --program-dump-qty 700 \
     --position-notional 10000000 \
     --lock-min-krw 300000000 --lock-wall-decay 0.7 \
