@@ -106,6 +106,20 @@ while [ "$(date +%s)" -lt "$END" ]; do
   #                      미리 고르면 오늘 상한가로 가는 종목과 거의 안 겹친다. 방아쇠를
   #                      아무리 정확히 맞춰도 대장을 안 보고 있으면 신호가 안 뜬다
   #                      (2026-08-27 알림 0건의 진짜 이유).
+  #   --cosurge 0 --premove 0.002 — 2026-08-24~28 복기에서 나온 유일한 양수 조건.
+  #                      `cosurge_min` 은 CLI 플래그조차 없이 0.005 에 고정돼 있었다
+  #                      (만쥬 이전 서지 전략의 잔재). 후속주가 **이미 +0.5% 뛰어야**
+  #                      산다는 뜻인데, 만쥬는 정반대를 말했다:
+  #                        "1분봉이 마감된 시점에는 이미 2등주가 2~4% 튀어 오른 뒤라
+  #                         추격 매수 시 100% 물립니다"
+  #                      그 주 실측(63건):
+  #                        조건 없음        승률 37%  세전 -0.345%
+  #                        동반급등 요구      승률 30%  세전 -0.598%  ← 가장 나쁘다
+  #                        프리무브 금지만    승률 47%  세전 **+0.113%** ← 유일한 양수
+  #                      동반급등은 끄고(0) 추격 금지만 남긴다. 반응 속도는 후보가
+  #                      여럿일 때의 서열(--follower-priority manju)로만 쓴다.
+  #                      **표본 36건·1주라 증명이 아니다** — 만쥬 원문과 방향이 같아서
+  #                      채택한 것이고, 다음 주 실측으로 다시 본다.
   #   --program-interval 60 --program-dump-qty 700 — 장중 프로그램 수급(ka90005).
   #                      만쥬: (비공개 회신 — 공개본에서 뺐다) 70~80만 주 = 700~800천주. 종전엔
   #                      **대장 종목**의 매도 폭탄(--dump-krw)만 봤고 시장 전체 수급은
@@ -161,7 +175,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --take-profit 0 --stop-loss -0.005 --disaster-line -0.02 --hold 180 \
     --trail-arm 0.03 --trail 0.015 --entry-ticks-up 2 --halt-below-jo 5 \
     --limitup-near-ticks 3 --limitup-require-surge --vi-near 0.01 \
-    --follower-priority manju \
+    --follower-priority manju --cosurge 0 --premove 0.002 \
     --universe-size 12 --max-roundtrip-bp 20 --order-krw 10000000 \
     --leader-scan-interval 10 --leader-scan-min-rt 12 --leader-scan-max 8 \
     --program-interval 60 --program-dump-qty 700 \

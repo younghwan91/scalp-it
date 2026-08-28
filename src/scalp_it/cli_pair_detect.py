@@ -95,6 +95,10 @@ def build_config(args: argparse.Namespace) -> DetectorConfig:
         over["min_buy_ratio"] = args.min_buy_ratio
     if args.min_sl_ticks is not None:
         over["min_sl_ticks"] = args.min_sl_ticks
+    if args.cosurge is not None:
+        over["cosurge_min"] = args.cosurge
+    if args.premove is not None:
+        over["premove_max"] = args.premove
     if args.accel is not None:
         over["accel_min_ratio"] = args.accel
     if args.volume_burst is not None:
@@ -1218,6 +1222,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="재난선 비율 덮기 (예 -0.007, 0 = 없음)")
     p.add_argument("--hold", type=float, default=None, help="시간청산 초 덮기 (기본 90)")
     p.add_argument("--surge", type=float, default=None, help="대장 서지 임계 덮기 (기본 0.015)")
+    p.add_argument("--cosurge", type=float, default=None,
+                   help="후속 동반급등 하한 (기본 0.005). **0 = 요구 안 함** — 만쥬는 "
+                        "동반 급등을 진입 조건으로 말한 적이 없다. 반응 속도는 짝꿍 "
+                        "'선정' 기준이지(--follower-priority manju) 게이트가 아니다")
+    p.add_argument("--premove", type=float, default=None,
+                   help="후속 프리무브 상한 (기본 0.002 = +0.2%%). 만쥬 \"이미 2~4%% "
+                        "튀어 오른 뒤라 추격 매수 시 100%% 물립니다\"")
     p.add_argument("--cooldown", type=float, default=None, help="쌍 재알림 억제 초 (기본 90)")
     p.add_argument("--halt-below-jo", type=float, default=0.0,
                    help="코스닥 전일 거래대금이 이 조원 미만이면 신규 진입 금지 "

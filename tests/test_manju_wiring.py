@@ -363,3 +363,44 @@ def test_limit_up_survives_a_lower_limit_move():
                      sectors={"000002": "전기/전자"}, universe={"000002"})
     d.on_tick("000002", BASE, 7_000.0)
     assert d.limit_up("000002") is not None
+
+
+# ----- 추격 매수 금지 — 만쥬가 "100% 물립니다"라고 한 자리 ----------------------
+
+def test_cosurge_gate_can_be_turned_off():
+    """`cosurge_min` 은 CLI 플래그조차 없이 0.005 에 고정돼 있었다(서지 전략 잔재).
+
+    후속주가 **이미 +0.5% 뛰어야** 산다는 뜻인데 만쥬는 정반대를 말했다 —
+    "이미 2~4% 튀어 오른 뒤라 추격 매수 시 100% 물립니다". 2026-08-24~28 실측에서도
+    동반급등 요구가 가장 나빴고(세전 −0.598%) 추격 금지만 남긴 게 유일한 양수였다
+    (+0.113%). 끌 수 있어야 한다.
+    """
+    from scalp_it.realtime.pair_detector import DetectorConfig
+
+    assert DetectorConfig().cosurge_min == 0.005, "기본값은 그대로 둔다"
+    assert DetectorConfig(cosurge_min=0.0).cosurge_min == 0.0
+
+
+def test_premove_gate_still_rejects_the_chase():
+    """프리무브 상한은 남는다 — 이게 만쥬가 지목한 진짜 필터다."""
+    from scalp_it.realtime.pair_detector import DetectorConfig
+
+    assert DetectorConfig().premove_max == 0.002
+
+
+def test_cron_turns_cosurge_off_and_keeps_premove():
+    """설정이 실제로 감지기까지 닿는지 — 플래그가 있는데 안 닿은 사고가 여럿 있었다."""
+    import re
+    import shlex
+    from pathlib import Path
+
+    from scalp_it.cli_pair_detect import build_config, build_parser
+
+    sh = Path("scripts/pair_detect_daily.sh").read_text(encoding="utf-8")
+    m = re.search(r"scalp-pair-detect \\\n(.*?)>> data/pair_detect\.log", sh, re.DOTALL)
+    assert m, "cron 실행줄을 못 찾았다"
+    flags = (m.group(1).replace("\\\n", " ")
+             .replace('"$(date \'+%H:%M\')-15:20"', "09:00-15:20"))
+    cfg = build_config(build_parser().parse_args(shlex.split(flags)))
+    assert cfg.cosurge_min == 0.0, "동반급등 요구가 꺼져 있어야 한다"
+    assert cfg.premove_max == 0.002, "추격 금지는 살아 있어야 한다"
