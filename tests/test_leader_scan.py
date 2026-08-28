@@ -50,15 +50,33 @@ def test_locked_reads_the_limit_up_wall():
 
 def test_leader_candidates_take_the_twenty_percent_movers():
     """만쥬: (비공개 회신 — 공개본에서 뺐다)
-    got = leader_candidates(parse_scan_rows(RAW), min_flu_rt=20.0)
+    got = leader_candidates(parse_scan_rows(RAW), min_flu_rt=20.0, prefer_unlocked=False)
     assert [r.code for r in got] == ["043200", "457600"]
     assert got[0].flu_rt > got[1].flu_rt, "등락률 내림차순이어야 한다"
+
+
+def test_unlocked_names_come_first_even_at_lower_return():
+    """**아직 안 잠긴 종목이 먼저다.** 만쥬가 2등주를 사는 건 대장이 상한가 호가 3개를
+    남긴 순간이라, 이미 잠긴 대장에 구독 자리를 쓰면 방아쇠가 남은 종목을 못 본다.
+
+    2026-08-28 실측: 코이즈·모아데이타 같은 잠긴 종목이 하루 종일 등락률 상위를
+    붙잡아 자리를 다 먹었고, 그날 방아쇠 구간에 틱이 들어온 건 50개 중 2개뿐이었다.
+    """
+    got = leader_candidates(parse_scan_rows(RAW), min_flu_rt=20.0)
+    assert [r.code for r in got] == ["457600", "043200"], \
+        "미잠김 벡트(+27.6%)가 잠긴 파루(+29.98%)보다 앞서야 한다"
+
+
+def test_locked_names_are_kept_not_dropped():
+    """잠긴 대장도 짝꿍 청산 신호(상한가 이탈)로는 쓸모가 있어 버리지 않는다."""
+    got = leader_candidates(parse_scan_rows(RAW), min_flu_rt=20.0)
+    assert "043200" in [r.code for r in got]
 
 
 def test_min_buy_qty_only_binds_on_locked_names():
     """안 잠긴 종목은 상한가 호가가 없어 잔량을 잴 수 없다 — 조건을 걸면 안 된다."""
     got = leader_candidates(parse_scan_rows(RAW), min_flu_rt=20.0, min_buy_qty=100_000)
-    assert [r.code for r in got] == ["043200", "457600"], "벡트는 안 잠겨 통과해야 한다"
+    assert {r.code for r in got} == {"043200", "457600"}, "벡트는 안 잠겨 통과해야 한다"
     got = leader_candidates(parse_scan_rows(RAW), min_flu_rt=20.0, min_buy_qty=200_000)
     assert [r.code for r in got] == ["457600"], "파루는 벽이 얇아 빠져야 한다"
 

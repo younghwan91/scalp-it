@@ -128,16 +128,30 @@ def parse_scan_rows(rows: Iterable[Mapping[str, object]]) -> list[ScanRow]:
 
 
 def leader_candidates(rows: Sequence[ScanRow], *, min_flu_rt: float = 20.0,
-                      min_buy_qty: float = 0.0) -> list[ScanRow]:
+                      min_buy_qty: float = 0.0,
+                      prefer_unlocked: bool = True) -> list[ScanRow]:
     """대장 후보 — 만쥬의 "20% 이상으로 수직 상승".
 
-    등락률 내림차순으로 준다. ``min_buy_qty`` 를 주면 잠긴 종목에 한해 매수 잔량이
-    그만큼은 쌓여 있어야 한다(만쥬 §5-2 "수십만~수백만 주를 안정적으로 굳히면").
-    아직 안 잠긴 종목은 상한가 호가가 없어 잔량을 잴 수 없으니 이 조건을 안 건다.
+    **아직 안 잠긴 종목을 먼저 준다.** 만쥬가 2등주를 사는 시점은 대장이 상한가
+    호가 3개를 남긴 순간이다. 이미 잠긴 대장은 그 순간이 지나간 것이라, 구독 자리를
+    거기 쓰면 정작 방아쇠가 남아 있는 종목을 못 본다.
+
+    2026-08-28 실측이 정확히 그랬다: 코이즈·모아데이타 같은 **잠긴 종목이 하루 종일
+    등락률 상위를 붙잡고** 자리를 다 먹었고, 그날 만쥬 방아쇠 구간(3호가 이내·미잠김)에
+    틱이 들어온 종목은 50개 구독 중 **2개**뿐이었다. 문턱만 20%→12% 로 낮추는 걸로는
+    안 고쳐진다 — 상위 N 을 등락률로 자르면 상위는 언제나 29%대 잠긴 종목이다.
+
+    ``min_buy_qty`` 를 주면 잠긴 종목에 한해 매수 잔량이 그만큼은 쌓여 있어야 한다
+    (만쥬 §5-2 "수십만~수백만 주를 안정적으로 굳히면"). 아직 안 잠긴 종목은 상한가
+    호가가 없어 잔량을 잴 수 없으니 이 조건을 안 건다.
     """
     picked = [r for r in rows if r.flu_rt >= min_flu_rt]
     if min_buy_qty > 0:
         picked = [r for r in picked if not r.locked or r.buy_qty >= min_buy_qty]
+    if prefer_unlocked:
+        # 미잠김 먼저, 그 안에서 등락률 높은 순. 잠긴 건 뒤로 밀어 남는 자리만 쓴다 —
+        # 잠긴 대장도 짝꿍 청산 신호(상한가 이탈)로는 쓸모가 있어 버리지는 않는다.
+        return sorted(picked, key=lambda r: (r.locked, -r.flu_rt, r.code))
     return sorted(picked, key=lambda r: (-r.flu_rt, r.code))
 
 
