@@ -82,3 +82,21 @@ jobs:
           fi
 
           echo "✅ 커밋 신원 이상 없음"
+
+      - name: 회사 이메일 도메인 내용 검사
+        run: |
+          set -euo pipefail
+          # 신원뿐 아니라 **파일 내용**에 회사 주소가 섞이는 것도 막는다.
+          # 회사명 자체는 검사하지 않는다 — 두산에너빌리티(034020) 같은 상장사
+          # 이름은 시장 데이터라 정상이고, 그걸 막으면 필터를 못 쓰게 된다.
+          if git grep -nEi "@employer\\.com" -- . ':!.github/workflows/commit-identity.yml' \
+               ':!.githooks/pre-commit'; then
+            echo "::error::작업 트리에 회사 이메일 도메인이 있다(위 줄)."
+            exit 1
+          fi
+          echo "✅ 내용 이상 없음"
+
+# 로컬 훅(.githooks/pre-commit)이 1차 방어다. CI는 사후 검출이라 공개 레포에서는
+# 그 사이에 이미 노출된다. 새로 클론하면 아래 한 줄을 실행해야 훅이 걸린다:
+#
+#     git config core.hooksPath .githooks

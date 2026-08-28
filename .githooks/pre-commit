@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# 커밋 신원·내용에 회사 흔적이 섞이면 **커밋 자체를 막는다**.
+#
+# CI(.github/workflows/commit-identity.yml)는 사후 검출이라 이미 푸시된 뒤다.
+# 공개 레포에서는 그 사이에 노출이 끝난다. 그래서 로컬에서 먼저 막는다.
+#
+# 2026-08-29 사고: 세션 컨텍스트의 사용자 이메일(회사 주소)이 커밋 신원으로
+# 쓰였다. `git -c user.email=...` 이 레포 설정을 덮었고, 설정으로는 못 막는다.
+set -euo pipefail
+
+ALLOWED_EMAILS="chyohw97@gmail.com
+48156556+younghwan91@users.noreply.github.com
+noreply@anthropic.com"
+# 고용주 식별 도메인. **회사명 자체는 넣지 않는다** — 두산에너빌리티 같은 상장사
+# 이름은 시장 데이터라 정상이고, 그걸 막으면 필터가 못 쓰게 된다.
+BLOCKED_PATTERN='@employer\.example'
+
+fail() { echo "커밋 차단: $1" >&2; exit 1; }
+
+email=$(git var GIT_AUTHOR_IDENT | sed -n 's/.*<\(.*\)>.*/\1/p')
+committer=$(git var GIT_COMMITTER_IDENT | sed -n 's/.*<\(.*\)>.*/\1/p')
+for e in "$email" "$committer"; do
+  if ! printf '%s\n' "$ALLOWED_EMAILS" | grep -Fxq "$e"; then
+    fail "허용되지 않은 커밋 이메일 '$e'
+  레포 설정을 쓰세요:  git config user.email chyohw97@gmail.com
+  'git -c user.email=...' 로 덮어쓰지 마세요."
+  fi
+done
+
+if git diff --cached -U0 | grep -nEi "^\+.*${BLOCKED_PATTERN}" >&2; then
+  fail "스테이지된 변경에 회사 이메일 도메인이 있습니다(위 줄)."
+fi
+exit 0
