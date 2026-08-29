@@ -43,12 +43,20 @@ def fill_pool(movers: Sequence[str], turnover: Sequence[str]) -> list[str]:
     return list(dict.fromkeys([*movers, *turnover]))
 
 
-def plan_evictions(last_seen: dict[str, float], *, now: float, ttl: float) -> list[str]:
+def plan_evictions(last_seen: dict[str, float], *, now: float, ttl: float,
+                   keep: set[str] | None = None) -> list[str]:
     """자리를 내줄 수집 종목 — 순위에서 사라진 지 ``ttl`` 초가 지난 것, 오래된 순.
+
+    ``keep`` 은 **절대 안 내리는 종목**이다 — 감지기가 보는 종목과 열린 포지션.
+    수집이 붙인 종목이 대장·짝꿍으로 승격된 뒤 순위에서 밀리는 일이 있는데, 그때
+    구독을 끊으면 신호가 죽고 포지션이 있으면 청산 판정이 멈춘다(손절도 대장이탈도
+    못 하고 물린다).
 
     자리를 한 번 잡고 안 놓으면 오전에 붙은 종목이 하루를 다 먹는다. 만쥬의 대장은
     오후에도 나오고, 그때 자리가 없으면 그날 그 종목은 못 본다. 반대로 순위를 잠깐
     들락거린다고 바로 떼면 등록만 낭비하므로 유예를 둔다.
     """
-    stale = [(t, c) for c, t in last_seen.items() if now - t >= ttl]
+    hold = keep or set()
+    stale = [(t, c) for c, t in last_seen.items()
+             if now - t >= ttl and c not in hold]
     return [c for _, c in sorted(stale)]

@@ -290,3 +290,78 @@ def test_codes_to_enter_drops_only_the_truly_rejected():
     assert codes_to_enter(["A"], added=[], rejected=["A"]) == []
     assert codes_to_enter(["A"], added=["A"], rejected=[]) == ["A"]
     assert codes_to_enter(["A", "A"], added=[], rejected=[]) == ["A"], "중복 제거"
+
+
+def test_fill_never_evicts_what_trading_is_watching_or_holding():
+    """**수집이 매매 중인 종목의 구독을 끊으면 안 된다.**
+
+    수집이 아침에 붙인 종목이 대장·짝꿍으로 승격된 뒤 등락률 순위에서 밀리면, TTL 이
+    그 종목을 내려버린다. 감지기가 보는 종목이면 신호가 죽고, **포지션을 들고 있으면
+    청산 판정이 멈춘다** — 손절도 대장이탈도 못 하고 그대로 물린다. 스캐너 쪽은
+    `_stale_scan_codes` 가 이미 이걸 지킨다(열린 포지션·장전 유니버스 제외).
+    """
+    from scalp_it.realtime.collect_fill import plan_evictions
+
+    seen = {"PLAIN": 100.0, "WATCHED": 100.0, "HELD": 100.0}
+    got = plan_evictions(seen, now=1000.0, ttl=600.0,
+                         keep={"WATCHED", "HELD"})
+    assert got == ["PLAIN"]
+
+
+def test_watcher_keeps_a_promoted_code_even_when_it_leaves_the_ranking(tmp_path):
+    """승격된 종목이 순위에서 밀려도 수집이 안 내리는지 — 한 바퀴 돌려 본다."""
+    import argparse
+    import asyncio
+    import sqlite3
+
+    from scalp_it import cli_pair_detect as C
+
+    conn = sqlite3.connect(tmp_path / "t.db")
+    conn.execute("create table daily_bars (code text, date text, trade_value real)")
+    conn.execute("insert into daily_bars values ('T1','2026-08-28',1.0)")
+    conn.commit()
+
+    class FakeCollector:
+        code_capacity = 4
+        def __init__(self):
+            self.subscribed_codes: list[str] = []
+            self.removed: list[str] = []
+
+        async def add_codes(self, codes):
+            self.subscribed_codes = [*self.subscribed_codes, *codes]
+            return list(codes), []
+
+        async def remove_codes(self, codes):
+            self.removed.extend(codes)
+            return list(codes)
+
+    class FakeDetector:
+        # 처음엔 감지기가 아무것도 모른다 — 수집이 둘 다 붙인다. 그 뒤 스캐너가
+        # PROMOTED 를 대장으로 낙점해 감지기에 등록하는 상황을 재현한다.
+        codes: set[str] = set()
+
+    class FakeBus:
+        def __init__(self): self.msgs: list[str] = []
+        def notice(self, m): self.msgs.append(m)
+
+    collector, bus = FakeCollector(), FakeBus()
+    movers = ["PROMOTED", "OTHER"]
+    args = argparse.Namespace(collect_fill_interval=0.01, collect_reserve=0,
+                              collect_fill_pool=300, collect_fill_ttl=0.05)
+
+    detector = FakeDetector()
+
+    async def scenario():
+        task = asyncio.create_task(
+            C._watch_collect_fill(collector, detector, bus, args, conn, movers))
+        await asyncio.sleep(0.2)
+        assert set(collector.subscribed_codes) >= {"PROMOTED", "OTHER"}, "수집이 둘 다 붙였다"
+        detector.codes = {"PROMOTED"}   # 스캐너가 대장으로 낙점 → 감지기 등록
+        movers[:] = []                  # 둘 다 순위에서 사라졌다
+        await asyncio.sleep(1.5)
+        task.cancel()
+
+    asyncio.run(scenario())
+
+    assert "PROMOTED" not in collector.removed, "감지기가 보는 종목은 안 내린다"
+    assert "OTHER" in collector.removed, "그냥 수집 종목은 자리를 내준다"

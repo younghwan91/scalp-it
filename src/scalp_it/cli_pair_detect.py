@@ -734,6 +734,7 @@ def _scan_sectors(args: argparse.Namespace, codes: list[str]) -> dict[str, str]:
 async def _watch_collect_fill(
     collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
     conn: Any = None, movers: list[str] | None = None,
+    guard: RiskGuard | None = None,
 ) -> None:
     """감지기가 안 쓰는 등록 자리를 **수집 전용**으로 채운다.
 
@@ -782,7 +783,16 @@ async def _watch_collect_fill(
                     taken[code] = now       # 아직 순위에 있다 — 유예를 갱신한다
             # 순위에서 사라진 지 오래된 건 자리를 내준다. 안 그러면 오전에 붙은
             # 종목이 하루를 다 먹고 오후에 올라오는 대장을 못 본다.
-            stale = plan_evictions(taken, now=now, ttl=args.collect_fill_ttl)
+            # 매매가 쓰는 종목은 절대 안 내린다 — 수집이 붙인 종목이 대장·짝꿍으로
+            # 승격되는 일이 흔하고, 그때 구독을 끊으면 신호가 죽고 포지션이 있으면
+            # 청산 판정이 멈춘다(손절도 대장이탈도 못 하고 물린다).
+            keep = set(detector.codes)
+            if guard is not None:
+                for pos in guard.open_positions:
+                    keep.add(pos.follower)
+                    keep.add(pos.leader)
+            stale = plan_evictions(taken, now=now, ttl=args.collect_fill_ttl,
+                                   keep=keep)
             if stale:
                 await collector.remove_codes(stale)
                 for code in stale:
@@ -1256,7 +1266,8 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             # 매매가 안 쓰는 자리로 틱을 쌓는다. 감지기에 등록하지 않으므로
             # 신호·주문 경로에는 한 줄도 안 닿는다(tests/test_collect_fill.py).
             watchers.append(asyncio.create_task(
-                _watch_collect_fill(collector, detector, bus, args, conn, movers)))
+                _watch_collect_fill(collector, detector, bus, args, conn, movers,
+                                    guard)))
         watcher = None
         if args.breaking_interval > 0:
             # 만쥬 §6 — 장중 돌발 재료. 수집과 나란히 돌고, 죽어도 수집은 계속된다.
