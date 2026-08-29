@@ -215,7 +215,13 @@ def fetch_quote_stats(conn: Any, cutoff: datetime) -> QuoteStats:
 
     cur.execute(
         f"select count(*) from quotes where ts >= {ph} "
-        "and bid1 is not null and ask1 is not null and bid1 >= ask1",
+        "and bid1 is not null and ask1 is not null and bid1 >= ask1 "
+        # bid1·ask1 이 **둘 다 0** 인 건 역전이 아니라 아직 호가가 안 선
+        # 구간이다(키움이 `"44":"-0"` 로 채워 보낸다). 2026-08-28 호가
+        # 21,131행 중 위반 521행이 전부 이것이었고, 그 가짜 [실패] 때문에
+        # 헬스체크가 매일 실패를 찍어 진짜 문제가 묻혔다. 잔량 0 은
+        # `total_qty_zero` 가 따로 센다.
+        "and bid1 > 0 and ask1 > 0",
         (cut,),
     )
     qs.bid_ge_ask = int((cur.fetchone() or [0])[0] or 0)
@@ -601,7 +607,11 @@ def worst_status(checks: list[Check]) -> Status:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="틱·호가 실시간 수집 헬스체크 (읽기 전용)")
     p.add_argument("--minutes", type=int, default=15, help="검사 창(분, 기본 15)")
-    p.add_argument("--expected", type=int, default=80, help="기대 구독 종목 수(기본 80)")
+    p.add_argument("--expected", type=int, default=38,
+                   help="기대 구독 종목 수(기본 38). 앱키 1개면 등록 100건 ÷ "
+                        "0B·0D 2종 = 정원 50 이고, 감지기 예비 12자리를 빼면 "
+                        "수집 채움이 38 까지 쓴다. 종전 기본값 80 은 앱키가 "
+                        "하나뿐인 이상 도달 불가라 매일 가짜 경고를 냈다")
     p.add_argument("--dsn", default=None, help="생략 시 KR_QUANT_DB")
     p.add_argument(
         "--log-path", default="data/tick_health.log", help="리포트 append 로그 경로"

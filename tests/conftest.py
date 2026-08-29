@@ -38,3 +38,25 @@ def news_db(tmp_path):
     conn.commit()
     conn.close()
     return str(path)
+
+
+@pytest.fixture()
+def cron_args():
+    """cron 실행줄의 플래그를 그대로 파싱한다 — 문서와 배선이 갈리는 걸 막는다.
+
+    경로는 레포 루트 기준으로 잡는다(CWD 와 무관해야 어디서 pytest 를 돌려도 같다).
+    """
+    import re
+    import shlex
+    from pathlib import Path
+
+    from scalp_it.cli_pair_detect import build_parser
+
+    sh = (Path(__file__).resolve().parent.parent / "scripts" / "pair_detect_daily.sh").read_text(
+        encoding="utf-8"
+    )
+    m = re.search(r"scalp-pair-detect \\\n(.*?)>> data/pair_detect\.log", sh, re.DOTALL)
+    assert m, "cron 실행줄을 못 찾았다"
+    flags = (m.group(1).replace("\\\n", " ")
+             .replace('"$(date \'+%H:%M\')-15:20"', "09:00-15:20"))
+    return build_parser().parse_args(shlex.split(flags))

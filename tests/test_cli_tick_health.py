@@ -303,3 +303,31 @@ def _fixed_datetime(fixed):
             return fixed
 
     return _DT
+
+
+def test_empty_quote_rows_are_not_counted_as_crossed_book(conn):
+    """bid1·ask1 이 **둘 다 0** 인 공백 호가를 역전으로 세면 안 된다.
+
+    2026-08-28 실측: 호가 21,131행 중 bid1>=ask1 이 521행인데 **둘 다 0 초과인 건
+    0행**이었다. 키움은 호가가 아직 안 선 구간을 `"44":"-0"` 처럼 0 으로 채워 보낸다.
+    그걸 역전으로 세니 헬스체크가 매일 [실패]를 찍었고, 진짜 문제가 생겨도 그 실패에
+    묻힌다. 잔량 0 문제는 `total_qty_zero` 가 따로 센다.
+    """
+    ts = (NOW - timedelta(seconds=30)).strftime("%Y-%m-%d %H:%M:%S")
+    insert_quotes(conn, [{
+        "code": "000001", "ts": ts, "bid1": 0, "ask1": 0,
+        "total_bid_qty": 0, "total_ask_qty": 0,
+    }])
+    qs = H.fetch_quote_stats(conn, NOW - timedelta(minutes=20))
+    assert qs.bid_ge_ask == 0, "0 채움 호가는 역전이 아니다"
+    assert qs.total_qty_zero >= 1, "잔량 0 은 이쪽이 센다"
+
+
+def test_real_crossed_book_still_counts(conn):
+    """진짜 역전(둘 다 0 초과인데 bid1 >= ask1)은 여전히 잡힌다."""
+    ts = (NOW - timedelta(seconds=30)).strftime("%Y-%m-%d %H:%M:%S")
+    insert_quotes(conn, [{
+        "code": "000001", "ts": ts, "bid1": 1000, "ask1": 990,
+        "total_bid_qty": 5, "total_ask_qty": 5,
+    }])
+    assert H.fetch_quote_stats(conn, NOW - timedelta(minutes=20)).bid_ge_ask == 1

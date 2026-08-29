@@ -72,13 +72,11 @@ def test_fill_never_reaches_the_detector_or_the_order_whitelist():
     assert "_allow_orders" not in src, "수집 종목이 주문 허용에 들어가면 안 된다"
 
 
-def test_cron_turns_collect_fill_on_with_room_left_for_trading():
+def test_cron_turns_collect_fill_on_with_room_left_for_trading(cron_args):
     """cron 이 수집 채움을 켜고 있고, 매매 예비 자리를 남기는지.
 
     정원 50(등록 100 ÷ 0B·0D) 중 예비 12 를 빼면 수집은 최대 38자리까지 쓴다.
     """
-    from tests.test_manju_wiring import _cron_args
-
-    args = _cron_args()
+    args = cron_args
     assert args.collect_fill_interval == 60
     assert args.collect_reserve == 12

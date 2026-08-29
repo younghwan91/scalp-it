@@ -406,31 +406,15 @@ def test_cron_turns_cosurge_off_and_keeps_premove():
     assert cfg.premove_max == 0.002, "추격 금지는 살아 있어야 한다"
 
 
-def _cron_args():
-    """cron 실행줄의 플래그를 그대로 파싱한다 — 문서와 배선이 갈리는 걸 막는다."""
-    import re
-    import shlex
-    from pathlib import Path
-
-    from scalp_it.cli_pair_detect import build_parser
-
-    sh = Path("scripts/pair_detect_daily.sh").read_text(encoding="utf-8")
-    m = re.search(r"scalp-pair-detect \\\n(.*?)>> data/pair_detect\.log", sh, re.DOTALL)
-    assert m, "cron 실행줄을 못 찾았다"
-    flags = (m.group(1).replace("\\\n", " ")
-             .replace('"$(date \'+%H:%M\')-15:20"', "09:00-15:20"))
-    return build_parser().parse_args(shlex.split(flags))
-
-
-def test_buy_trigger_is_manju_three_ticks():
+def test_buy_trigger_is_manju_three_ticks(cron_args):
     """**사는 순간**은 만쥬 원문 그대로다 — 상한가 3호가 이내(답변 §2).
 
     이게 만쥬 규칙이 걸린 자리다. 스캔 문턱(아래 테스트)과 혼동하면 안 된다.
     """
-    assert _cron_args().limitup_near_ticks == 3
+    assert cron_args.limitup_near_ticks == 3
 
 
-def test_scan_floor_stays_below_manju_leader_threshold():
+def test_scan_floor_stays_below_manju_leader_threshold(cron_args):
     """스캔 문턱 12% 는 **만쥬와 다른 값이 아니라 만쥬에게 대응물이 없는 값**이다.
 
     만쥬는 눈으로 시장 전체 등락률 창을 본다(답변 §4). 우리는 구독한 종목만 보이고
@@ -451,6 +435,6 @@ def test_scan_floor_stays_below_manju_leader_threshold():
     이 테스트는 "만쥬 원문 복원"이라는 이름으로 20 으로 되돌리는 걸 막는다.
     되돌리려면 위 수치부터 다시 재라.
     """
-    args = _cron_args()
+    args = cron_args
     assert args.leader_scan_min_rt == 12
     assert args.leader_scan_max == 8
