@@ -700,6 +700,67 @@ def _scan_sectors(args: argparse.Namespace, codes: list[str]) -> dict[str, str]:
         return {}
 
 
+async def _watch_collect_fill(
+    collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
+    conn: Any = None,
+) -> None:
+    """감지기가 안 쓰는 등록 자리를 **수집 전용**으로 채운다.
+
+    이건 만쥬 규칙이 아니라 우리 데이터 문제다. 감지기는 그날 대장·짝꿍 후보만
+    구독하므로 후보가 적은 날은 정원 50 중 10~20자리만 쓴다 — 2026-08-28 실측
+    구독 12종목·저장 틱 6만행(8/24 는 80종목·180만행). 사전등록 47번이 "굳힘을
+    가르는 정보는 일봉에 없고 장중 미시구조에 있다"로 끝났는데, 그 데이터를
+    모으는 자리를 비워두는 건 손해다.
+
+    **여기서 붙인 종목은 감지기에 등록하지 않는다** — 저장만 되고 신호도 주문도
+    나오지 않는다. 감지기가 대장을 붙일 자리(`--collect-reserve`)는 남긴다.
+    """
+    import asyncio
+
+    from .realtime.collect_fill import plan_fill
+
+    if conn is None:
+        bus.notice("[수집채움] DB 연결 없음 → 비활성")
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "select code from daily_bars where date = (select max(date) from daily_bars)"
+            " and trade_value > 0 order by trade_value desc limit %s",
+            (args.collect_fill_pool,))
+        pool = [r[0] for r in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001 — 수집 채움 실패로 매매를 죽이지 않는다
+        bus.notice(f"[수집채움] 후보 조회 실패 → 비활성: {exc}")
+        return
+    if not pool:
+        bus.notice("[수집채움] 후보 0종목 → 비활성")
+        return
+    taken: set[str] = set()
+
+    while True:
+        await asyncio.sleep(max(30.0, args.collect_fill_interval))
+        try:
+            subscribed = collector.subscribed_codes
+            # 감지기가 아는 종목은 후보에서 뺀다 — 그쪽은 매매 자리다.
+            want = [c for c in pool
+                    if c not in detector.codes and c not in taken]
+            take = plan_fill(want, subscribed,
+                             cap=collector.code_capacity,
+                             reserve=args.collect_reserve)
+            if not take:
+                continue
+            added, _ = await collector.add_codes(take)
+            if added:
+                taken.update(added)
+                bus.notice(f"[수집채움] {len(added)}종목 추가 — 구독 "
+                           f"{len(subscribed)}/{collector.code_capacity}"
+                           f"(예비 {args.collect_reserve})")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 수집 채움 실패로 매매를 죽이지 않는다
+            bus.notice(f"[수집채움] 실패(계속): {exc}")
+
+
 async def _watch_breaking_materials(
     collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
     executor: OrderExecutor | None = None,
@@ -1134,6 +1195,11 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             # 안에서만 대장을 기다리게 되고, 실측 커버리지는 2% 였다.
             watchers.append(asyncio.create_task(
                 _watch_leader_scan(collector, detector, bus, args, guard, executor)))
+        if args.collect_fill_interval > 0:
+            # 매매가 안 쓰는 자리로 틱을 쌓는다. 감지기에 등록하지 않으므로
+            # 신호·주문 경로에는 한 줄도 안 닿는다(tests/test_collect_fill.py).
+            watchers.append(asyncio.create_task(
+                _watch_collect_fill(collector, detector, bus, args, conn)))
         watcher = None
         if args.breaking_interval > 0:
             # 만쥬 §6 — 장중 돌발 재료. 수집과 나란히 돌고, 죽어도 수집은 계속된다.
@@ -1261,6 +1327,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dump-krw", type=float, default=None,
                    help="대장 매도 체결대금이 관측창에서 이 금액을 넘으면 이탈 — "
                         "만쥬 §5-4 \"프로그램 매도 폭탄에 막히면 즉시 손절\". 0 = 끔")
+    p.add_argument("--collect-fill-interval", type=float, default=0.0,
+                   help="감지기가 안 쓰는 등록 자리를 수집 전용으로 채우는 주기(초). "
+                        "0 = 끔. 붙인 종목은 저장만 되고 신호·주문은 안 난다")
+    p.add_argument("--collect-reserve", type=int, default=12,
+                   help="감지기가 장중에 대장을 붙일 예비 자리 — 수집이 안 건드린다")
+    p.add_argument("--collect-fill-pool", type=int, default=300,
+                   help="수집 후보 풀 크기(전일 거래대금 상위 N종목)")
     p.add_argument("--big-trades", type=int, default=None,
                    help="대장에 필요한 대량체결(기본 5천만원↑) 최소 건수 — 만쥬 §5-1 "
                         "순간 체결량 확인. 0 = 끔")

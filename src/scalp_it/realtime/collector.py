@@ -551,6 +551,22 @@ class KiwoomRealtimeCollector:
                 await self._sleep_or_stop(backoff)
                 backoff = min(self._max_backoff, backoff * 2)
 
+    @property
+    def subscribed_codes(self) -> list[str]:
+        """지금 실제로 구독 중인 종목 — 장중에 붙고 떨어진 결과가 반영된 값이다.
+
+        장전 목록(`_groups`)이 아니라 라이브 소켓의 등록 목록을 본다. 수집 슬롯
+        채우기가 "자리가 남았나"를 판단하는 근거다.
+        """
+        if not self._live_ws:
+            return []
+        return list(self._live_ws[min(self._live_ws)][1])
+
+    @property
+    def code_capacity(self) -> int:
+        """커넥션 하나에 담기는 종목 수 — 등록 한도 ÷ type 개수(0B+0D → 50)."""
+        return codes_per_connection(self._types, reg_limit=self._reg_limit)
+
     async def add_codes(self, codes: Sequence[str]) -> tuple[list[str], list[str]]:
         """장중에 종목을 구독에 **추가**한다 → ``(추가된 것, 거절된 것)``.
 
