@@ -481,6 +481,26 @@ def _breaking_meta(args: argparse.Namespace, codes: list[str]) -> dict[str, Any]
             conn.close()
 
 
+def codes_to_enter(wanted: Sequence[str], added: Sequence[str],
+                   rejected: Sequence[str]) -> list[str]:
+    """감지기에 등록할 종목 — **새로 붙은 것 + 이미 구독 중이던 것.**
+
+    ``collector.add_codes`` 는 이미 구독 중인 종목을 ``added`` 에도 ``rejected`` 에도
+    안 담고 조용히 건너뛴다(`plan_additions` 의 ``if code in seen: continue``).
+    ``added`` 만 감지기에 넣으면 그 종목은 **구독은 있는데 감지기가 모르는** 상태가
+    되고, 틱이 `on_tick` 첫 줄에서 버려져 신호도 주문도 안 난다.
+
+    수집 채움이 오늘 등락률 상위를 먼저 붙들기 때문에, 하필 **대장이 될 확률이 가장
+    높은 종목들**이 이 구멍에 빠진다. 이 레포는 같은 종류의 사고를 두 번 겪었다
+    (주문 화이트리스트 0종목, 장중 편입 종목이 화이트리스트 밖).
+
+    거절된 것만 뺀다 — 그건 자리가 없어 진짜로 구독이 없다.
+    """
+    drop = set(rejected)
+    got = set(added)
+    return [c for c in dict.fromkeys(wanted) if c not in drop or c in got]
+
+
 async def _watch_program_flow(
     guard: RiskGuard | None, bus: AlertBus, args: argparse.Namespace,
 ) -> None:
@@ -618,13 +638,17 @@ async def _watch_leader_scan(
                 for c in stale:
                     hot.pop(c, None)
             added, rejected = await collector.add_codes(fresh)
-            if added:
-                det_added = detector.add_codes(added, **_breaking_meta(args, added))
+            enter = codes_to_enter(fresh, added, rejected)
+            already = [c for c in enter if c not in added]
+            if enter:
+                det_added = detector.add_codes(enter, **_breaking_meta(args, enter))
                 # **주문 화이트리스트도 같이 넓힌다.** 안 그러면 감지기는 신호를
                 # 내는데 주문이 전부 차단된다 — 스캔을 붙여놓고 못 사는 상태다.
                 _allow_orders(executor, det_added)
                 names = ", ".join(f"{r.name}({r.code})" for r in leaders[:3])
-                bus.notice(f"[대장스캔] 장중 편입 {len(det_added)}종목 — 상위 {names}")
+                bus.notice(f"[대장스캔] 장중 편입 {len(det_added)}종목"
+                           f"{f'(수집 선점 {len(already)})' if already else ''}"
+                           f" — 상위 {names}")
             if rejected:
                 bus.notice(f"[대장스캔] 자리 없어 거절 {len(rejected)}종목 "
                            f"— --universe-size 를 줄여 스캔 자리를 늘려라")
@@ -830,12 +854,14 @@ async def _watch_breaking_materials(
             if not take:
                 continue
             added, rejected = await collector.add_codes(take)
-            if added:
-                # **구독만 늘리면 아무 일도 안 일어난다** — 감지기가 모르는 코드의
-                # 틱은 on_tick 첫 줄에서 버려진다. 섹터·전일종가를 같이 넣어야
-                # 그 종목이 대장이 될 수 있다(§6 의 목적).
-                meta = _breaking_meta(args, added)
-                det_added = detector.add_codes(added, **meta)
+            # **구독만 늘리면 아무 일도 안 일어난다** — 감지기가 모르는 코드의
+            # 틱은 on_tick 첫 줄에서 버려진다. 섹터·전일종가를 같이 넣어야
+            # 그 종목이 대장이 될 수 있다(§6 의 목적). 수집 채움이 먼저 붙여둔
+            # 종목도 챙긴다(codes_to_enter).
+            enter = codes_to_enter(take, added, rejected)
+            if enter:
+                meta = _breaking_meta(args, enter)
+                det_added = detector.add_codes(enter, **meta)
                 _allow_orders(executor, det_added)
                 bus.notice(f"[돌발재료] 장중 편입 {len(det_added)}종목: "
                            f"{', '.join(det_added)} — 강한 재료 공시 접수")

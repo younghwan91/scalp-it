@@ -250,3 +250,43 @@ def test_afternoon_mover_gets_a_slot_from_a_stale_one(tmp_path):
     assert collector.added[0] == "OLD", "먼저 아침 종목을 붙인다"
     assert "OLD" in collector.removed, "순위에서 사라진 종목이 자리를 내줘야 한다"
     assert "NEW" in collector.added, "오후 종목이 그 자리를 받아야 한다"
+
+
+def test_leader_already_subscribed_by_collect_still_reaches_the_detector():
+    """**수집이 먼저 붙인 종목이 대장이 되면 감지기가 알아야 한다.**
+
+    `plan_additions` 는 이미 구독 중인 종목을 `added` 에도 `rejected` 에도 안 넣고
+    조용히 건너뛴다. 스캐너가 `added` 만 감지기에 등록하면, 수집이 선점한 종목은
+    구독은 있는데 감지기가 모르는 상태가 된다 — 신호도 주문도 안 난다.
+
+    수집 채움은 **오늘 등락률 상위**를 붙들므로 하필 대장이 될 확률이 가장 높은
+    종목들이 이 구멍에 빠진다. 이 레포는 같은 종류의 사고를 두 번 겪었다
+    (화이트리스트 0종목, 장중 편입 종목이 화이트리스트 밖).
+    """
+    from scalp_it.realtime.collector import plan_additions
+
+    subscribed = ["FILLED"]          # 수집이 아침에 붙여둔 종목
+    ok, rejected = plan_additions(subscribed, ["FILLED", "NEW"], ["0B", "0D"])
+
+    assert ok == ["NEW"]
+    assert rejected == []
+    assert "FILLED" not in ok and "FILLED" not in rejected, (
+        "이미 구독 중인 종목은 어느 목록에도 안 담긴다 — 호출부가 따로 챙겨야 한다")
+
+
+def test_codes_to_enter_keeps_the_ones_collect_already_holds():
+    """수집이 선점한 종목도 감지기에 넣는다 — 이게 이 구멍의 수리다."""
+    from scalp_it.cli_pair_detect import codes_to_enter
+
+    # NEW 는 새로 붙었고, FILLED 는 수집이 이미 붙여둬서 add_codes 가 건너뛰었고,
+    # FULL 은 자리가 없어 진짜로 거절됐다.
+    got = codes_to_enter(["NEW", "FILLED", "FULL"], added=["NEW"], rejected=["FULL"])
+    assert got == ["NEW", "FILLED"]
+
+
+def test_codes_to_enter_drops_only_the_truly_rejected():
+    from scalp_it.cli_pair_detect import codes_to_enter
+
+    assert codes_to_enter(["A"], added=[], rejected=["A"]) == []
+    assert codes_to_enter(["A"], added=["A"], rejected=[]) == ["A"]
+    assert codes_to_enter(["A", "A"], added=[], rejected=[]) == ["A"], "중복 제거"
