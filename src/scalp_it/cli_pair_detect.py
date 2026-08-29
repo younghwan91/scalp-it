@@ -724,9 +724,10 @@ async def _watch_collect_fill(
         return
     try:
         cur = conn.cursor()
+        ph = _placeholder(conn)          # postgres·sqlite 둘 다 돈다
         cur.execute(
             "select code from daily_bars where date = (select max(date) from daily_bars)"
-            " and trade_value > 0 order by trade_value desc limit %s",
+            f" and trade_value > 0 order by trade_value desc limit {ph}",
             (args.collect_fill_pool,))
         pool = [r[0] for r in cur.fetchall()]
     except Exception as exc:  # noqa: BLE001 — 수집 채움 실패로 매매를 죽이지 않는다
@@ -737,8 +738,9 @@ async def _watch_collect_fill(
         return
     taken: set[str] = set()
 
+    # 채우고 나서 쉰다 — 장 시작 직후가 가장 아까운 구간이라 첫 사이클을 미루지 않는다.
+    # 소켓이 아직 안 붙었으면 add_codes 가 조용히 빈 손으로 돌아오고 다음 바퀴에 다시 본다.
     while True:
-        await asyncio.sleep(max(30.0, args.collect_fill_interval))
         try:
             subscribed = collector.subscribed_codes
             # 감지기가 아는 종목은 후보에서 뺀다 — 그쪽은 매매 자리다.
@@ -747,9 +749,9 @@ async def _watch_collect_fill(
             take = plan_fill(want, subscribed,
                              cap=collector.code_capacity,
                              reserve=args.collect_reserve)
-            if not take:
-                continue
-            added, _ = await collector.add_codes(take)
+            added: list[str] = []
+            if take:
+                added, _ = await collector.add_codes(take)
             if added:
                 taken.update(added)
                 bus.notice(f"[수집채움] {len(added)}종목 추가 — 구독 "
@@ -759,6 +761,7 @@ async def _watch_collect_fill(
             raise
         except Exception as exc:  # noqa: BLE001 — 수집 채움 실패로 매매를 죽이지 않는다
             bus.notice(f"[수집채움] 실패(계속): {exc}")
+        await asyncio.sleep(max(5.0, args.collect_fill_interval))
 
 
 async def _watch_breaking_materials(

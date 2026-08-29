@@ -80,3 +80,60 @@ def test_cron_turns_collect_fill_on_with_room_left_for_trading(cron_args):
     args = cron_args
     assert args.collect_fill_interval == 60
     assert args.collect_reserve == 12
+
+
+def test_watcher_actually_subscribes_from_the_db(tmp_path):
+    """**장중에 처음 도는 코드다** — 한 바퀴를 실제로 돌려 본다.
+
+    순수 함수와 소스 검사만으로는 SQL 오타·플레이스홀더 불일치·속성 이름 실수를
+    못 잡는다. sqlite 로 daily_bars 를 만들어 한 사이클을 태운다.
+    """
+    import argparse
+    import asyncio
+    import sqlite3
+
+    from scalp_it import cli_pair_detect as C
+
+    conn = sqlite3.connect(tmp_path / "t.db")
+    conn.execute("create table daily_bars (code text, date text, trade_value real)")
+    conn.executemany("insert into daily_bars values (?,?,?)",
+                     [("A", "2026-08-28", 900.0), ("B", "2026-08-28", 800.0),
+                      ("C", "2026-08-28", 700.0)])
+    conn.commit()
+
+    class FakeCollector:
+        code_capacity = 5
+        subscribed_codes = ["Z"]
+
+        def __init__(self) -> None:
+            self.added: list[str] = []
+
+        async def add_codes(self, codes):
+            self.added.extend(codes)
+            return list(codes), []
+
+    class FakeDetector:
+        codes = {"B"}          # 감지기가 아는 종목은 수집이 안 건드린다
+
+    class FakeBus:
+        def __init__(self) -> None:
+            self.msgs: list[str] = []
+
+        def notice(self, msg: str) -> None:
+            self.msgs.append(msg)
+
+    collector, bus = FakeCollector(), FakeBus()
+    args = argparse.Namespace(collect_fill_interval=0.01, collect_reserve=2,
+                              collect_fill_pool=300)
+
+    async def run_one_cycle():
+        task = asyncio.create_task(
+            C._watch_collect_fill(collector, FakeDetector(), bus, args, conn))
+        await asyncio.sleep(0.2)
+        task.cancel()
+
+    asyncio.run(run_one_cycle())
+
+    # 정원 5 − 구독중 1 − 예비 2 = 2자리. 후보는 거래대금 순 A,B,C 인데 B 는 감지기 몫.
+    assert collector.added == ["A", "C"]
+    assert any("수집채움" in m for m in bus.msgs)
