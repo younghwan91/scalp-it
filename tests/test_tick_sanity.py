@@ -6,7 +6,7 @@ scripts 는 패키지가 아니라 importlib 로 파일에서 직접 로드한�
 """
 import importlib.util
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -210,3 +210,35 @@ def test_end_to_end_sqlite(tick_db):
     report = ts_mod.build_report(acc, "2026-08-25")
     assert "틱 스캘핑 sanity" in report
     assert "판정" in report
+
+
+def test_epoch_seconds_is_seconds_regardless_of_datetime_unit():
+    """``epoch_seconds`` 는 datetime64 단위(ns·us·ms)와 무관하게 **초**를 준다.
+
+    운영(postgres)은 psycopg2 가 ``datetime`` 을 주고 pandas 2 가 이를
+    ``datetime64[us]`` 로 잡는다. 종전 ``astype("int64") // 1e9`` 는 그때
+    1,000초 단위를 뱉어 3분치 틱이 전부 같은 값으로 뭉쳤다(2026-08-28).
+    """
+    import pandas as pd
+
+    base = datetime(2026, 8, 25, 10, 0, 0)
+    stamps = [base, base.replace(second=30), base.replace(minute=1)]
+    for unit in ("ns", "us", "ms", "s"):
+        ts = pd.to_datetime(stamps).as_unit(unit)
+        sec = ts_mod.epoch_seconds(ts)
+        assert list(np.diff(sec)) == [30, 30], unit
+        assert sec[0] > 1_700_000_000, unit
+
+
+def test_load_code_day_ts_is_seconds(tick_db):
+    """DB 경로도 초 단위여야 한다 — 30초 간격 틱은 30 만큼 벌어진다."""
+    base = datetime(2026, 8, 25, 10, 0, 0)
+    rows = [{
+        "code": "005930", "ts": base + timedelta(seconds=30 * k), "seq": k,
+        "price": 1000, "volume": 10, "side": 1, "strength": 100.0,
+        "cum_volume": 10 * (k + 1), "best_bid": 999, "best_ask": 1001, "raw": None,
+    } for k in range(3)]
+    insert_ticks(tick_db, rows)
+
+    ts_sec, *_ = ts_mod._load_code_day(tick_db, "005930", "2026-08-25")
+    assert list(np.diff(ts_sec)) == [30, 30]

@@ -234,6 +234,18 @@ def _load_env(path: str | None) -> None:
             return
 
 
+def epoch_seconds(ts) -> np.ndarray:
+    """pandas 시각열 → **초 단위** epoch int64.
+
+    ``ts.astype("int64") // 1_000_000_000`` 는 틀린다 — pandas 2 는 datetime64 의
+    단위를 보존하고, psycopg2 가 주는 ``datetime`` 은 ``datetime64[us]`` 로 잡혀
+    그 나눗셈이 **1,000초 단위**를 준다. 2026-08-28 실측에서 3분치 997틱이 전부
+    같은 값(1787907)으로 뭉쳐 트레일링 윈도도 지평(N=30/60/120)도 전부 같은
+    결과를 냈다. 단위를 명시해 변환한다.
+    """
+    return ts.to_numpy(dtype="datetime64[s]").astype("int64")
+
+
 def _codes_for_date(conn, date: str) -> list[str]:
     cur = conn.cursor()
     ph = "%s" if conn.__class__.__module__.startswith("psycopg2") else "?"
@@ -262,7 +274,7 @@ def _load_code_day(conn, code: str, date: str):
     import pandas as pd
 
     ts = pd.to_datetime([r[0] for r in rows])
-    ts_sec = (ts.astype("int64") // 1_000_000_000).to_numpy()
+    ts_sec = epoch_seconds(ts)
     hms = ts.strftime("%H:%M:%S").to_numpy()
     price = np.array([float(r[1]) if r[1] is not None else np.nan for r in rows])
     side = np.array([int(r[2]) if r[2] is not None else 0 for r in rows])
