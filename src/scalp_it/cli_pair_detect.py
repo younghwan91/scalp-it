@@ -534,6 +534,7 @@ async def _watch_program_flow(
 async def _watch_leader_scan(
     collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
     guard: RiskGuard | None = None, executor: OrderExecutor | None = None,
+    movers: list[str] | None = None,
 ) -> None:
     """장중 시장 전체 대장 스캔 — 만쥬가 등락률 상위 창으로 하는 일(§2).
 
@@ -579,6 +580,12 @@ async def _watch_leader_scan(
             rows = await asyncio.to_thread(
                 client.fetch_rank_rows, market=args.leader_scan_market)
             scanned = parse_scan_rows(rows)
+            if movers is not None:
+                # 수집 채움에 넘긴다 — **낙점 문턱 아래까지** 전부. 12% 를 못 넘은
+                # 종목이 이따가 상한가로 가고, 그때 이미 붙어 있어야 만쥬의 순간을
+                # 본다. 여기가 아니면 그 순위를 다시 받을 곳이 없다.
+                movers[:] = [r.code for r in
+                             sorted(scanned, key=lambda r: -r.flu_rt)]
             leaders = leader_candidates(
                 scanned, min_flu_rt=args.leader_scan_min_rt,
                 min_buy_qty=args.leader_scan_min_wall)
@@ -702,7 +709,7 @@ def _scan_sectors(args: argparse.Namespace, codes: list[str]) -> dict[str, str]:
 
 async def _watch_collect_fill(
     collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
-    conn: Any = None,
+    conn: Any = None, movers: list[str] | None = None,
 ) -> None:
     """감지기가 안 쓰는 등록 자리를 **수집 전용**으로 채운다.
 
@@ -717,11 +724,13 @@ async def _watch_collect_fill(
     """
     import asyncio
 
-    from .realtime.collect_fill import plan_fill
+    from .realtime.collect_fill import fill_pool, plan_evictions, plan_fill
 
     if conn is None:
         bus.notice("[수집채움] DB 연결 없음 → 비활성")
         return
+    if movers is None:
+        movers = []
     try:
         cur = conn.cursor()
         ph = _placeholder(conn)          # postgres·sqlite 둘 다 돈다
@@ -736,15 +745,27 @@ async def _watch_collect_fill(
     if not pool:
         bus.notice("[수집채움] 후보 0종목 → 비활성")
         return
-    taken: set[str] = set()
+    taken: dict[str, float] = {}   # 수집이 붙인 종목 → 마지막으로 순위에 보인 시각
+    loop = asyncio.get_running_loop()
 
     # 채우고 나서 쉰다 — 장 시작 직후가 가장 아까운 구간이라 첫 사이클을 미루지 않는다.
     # 소켓이 아직 안 붙었으면 add_codes 가 조용히 빈 손으로 돌아오고 다음 바퀴에 다시 본다.
     while True:
         try:
+            now = loop.time()
+            for code in movers:
+                if code in taken:
+                    taken[code] = now       # 아직 순위에 있다 — 유예를 갱신한다
+            # 순위에서 사라진 지 오래된 건 자리를 내준다. 안 그러면 오전에 붙은
+            # 종목이 하루를 다 먹고 오후에 올라오는 대장을 못 본다.
+            stale = plan_evictions(taken, now=now, ttl=args.collect_fill_ttl)
+            if stale:
+                await collector.remove_codes(stale)
+                for code in stale:
+                    taken.pop(code, None)
             subscribed = collector.subscribed_codes
             # 감지기가 아는 종목은 후보에서 뺀다 — 그쪽은 매매 자리다.
-            want = [c for c in pool
+            want = [c for c in fill_pool(movers, pool)
                     if c not in detector.codes and c not in taken]
             take = plan_fill(want, subscribed,
                              cap=collector.code_capacity,
@@ -753,7 +774,8 @@ async def _watch_collect_fill(
             if take:
                 added, _ = await collector.add_codes(take)
             if added:
-                taken.update(added)
+                for code in added:
+                    taken[code] = now
                 bus.notice(f"[수집채움] {len(added)}종목 추가 — 구독 "
                            f"{len(subscribed)}/{collector.code_capacity}"
                            f"(예비 {args.collect_reserve})")
@@ -761,7 +783,9 @@ async def _watch_collect_fill(
             raise
         except Exception as exc:  # noqa: BLE001 — 수집 채움 실패로 매매를 죽이지 않는다
             bus.notice(f"[수집채움] 실패(계속): {exc}")
-        await asyncio.sleep(max(5.0, args.collect_fill_interval))
+        # 하한 0.5초는 설정 실수(0)로 바쁜 루프가 되는 걸 막는 용도다.
+        # 실제 운영값은 cron 의 60초다.
+        await asyncio.sleep(max(0.5, args.collect_fill_interval))
 
 
 async def _watch_breaking_materials(
@@ -1189,6 +1213,9 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             except (NotImplementedError, ValueError):
                 pass
         watchers: list[Any] = []
+        # 스캐너가 받아온 등락률 순위를 수집 채움이 함께 본다 — 같은 프로세스라
+        # 목록 하나를 공유하면 된다(스캐너가 쓰고 채움이 읽기만 한다).
+        movers: list[str] = []
         if args.program_interval > 0:
             # 만쥬 — 프로그램이 쏟아내는 장세면 신호가 떠도 안 산다.
             watchers.append(asyncio.create_task(
@@ -1197,12 +1224,13 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             # 만쥬 §2 — 시장 전체에서 대장을 찾는다. 이게 없으면 전날 고른 45종목
             # 안에서만 대장을 기다리게 되고, 실측 커버리지는 2% 였다.
             watchers.append(asyncio.create_task(
-                _watch_leader_scan(collector, detector, bus, args, guard, executor)))
+                _watch_leader_scan(collector, detector, bus, args, guard, executor,
+                                   movers)))
         if args.collect_fill_interval > 0:
             # 매매가 안 쓰는 자리로 틱을 쌓는다. 감지기에 등록하지 않으므로
             # 신호·주문 경로에는 한 줄도 안 닿는다(tests/test_collect_fill.py).
             watchers.append(asyncio.create_task(
-                _watch_collect_fill(collector, detector, bus, args, conn)))
+                _watch_collect_fill(collector, detector, bus, args, conn, movers)))
         watcher = None
         if args.breaking_interval > 0:
             # 만쥬 §6 — 장중 돌발 재료. 수집과 나란히 돌고, 죽어도 수집은 계속된다.
@@ -1335,6 +1363,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "0 = 끔. 붙인 종목은 저장만 되고 신호·주문은 안 난다")
     p.add_argument("--collect-reserve", type=int, default=12,
                    help="감지기가 장중에 대장을 붙일 예비 자리 — 수집이 안 건드린다")
+    p.add_argument("--collect-fill-ttl", type=float, default=600.0,
+                   help="수집 종목이 등락률 순위에서 사라진 뒤 자리를 내주기까지(초). "
+                        "짧으면 등록만 낭비하고 길면 오후 대장이 붙을 자리가 없다")
     p.add_argument("--collect-fill-pool", type=int, default=300,
                    help="수집 후보 풀 크기(전일 거래대금 상위 N종목)")
     p.add_argument("--big-trades", type=int, default=None,

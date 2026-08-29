@@ -112,6 +112,9 @@ def test_watcher_actually_subscribes_from_the_db(tmp_path):
             self.added.extend(codes)
             return list(codes), []
 
+        async def remove_codes(self, codes):
+            return list(codes)
+
     class FakeDetector:
         codes = {"B"}          # 감지기가 아는 종목은 수집이 안 건드린다
 
@@ -124,7 +127,7 @@ def test_watcher_actually_subscribes_from_the_db(tmp_path):
 
     collector, bus = FakeCollector(), FakeBus()
     args = argparse.Namespace(collect_fill_interval=0.01, collect_reserve=2,
-                              collect_fill_pool=300)
+                              collect_fill_pool=300, collect_fill_ttl=600.0)
 
     async def run_one_cycle():
         task = asyncio.create_task(
@@ -137,3 +140,113 @@ def test_watcher_actually_subscribes_from_the_db(tmp_path):
     # 정원 5 − 구독중 1 − 예비 2 = 2자리. 후보는 거래대금 순 A,B,C 인데 B 는 감지기 몫.
     assert collector.added == ["A", "C"]
     assert any("수집채움" in m for m in bus.msgs)
+
+
+def test_pool_prefers_todays_movers_over_yesterdays_turnover():
+    """수집 후보는 **오늘 올라가는 종목**이어야 한다 — 만쥬의 순간을 보려면.
+
+    전일 거래대금 상위로 채우면 틱은 쌓이지만 방아쇠는 못 본다. 실측 커버리지가
+    2% 였던 바로 그 기준이다(그 주 상한가 52건 중 유니버스 안에 1건). 스캐너가 이미
+    10초마다 등락률 상위를 받아오니, 그 순위를 문턱 아래까지 후보로 쓴다 — 12% 를
+    못 넘은 종목이 이따가 상한가로 가고, 그때 이미 붙어 있어야 한다.
+    """
+    from scalp_it.realtime.collect_fill import fill_pool
+
+    movers = ["M1", "M2", "M3"]          # 오늘 등락률 상위(문턱 아래 포함)
+    turnover = ["T1", "T2"]              # 전일 거래대금 상위
+
+    assert fill_pool(movers, turnover)[:3] == movers, "오늘 움직이는 종목이 먼저다"
+    assert "T1" in fill_pool(movers, turnover), "그 뒤를 전일 거래대금이 받친다"
+    assert fill_pool([], turnover) == turnover, "스캔이 아직 없으면 폴백"
+    assert fill_pool(["M1", "T1"], turnover) == ["M1", "T1", "T2"], "중복은 한 번만"
+
+
+def test_stale_fill_codes_yield_their_slot():
+    """순위에서 사라진 지 오래된 수집 종목은 자리를 내준다.
+
+    자리를 한 번 잡고 안 놓으면 오전에 붙은 38종목이 하루를 다 먹는다. 만쥬의 대장은
+    오후에도 나오고, 그때 자리가 없으면 그날 그 종목은 못 본다. 반대로 순위를 잠깐
+    들락거린다고 바로 떼면 등록만 낭비하므로 TTL 을 둔다.
+    """
+    from scalp_it.realtime.collect_fill import plan_evictions
+
+    seen = {"A": 1000.0, "B": 700.0, "C": 100.0}
+    # now=1000, ttl=600 → C(900초 전)만 만료. B(300초 전)는 유예 안에 있다.
+    assert plan_evictions(seen, now=1000.0, ttl=600.0) == ["C"]
+
+
+def test_nothing_evicted_when_all_fresh():
+    from scalp_it.realtime.collect_fill import plan_evictions
+
+    assert plan_evictions({"A": 990.0}, now=1000.0, ttl=600.0) == []
+
+
+def test_eviction_is_deterministic_oldest_first():
+    """오래 안 보인 것부터 내린다 — 자리가 하나뿐일 때 무엇을 버릴지 정해져야 한다."""
+    from scalp_it.realtime.collect_fill import plan_evictions
+
+    seen = {"A": 100.0, "B": 50.0, "C": 200.0}
+    assert plan_evictions(seen, now=1000.0, ttl=600.0) == ["B", "A", "C"]
+
+
+def test_afternoon_mover_gets_a_slot_from_a_stale_one(tmp_path):
+    """오후에 올라온 종목이 **아침에 붙은 종목의 자리를 받는다.**
+
+    만쥬의 대장은 오후에도 나온다. 자리를 한 번 잡고 안 놓으면 그날 그 종목은 못
+    보고, 그러면 만쥬 방식이 성립하지 않는다. 순위에서 사라진 지 TTL 이 지난
+    종목을 내리고 새 종목을 붙이는지 한 바퀴 돌려 본다.
+    """
+    import argparse
+    import asyncio
+    import sqlite3
+
+    from scalp_it import cli_pair_detect as C
+
+    conn = sqlite3.connect(tmp_path / "t.db")
+    conn.execute("create table daily_bars (code text, date text, trade_value real)")
+    conn.execute("insert into daily_bars values ('T1','2026-08-28',100.0)")
+    conn.commit()
+
+    class FakeCollector:
+        code_capacity = 1          # 자리 하나뿐 — 회전을 해야만 새 종목이 들어온다
+        def __init__(self):
+            self.subscribed_codes: list[str] = []
+            self.added: list[str] = []
+            self.removed: list[str] = []
+
+        async def add_codes(self, codes):
+            self.added.extend(codes)
+            self.subscribed_codes = [*self.subscribed_codes, *codes]
+            return list(codes), []
+
+        async def remove_codes(self, codes):
+            self.removed.extend(codes)
+            self.subscribed_codes = [c for c in self.subscribed_codes
+                                     if c not in codes]
+            return list(codes)
+
+    class FakeDetector:
+        codes: set[str] = set()
+
+    class FakeBus:
+        def __init__(self): self.msgs: list[str] = []
+        def notice(self, m): self.msgs.append(m)
+
+    collector, bus = FakeCollector(), FakeBus()
+    movers = ["OLD"]
+    args = argparse.Namespace(collect_fill_interval=0.01, collect_reserve=0,
+                              collect_fill_pool=300, collect_fill_ttl=0.05)
+
+    async def scenario():
+        task = asyncio.create_task(
+            C._watch_collect_fill(collector, FakeDetector(), bus, args, conn, movers))
+        await asyncio.sleep(0.2)           # OLD 가 순위에 있는 동안
+        movers[:] = ["NEW"]                # 오후 — 순위가 갈렸다
+        await asyncio.sleep(1.5)           # TTL(0.05s) 경과 + 다음 사이클
+        task.cancel()
+
+    asyncio.run(scenario())
+
+    assert collector.added[0] == "OLD", "먼저 아침 종목을 붙인다"
+    assert "OLD" in collector.removed, "순위에서 사라진 종목이 자리를 내줘야 한다"
+    assert "NEW" in collector.added, "오후 종목이 그 자리를 받아야 한다"

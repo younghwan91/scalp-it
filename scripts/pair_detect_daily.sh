@@ -182,7 +182,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --follower-priority manju --cosurge 0 --premove 0.002 \
     --universe-size 12 --max-roundtrip-bp 20 --order-krw 10000000 \
     --leader-scan-interval 10 --leader-scan-min-rt 12 --leader-scan-max 8 \
-    --collect-fill-interval 60 --collect-reserve 12 \
+    --collect-fill-interval 60 --collect-reserve 12 --collect-fill-ttl 600 \
     --program-interval 60 --program-dump-qty 700 \
     --position-notional 10000000 \
     --lock-min-krw 300000000 --lock-wall-decay 0.7 \
