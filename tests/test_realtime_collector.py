@@ -325,17 +325,42 @@ def test_flush_survives_db_outage_and_preserves_batch(conn):
 # ----- 만쥬 §6 장중 돌발 재료 — 구독 종목 추가 --------------------------------
 
 def test_build_reg_message_supports_incremental_add():
-    """``refresh="0"`` = 기존 등록에 **추가**(교체 아님).
+    """``refresh="1"`` = 기존 등록을 **유지**하고 추가(교체 아님).
 
-    만쥬 §6 은 "예상치 못한 돌발 뉴스가 나오면 즉각 관련 종목 매수"다. 장전에 고른
-    유니버스에 그 종목이 없으면 구독부터 없어서 감시조차 못 한다. 그래서 장중 추가가
-    필요하고, refresh 를 1(교체)로 보내면 **기존 종목이 통째로 날아간다**.
+    키움의 ``refresh`` 는 **기존등록유지여부**다 — 1 이 유지, 0 이 해제 후 등록.
+    종전엔 0 으로 보냈고, 그 한 번의 추가가 그때까지 구독하던 종목을 전부 날렸다
+    (2026-08-28 틱 실측: 종목별 마지막 틱 = 다음 추가 종목의 첫 틱, 초 단위 일치).
     """
     from scalp_it.realtime.collector import build_reg_message
 
-    msg = build_reg_message(["000001"], ["0B", "0D"], "1", refresh="0")
-    assert msg["refresh"] == "0"
+    msg = build_reg_message(["000001"], ["0B", "0D"], "1", refresh="1")
+    assert msg["refresh"] == "1"
     assert msg["data"][0]["item"] == ["000001"]
+
+
+def test_add_codes_keeps_existing_registration():
+    """장중 추가는 **기존 구독을 유지**해야 한다 — 배선까지 검사한다.
+
+    ``build_reg_message`` 만 검사하면 호출부가 0 을 넘겨도 안 걸린다. 실제로 그렇게
+    새서 2026-08-27~28 이틀치 수집이 무너졌다(08-28 09시 39종목 → 10시 5종목).
+    """
+    import asyncio
+    import json
+
+    from scalp_it.realtime.collector import KiwoomRealtimeCollector
+
+    collector = KiwoomRealtimeCollector(token="t", codes=["000001"], dsn=None)
+    ws = _FakeWS([], [], collector)
+    collector._live_ws["1"] = (ws, ["000001"])
+
+    ok, rejected = asyncio.run(collector.add_codes(["000002"]))
+
+    assert ok == ["000002"] and rejected == []
+    sent = json.loads(ws.sent[-1])
+    assert sent["trnm"] == "REG"
+    assert sent["refresh"] == "1", "0 이면 기존 구독이 통째로 날아간다"
+    assert sent["data"][0]["item"] == ["000002"]
+    assert collector._live_ws["1"][1] == ["000001", "000002"]
 
 
 def test_pending_adds_respect_registration_limit():

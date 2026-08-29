@@ -573,7 +573,16 @@ class KiwoomRealtimeCollector:
         만쥬 §6 — "예상치 못한 돌발 뉴스가 나오면 즉각 관련 종목 매수". 장전에 고른
         유니버스에 그 종목이 없으면 구독조차 없어서 감시를 못 한다.
 
-        ``refresh="0"`` 로 보낸다 — 1(교체)로 보내면 **기존 종목이 통째로 날아간다**.
+        ``refresh="1"`` 로 보낸다 — 키움의 ``refresh`` 는 **기존등록유지여부**라
+        1 이 유지(추가), 0 이 해제 후 등록(교체)이다. 종전엔 0 으로 보냈고, 그래서
+        장중 추가 한 번이 **그때까지 구독하던 종목을 전부 날렸다**.
+
+        2026-08-28 틱 실측이 그대로 보여준다 — 종목별 마지막 틱이 다음 추가 종목의
+        첫 틱과 **초 단위로 일치**한다(09:02:59 에 12종목이 동시에 끊기고 430690
+        하나만 남는 식). 그날 09시 39종목이던 것이 10시엔 5종목, 이후 종일 3~8종목
+        이었다. 08-27 도 11시 이후 1~2종목으로 무너졌다(장중 추가가 없던 08-26 은
+        49종목이 종일 유지됐다 — 대조군).
+
         한도를 넘는 건 거절하고 목록으로 돌려준다(조용히 넘기면 왜 못 봤는지 모른다).
         """
         if not self._live_ws:
@@ -592,7 +601,7 @@ class KiwoomRealtimeCollector:
             return [], rejected
         try:
             await ws.send(json.dumps(
-                build_reg_message(ok, self._types, grp_no, refresh="0")))
+                build_reg_message(ok, self._types, grp_no, refresh="1")))
         except Exception as exc:  # noqa: BLE001 — 추가 실패로 수집을 죽이지 않는다
             self._log(f"[conn{grp_no}] 장중 REG 추가 실패: {exc}")
             return [], list(codes)
