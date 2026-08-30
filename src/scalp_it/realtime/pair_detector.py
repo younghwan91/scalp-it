@@ -109,6 +109,7 @@ __all__ = [
     "limit_up_price",
     "load_watchlist",
     "parse_pairs_arg",
+    "liquidity_size_multiplier",
     "roundtrip_bp",
 ]
 
@@ -200,6 +201,25 @@ def _sweep_vwap(levels: Sequence[Level], krw: float) -> float | None:
     if remain > 0 or shares <= 0:
         return None
     return krw / shares
+
+
+def liquidity_size_multiplier(bp: float | None, *, thin_bp: float,
+                              thin_multiplier: float) -> float:
+    """호가 두께로 비중 배수를 정한다 — 만쥬 지시서 §4 Liquidity-Based Sizing.
+
+    > Thick Orderbook: Normal allocation.
+    > Thin Orderbook: Cap size to prevent slippage (**Max 10-20% of normal size**).
+
+    ``bp`` 는 :func:`roundtrip_bp` 가 잰 왕복 충격이다. 종전 구현은 이 값이 상한을
+    넘으면 알림 자체를 **배제**했는데, 만쥬는 배제가 아니라 **축소**하라고 한다 —
+    얇아도 기회면 소액으로 잡는다. 호가를 못 봤으면(``None``) 얇은 쪽으로 본다.
+    ``thin_bp`` 가 0 이면 끈다.
+    """
+    if thin_bp <= 0:
+        return 1.0
+    if bp is None:
+        return thin_multiplier
+    return thin_multiplier if bp > thin_bp else 1.0
 
 
 def roundtrip_bp(bids: Sequence[Level], asks: Sequence[Level], krw: float) -> float | None:

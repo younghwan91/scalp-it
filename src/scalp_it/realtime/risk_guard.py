@@ -65,6 +65,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..ticksize import tick_size
+
 if TYPE_CHECKING:
     from .pair_detector import Alert
 
@@ -73,15 +75,31 @@ __all__ = [
     "BLOCK_REGIME_ZERO",
     "KILL_CONSECUTIVE",
     "KILL_DAILY_LOSS",
+    "KILL_GIVEBACK",
     "KILL_MANUAL",
     "LEADER_HOLDING",
     "LEADER_LOST",
     "Decision",
     "Position",
+    "pyramid_multiplier",
     "PositionLogSink",
     "RiskGuard",
     "RiskGuardConfig",
 ]
+
+def pyramid_multiplier(ret: float, *, arm: float, max_mult: float) -> float:
+    """불타기 배수 — 만쥬 지시서 §4.
+
+    > Only permitted when position is in confirmed profit **>= +3.0% ~ +4.0%**.
+    > Sizing limit: **Maximum 2x** initial size.
+
+    **물타기는 구조적으로 불가능하다** — 이익 구간에서만 배수가 올라간다("Martingale /
+    Averaging Down: ABSOLUTELY FORBIDDEN"). ``arm`` 이 0 이면 끈다.
+    """
+    if arm <= 0 or ret < arm:
+        return 1.0
+    return max(1.0, max_mult)
+
 
 # 킬스위치 트리거 사유(문자열 상수)
 KILL_DAILY_LOSS = "daily_loss"
@@ -133,6 +151,19 @@ class RiskGuardConfig:
     # 안 그러면 +100원 벌고 +40원으로 준 순간 그날이 끝난다. 0 = 끔.
     profit_giveback_ratio: float = 0.0
     profit_giveback_min_krw: float = 0.0
+    # 만쥬 지시서 §3 Phase 1 Trigger 2 — "Stock B fails to move upward within 1-2
+    # ticks post-entry -> EXECUTE SCRATCH STOP(매수가 즉시 손절/본절 탈출)".
+    # 짝꿍은 '키 맞추기 슈팅'을 먹는 것이라, 사고 나서 안 뜨면 슈팅이 아니라 물린
+    # 것이다. −0.5% 손절까지 기다릴 이유가 없다.
+    #   ⚠️ **시간 기준은 원문에 없다** — "1~2호가"는 가격 폭이지 시간이 아니다.
+    #   `scratch_secs` 는 우리 값이다. 둘 중 하나가 0 이면 끈다.
+    # 만쥬 지시서 §4 Liquidity-Based Sizing — "Thin Orderbook: Cap size to prevent
+    # slippage (Max 10-20% of normal size)". 종전 `max_roundtrip_bp` 는 얇으면
+    # **배제**했는데, 만쥬는 배제가 아니라 **축소**하라고 한다. 0 = 끔.
+    thin_book_bp: float = 0.0          # 왕복 충격이 이 bp 를 넘으면 얇다고 본다
+    thin_book_multiplier: float = 0.2  # 얇을 때 곱할 배수(지시서 10~20%)
+    scratch_ticks: int = 0            # 진입가 위로 최소 이만큼은 떠야 한다(호가 수)
+    scratch_secs: float = 0.0         # 그 안에 못 뜨면 본절 탈출(초)
     # 추세 추종(만쥬). "+0.5% 고정 청산이 아니라 2등주 +3% 도달 시 트레일링 스탑".
     # **수익이 난 뒤에야** 켜진다 — 진입부터 켜면 2등주 자체 가격 노이즈에 털린다.
     trail_arm: float = 0.0                    # 이만큼 오르면 트레일링 무장. 0 = 끔
@@ -222,6 +253,7 @@ class Position:
     touch_fill_ts: datetime | None = None
     through_fill_ts: datetime | None = None
     last_price: float | None = None           # 마지막으로 관측한 체결가(flush 계상용)
+    lifted: bool = False                      # 진입 후 위로 떴는가(본절 탈출 판정)
     trail_armed: bool = False                 # +N% 를 찍어 트레일링이 켜졌는가
     peak: float = 0.0                         # 체결 후 최고가(트레일링 기준)
     manual: bool = False                      # 사용자가 실제 체결로 표시
@@ -232,7 +264,7 @@ class Position:
     mfe: float = 0.0                          # 최대 순행(≥0)
     # 결과
     status: str = "open"                      # open | closed | unfilled
-    exit_reason: str = ""                     # 익절 | 손절 | 재난선 | 시간청산 | 미체결
+    exit_reason: str = ""                     # 익절 | 손절 | 재난선 | 시간청산 | 본절탈출 | 미체결
     exit_ts_actual: datetime | None = None
     exit_price: float | None = None
     pnl: float | None = None                  # 실현 수익률(비용 차감 후)
@@ -358,6 +390,25 @@ class RiskGuard:
         if self.drawdown_capped:
             mult *= max(0.0, float(self.config.drawdown_size_multiplier))
         return self.config.position_notional * mult
+
+    def _alert_notional(self, alert: Alert) -> float:
+        """이 알림의 명목 — 국면·절제 배수에 **호가 두께 배수**를 더 곱한다.
+
+        만쥬 지시서 §4: 얇은 개별 테마주는 평소의 10~20% 로만. `Alert.rt_bp` 가
+        필터를 통과하며 이미 잰 왕복 충격이라 여기서 다시 호가를 볼 필요가 없다
+        (미측정이면 −1 로 오는데, `liquidity_size_multiplier` 는 모르면 얇은 쪽으로
+        본다 — 모르면 작게 가는 게 안전하다).
+        """
+        from .pair_detector import liquidity_size_multiplier
+
+        cfg = self.config
+        if cfg.thin_book_bp <= 0:
+            return self.effective_notional()
+        bp = getattr(alert, "rt_bp", -1.0)
+        mult = liquidity_size_multiplier(
+            None if bp is None or bp < 0 else float(bp),
+            thin_bp=cfg.thin_book_bp, thin_multiplier=cfg.thin_book_multiplier)
+        return self.effective_notional() * mult
 
     def set_program_dumping(self, dumping: bool) -> None:
         """프로그램 수급 상태를 주입한다(만쥬 — 쏟아내는 장세면 진입을 거른다).
@@ -506,7 +557,7 @@ class RiskGuard:
             stop_loss=alert.stop_loss,
             disaster_line=alert.disaster_line,
             exit_ts=alert.exit_ts,
-            notional=(self.effective_notional() if notional is None else notional),
+            notional=(self._alert_notional(alert) if notional is None else notional),
             follower_name=alert.follower_name,
             basis=basis,
             shadow=shadow,
@@ -555,6 +606,18 @@ class RiskGuard:
         ret = price / entry - 1.0
         pos.mae = min(pos.mae, ret)
         pos.mfe = max(pos.mfe, ret)
+
+        # 본절 탈출(지시서 §3 Phase 1 Trigger 2) — 익절·손절보다 **먼저** 본다.
+        # 한 번이라도 위로 떴으면 대상이 아니다(슈팅이 시작된 것이다).
+        cfg = self.config
+        if cfg.scratch_ticks > 0 and cfg.scratch_secs > 0 and not pos.lifted:
+            if price >= entry + cfg.scratch_ticks * tick_size(entry) - _EPS:
+                pos.lifted = True
+            else:
+                since = pos.through_fill_ts or pos.touch_fill_ts or pos.ts
+                if (ts - since).total_seconds() >= cfg.scratch_secs:
+                    self._close(pos, ts, price, "본절탈출", filled=True)
+                    return True
 
         # 청산 규칙: 익절 → (대장이탈) → 손절 → 재난선 → 시간청산
         # 대장이탈은 틱이 아니라 :meth:`on_leader_state` 로 들어와 그 자리에서 즉시

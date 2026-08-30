@@ -190,6 +190,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --lock-min-krw 300000000 --lock-wall-decay 0.7 \
     --dump-krw 100000000 --big-trades 2 --drawdown-krw 100000 \
     --max-consecutive-losses 2 --profit-giveback 0.5 --profit-giveback-min 30000 \
+    --scratch-ticks 1 --scratch-secs 30 --thin-book-bp 10 --thin-book-size 0.2 \
     --shadow-when-blocked --stop-needs-leader-weak \
     --new-listing-days 5 \
     --breaking-interval 90 --breaking-min-weight 0.7 --breaking-max 3 \

@@ -168,6 +168,10 @@ def build_guard(args: argparse.Namespace) -> RiskGuard | None:
         trail_arm=args.trail_arm,
         trail_pct=args.trail,
         drawdown_krw=args.drawdown_krw,
+        thin_book_bp=args.thin_book_bp,
+        thin_book_multiplier=args.thin_book_size,
+        scratch_ticks=args.scratch_ticks,
+        scratch_secs=args.scratch_secs,
         profit_giveback_ratio=args.profit_giveback,
         profit_giveback_min_krw=args.profit_giveback_min,
         shadow_when_blocked=args.shadow_when_blocked,
@@ -1457,6 +1461,16 @@ def build_parser() -> argparse.ArgumentParser:
                         "짧으면 등록만 낭비하고 길면 오후 대장이 붙을 자리가 없다")
     p.add_argument("--collect-fill-pool", type=int, default=300,
                    help="수집 후보 풀 크기(전일 거래대금 상위 N종목)")
+    p.add_argument("--thin-book-bp", type=float, default=0.0,
+                   help="왕복 충격이 이 bp 를 넘으면 호가가 얇다고 보고 비중을 줄인다. "
+                        "만쥬 지시서 §4 Liquidity-Based Sizing. 0 = 끔")
+    p.add_argument("--thin-book-size", type=float, default=0.2,
+                   help="얇을 때 곱할 비중 배수(지시서 10~20%%)")
+    p.add_argument("--scratch-ticks", type=int, default=0,
+                   help="진입 후 후속주가 진입가 위로 이만큼(호가) 못 뜨면 본절 탈출. "
+                        "만쥬 지시서 §3 Phase 1 Trigger 2. 0 = 끔")
+    p.add_argument("--scratch-secs", type=float, default=0.0,
+                   help="본절 탈출 판정까지 기다리는 시간(초). 원문에 없는 우리 값")
     p.add_argument("--profit-giveback", type=float, default=0.0,
                    help="정점 이익 대비 이 비율 이하로 반납하면 그날 하드스톱(0.5 = 절반). "
                         "만쥬 지시서 §5 '50% Rule'. 0 = 끔")
