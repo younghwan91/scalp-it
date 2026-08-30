@@ -101,4 +101,55 @@ def test_cron_turns_the_fade_exit_on(cron_args):
 
     cfg = build_config(cron_args)
     assert cfg.leader_stall_secs == 15.0
-    assert cfg.leader_drop_ticks == 3
+    assert cfg.leader_drop_ticks == 2, "만쥬 A2 '1~2호가라도 밀리는 순간'"
+
+
+def test_wall_window_matches_manju_three_seconds(cron_args):
+    """벽 감소 관측 창은 만쥬 원문의 **3초**다.
+
+    46 §5 코드화 권고 원문: "상한가 매수 잔량이 **직전 3초 (비공개 회신 — 공개본에서 뺐다) ... 즉시 2등주 시장가 청산."
+
+    종전 기본값은 30초였다 — 10배 긴 창이라 3초 만에 확 깎여도 30초 전 피크와
+    비교하니 훨씬 둔감하다. 만쥬가 "즉시"라고 한 신호가 늦게 돈다. 코드에도
+    문서에도 왜 30초인지 이유가 없었고 CLI 플래그조차 없어 바꿀 수도 없었다
+    (2026-08-30 파라미터 전수 감사에서 발견).
+    """
+    from scalp_it.cli_pair_detect import build_config
+
+    assert build_config(cron_args).lock_wall_window == 3.0
+
+
+def test_locked_leader_is_never_stalled_out():
+    """**Phase 2(상한가 안착) 에서는 정체 판정을 하지 않는다.**
+
+    만쥬 A2(2026-08-30) — 청산은 상태 머신이다.
+      Phase 1(안착 전): "매수 체결이 멈추거나 1~2호가라도 밀리는 순간" 즉시 청산
+      Phase 2(안착 후): "잔량 급감·풀림, VI 갭하락, 매도 폭탄" 즉시 청산
+
+    상한가에 잠기면 가격이 상한가에 붙어 움직이지 않는다 — 신고가가 안 나온다.
+    Phase 1 규칙을 그대로 돌리면 **굳힌 대장을 15초 만에 이탈로 찍어** 이길 거래를
+    전부 잘라먹는다. Phase 2 의 방어는 벽 감소(`lock_wall_decay`)와 매도 폭탄
+    (`dump_krw`)이 맡는다.
+    """
+    d = _det()
+    _tick(d, 0, 12_900)
+    _tick(d, 2, 13_000)      # 상한가 안착 → Phase 2
+    for i in range(3, 60, 3):
+        _tick(d, i, 13_000)  # 굳히는 중 — 신고가는 안 나온다
+    assert LOST_STALL not in _reasons(d)
+    assert LOST_FADE not in _reasons(d)
+
+
+def test_phase1_uses_manju_one_to_two_ticks():
+    """Phase 1 하락 문턱은 만쥬의 **1~2호가**다 — 3호가는 우리가 늦게 잡은 값이었다."""
+    from tests.conftest import __file__ as _  # noqa: F401  (fixture 경로 고정용)
+
+    d = PairDetector(pairs=[], config=DetectorConfig(
+        leader_stall_secs=15.0, leader_drop_ticks=2),
+        universe=["LEADER", "FOLLOWER"],
+        sectors={"LEADER": "전기전자", "FOLLOWER": "전기전자"},
+        prev_close={"LEADER": PREV, "FOLLOWER": PREV})
+    _tick(d, 0, 12_900)
+    _tick(d, 2, 12_950)      # 고점
+    _tick(d, 4, 12_930)      # 2호가(20원) 아래 → 하락
+    assert LOST_FADE in _reasons(d)

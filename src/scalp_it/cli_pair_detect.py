@@ -129,6 +129,8 @@ def build_config(args: argparse.Namespace) -> DetectorConfig:
         over["lock_wall_decay"] = args.lock_wall_decay
     if args.dump_krw is not None:
         over["dump_krw"] = args.dump_krw
+    if args.lock_wall_window is not None:
+        over["lock_wall_window"] = args.lock_wall_window
     if args.leader_stall is not None:
         over["leader_stall_secs"] = args.leader_stall
     if args.leader_drop_ticks is not None:
@@ -295,6 +297,19 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
                 print(f"#   ↑ 거래대금 {gate.turnover_jo:.2f}조 < "
                       f"{args.halt_below_jo:g}조 — 만쥬 기준 진입 금지. 신규 진입을 "
                       f"막는다(청산은 계속).", file=sys.stderr)
+            elif args.scout_gate_jo > 0 and gate.turnover_jo < args.scout_gate_jo:
+                # 만쥬 A1(2026-08-30) — Gate 0(7~8조) 아래는 "쉬거나 극소액". 우리는
+                # 실측 데이터를 얻으려 게이트를 5조로 낮춰 뒀는데(2026-08-27 사용자
+                # 결정), 그 구간의 **비중은 1/10 이어야** 만쥬 기준에 맞는다. 실주문은
+                # 이미 1주지만 가상 회계 명목이 1천만원 그대로면 회계가 '평소 비중'으로
+                # 기록돼 성과 해석이 틀어진다.
+                from .market_regime import scout_multiplier
+
+                args.size_multiplier = scout_multiplier(
+                    turnover_jo=gate.turnover_jo, gate_jo=args.scout_gate_jo)
+                print(f"#   ↑ 거래대금 {gate.turnover_jo:.2f}조 < Gate 0 "
+                      f"{args.scout_gate_jo:g}조 — 정찰병 비중 "
+                      f"{args.size_multiplier:g} 배(만쥬 A1).", file=sys.stderr)
             elif args.size_by_regime:
                 # 만쥬 §8-1 — 국면이 나빠지면 시드를 줄인다("1억을 그대로 베팅하지
                 # 않고 3천만 이하로"). 배수 0 이면 신규 진입만 막고 기존 청산은 돈다.
@@ -733,6 +748,33 @@ def _scan_sectors(args: argparse.Namespace, codes: list[str]) -> dict[str, str]:
         return {str(c): str(sec) for c, sec in cur.fetchall() if sec}
     except Exception:  # noqa: BLE001 — 섹터 조회 실패로 스캔을 죽이지 않는다
         return {}
+
+
+async def _watch_entry_cutoff(
+    guard: RiskGuard | None, bus: AlertBus, args: argparse.Namespace,
+) -> None:
+    """오후가 되면 **신규 진입만** 막는다 — 청산은 계속 돈다.
+
+    만쥬 통합 매뉴얼(49 §1-5): "오전 핵심 구간 매매 후 오후 추격 매매는 철저히 배제."
+    45번 대조표에 "미결정"으로 남겨뒀던 자리를 이 답변이 확정지었다.
+
+    시황 게이트와 **같은 경로**를 쓴다(`size_multiplier = 0`) — 이미 검증된 길이고,
+    신규 진입만 막고 열린 포지션의 손절·대장이탈 청산은 그대로 돈다.
+    """
+    import asyncio
+
+    from .realtime.leader_scan import past_cutoff
+
+    if guard is None or not args.no_entry_after.strip():
+        return
+    while True:
+        await asyncio.sleep(20.0)
+        hhmm = datetime.now().strftime("%H%M")  # noqa: DTZ005 — KST naive
+        if past_cutoff(hhmm, args.no_entry_after):
+            guard.set_size_multiplier(0.0)
+            bus.notice(f"[오후차단] {args.no_entry_after} 경과 — 신규 진입 금지"
+                       f"(만쥬: 오후 추격 매매 배제). 청산은 계속 돈다")
+            return
 
 
 async def _watch_collect_fill(
@@ -1266,6 +1308,10 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             watchers.append(asyncio.create_task(
                 _watch_leader_scan(collector, detector, bus, args, guard, executor,
                                    movers)))
+        if args.no_entry_after.strip():
+            # 만쥬 49 §1-5 — 오후 추격 매매 배제. 신규 진입만 막고 청산은 돈다.
+            watchers.append(asyncio.create_task(
+                _watch_entry_cutoff(guard, bus, args)))
         if args.collect_fill_interval > 0:
             # 매매가 안 쓰는 자리로 틱을 쌓는다. 감지기에 등록하지 않으므로
             # 신호·주문 경로에는 한 줄도 안 닿는다(tests/test_collect_fill.py).
@@ -1409,6 +1455,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "짧으면 등록만 낭비하고 길면 오후 대장이 붙을 자리가 없다")
     p.add_argument("--collect-fill-pool", type=int, default=300,
                    help="수집 후보 풀 크기(전일 거래대금 상위 N종목)")
+    p.add_argument("--scout-gate-jo", type=float, default=0.0,
+                   help="코스닥 거래대금이 이 조원 미만이면 정찰병 비중(1/10)으로 매매한다. "
+                        "만쥬 A1 의 Gate 0(7~8조). 0 = 끔")
+    p.add_argument("--no-entry-after", default="",
+                   help="이 시각(HHMM) 뒤로는 신규 진입을 막는다. 청산은 계속 돈다. "
+                        "만쥬 49 §1-5 '오후 추격 매매는 철저히 배제'. 빈 값 = 끔")
+    p.add_argument("--lock-wall-window", type=float, default=None,
+                   help="상한가 매수벽 감소를 재는 창(초). 만쥬 원문은 '직전 3초 피크 대비'")
     p.add_argument("--leader-stall", type=float, default=None,
                    help="대장이 이 초 동안 신고가를 못 내면 이탈로 본다(만쥬 2026-08-29: "
                         "'더 이상 올라가지 못하는 순간'). 0 = 끔. 원문에 수치 없음 — 임의값")

@@ -337,7 +337,11 @@ class DetectorConfig:
     #   본다. 가격이 아직 상한가여도 발동한다 — 벽이 절반 넘게 먹혔으면 이미 매물이
     #   이기고 있고, 가격이 풀린 뒤에 파는 건 한 박자 늦다. 0 = 끔.
     lock_wall_decay: float = 0.0      # 최근 최대 대비 잔량 비율 하한(0.5 = 반토막). 0 = 끔
-    lock_wall_window: float = 30.0    # 벽 감소 관측 창(초)
+    #   창은 **만쥬 원문의 3초**다(46 §5 "직전 3초 피크 대비 30% 이상 급감").
+    #   종전 기본값 30 은 이유가 어디에도 없는 우리 값이었고, 10배 긴 창이라
+    #   벽이 3초 만에 깎여도 30초 전 피크와 비교해 훨씬 둔감했다 — 만쥬가
+    #   "즉시"라 한 신호가 늦게 돌았다(2026-08-30 파라미터 전수 감사).
+    lock_wall_window: float = 3.0     # 벽 감소 관측 창(초). 만쥬 원문 수치
     # 매도 폭탄(§5-4 "프로그램 매도 폭탄(투매)이 쏟아져 막히면 지체 없이 손절").
     #   최근 dump_window 초 대장 **매도 체결대금**(side=−1) 합이 dump_krw 이상이면 이탈.
     #   가격이 아직 상한가 위에 있어도 발동한다 — 만쥬는 "풀리거나, 또는 매도 폭탄에
@@ -356,8 +360,12 @@ class DetectorConfig:
     #   기본 0 = 첫 틱 즉시("풀리는 순간"). 상한가 매수벽에 체결이 한 틱 스치는 노이즈가
     #   실측으로 확인되면 1~2초를 주면 된다 — 늦추는 만큼 청산이 늦는다는 게 비용이다.
     leader_lost_confirm_secs: float = 0.0
-    # 만쥬 2026-08-29 추가 답변의 정량화. **원문에 수치가 없다** — (비공개 회신 — 공개본에서 뺐다) 아래 값은 우리 임의값이고, 48번 Q1 로 물어둔 상태다.
-    # 0 이면 그 조건을 끈다.
+    # Phase 1(상한가 안착 전) 청산 — 만쥬 A2(2026-08-30) "매수 체결이 멈추거나
+    # **1~2호가라도** 밀리는 순간 즉시 B 청산. 대장주가 상한가를 잠그지 못하고 밀리면
+    # 후발주는 2~3배의 낙폭으로 폭락하기 때문."
+    #   `leader_drop_ticks` 2 는 원문 수치(1~2 중 느슨한 쪽).
+    #   `leader_stall_secs` 는 **여전히 우리 임의값**이다 — "체결이 멈추면"의 초 수를
+    #   만쥬가 주지 않았다. 0 이면 그 조건을 끈다.
     leader_stall_secs: float = 0.0    # 이 초 동안 신고가가 없으면 "더 못 오름"
     leader_drop_ticks: int = 0        # 당일 고점 대비 이 호가 아래면 "하락"
     cooldown: float = 90.0            # 같은 쌍 재알림 억제(초)
@@ -872,7 +880,7 @@ class PairDetector:
         limit = self.limit_up(code)
         if limit is None:
             return                             # 전일종가 미주입 — 상한가를 모르니 통보 없음
-        self._check_leader_fade(code, ts, price)
+        self._check_leader_fade(code, ts, price, limit)
         if price >= limit:
             self._lock_since.setdefault(code, ts)
             self._below_since.pop(code, None)
@@ -894,10 +902,21 @@ class PairDetector:
         self._below_since.pop(code, None)
         self._emit_lost(code, ts, LOST_UNLOCK)
 
-    def _check_leader_fade(self, code: str, ts: datetime, price: float) -> None:
-        """대장이 **더 못 오르거나 하락하는 순간** 이탈로 본다 — 잠금과 무관하다.
+    def _check_leader_fade(self, code: str, ts: datetime, price: float,
+                           limit: float) -> None:
+        """**Phase 1**(상한가 안착 전) 청산 — 대장이 더 못 오르거나 밀리는 순간.
 
-        만쥬 2026-08-29 추가 답변: (비공개 회신 — 공개본에서 뺐다)
+        만쥬 A2(2026-08-30) — 청산은 **상태 머신**이다.
+
+            Phase 1 (안착 전)  "매수 체결이 멈추거나 **1~2호가라도** 밀리는 순간" 즉시
+            Phase 2 (안착 후)  "잔량 급감·풀림, VI 갭하락, 매도 폭탄" 즉시
+
+        > "'A 가 못 올라가면 던진다'가 **상위의 단일 절대 규칙**이며, 상한가 잔량
+        >  이탈은 상한가 도달 후의 구체적 발현 형태입니다."
+
+        **상한가에 잠긴 동안은 이 판정을 하지 않는다.** 가격이 상한가에 붙어 신고가가
+        안 나오므로, 그대로 두면 굳힌 대장을 15초 만에 이탈로 찍어 이길 거래를 전부
+        잘라먹는다. Phase 2 의 방어는 `lock_wall_decay` 와 `dump_krw` 가 맡는다.
 
         종전 `unlock` 은 A 가 상한가를 **한 번 잠근 뒤** 풀릴 때만 돌았다. 우리가 사는
         시점은 A 가 상한가 3호가를 남긴 때(§2)라, A 가 상한가에 못 닿고 주저앉는
@@ -914,6 +933,11 @@ class PairDetector:
             return
         if self._leader_state.get(code) == LEADER_LOST:
             return                             # 이미 이탈 — 중복 통보 금지
+        if price >= limit:
+            # Phase 2 — 잠겨 있는 동안은 고점 시계를 멈춘다. 풀린 뒤 Phase 1 으로
+            # 돌아오면 그 시점부터 다시 잰다(잠긴 동안의 정체를 이월하지 않는다).
+            self._leader_high[code] = (price, ts)
+            return
         high, since = self._leader_high.get(code, (0.0, ts))
         if price > high:
             self._leader_high[code] = (price, ts)   # 신고가 — 아직 오르는 중이다
