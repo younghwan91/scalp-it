@@ -141,6 +141,13 @@ LEADER_LOST = "lost"         # 상한가를 못 말거나 풀리고 꺾임 = 매
 LOST_UNLOCK = "unlock"       # 가격이 상한가 아래로 — "상한가를 말지 못하고 풀림"
 LOST_DUMP = "dump"           # 대량 매도 체결이 쏟아짐 — "프로그램 매도 폭탄에 막힘"
 LOST_WALL = "wall"           # 상한가 매수벽이 급격히 깎임 — 풀리기 직전의 예고
+#: 아래 둘은 **상한가 잠금과 무관하게** 도는 이탈이다(만쥬 2026-08-29 추가 답변:
+#: (비공개 회신 — 공개본에서 뺐다) 우리가 사는
+#: 시점은 A 가 상한가 3호가를 남긴 때라, A 가 상한가에 못 닿고 주저앉는 경우가
+#: 종전 규칙(`unlock`)에는 아예 없었다. 그때 B 는 자기 가격 손절이나 타임스탑으로만
+#: 나왔는데, 그건 만쥬가 하지 말라고 한 "2등주 가격 지표로 손절"이다.
+LOST_STALL = "stall"         # 더 이상 신고가를 못 냄 — "더 올라가지 못하는 순간"
+LOST_FADE = "fade"           # 당일 고점 대비 밀림 — "하락하는 순간"
 
 
 class LeaderEvent(tuple):
@@ -349,6 +356,10 @@ class DetectorConfig:
     #   기본 0 = 첫 틱 즉시("풀리는 순간"). 상한가 매수벽에 체결이 한 틱 스치는 노이즈가
     #   실측으로 확인되면 1~2초를 주면 된다 — 늦추는 만큼 청산이 늦는다는 게 비용이다.
     leader_lost_confirm_secs: float = 0.0
+    # 만쥬 2026-08-29 추가 답변의 정량화. **원문에 수치가 없다** — (비공개 회신 — 공개본에서 뺐다) 아래 값은 우리 임의값이고, 48번 Q1 로 물어둔 상태다.
+    # 0 이면 그 조건을 끈다.
+    leader_stall_secs: float = 0.0    # 이 초 동안 신고가가 없으면 "더 못 오름"
+    leader_drop_ticks: int = 0        # 당일 고점 대비 이 호가 아래면 "하락"
     cooldown: float = 90.0            # 같은 쌍 재알림 억제(초)
     min_turnover: float = 0.0         # 후속 당일 누적 체결대금 하한(원). 0 = 끔
     history: float = 240.0            # 종목별 가격 히스토리 보관(초)
@@ -616,6 +627,7 @@ class PairDetector:
         self._rebuild_themes()
         # 대장 상태를 추적할 종목 — 고정 쌍의 대장 + (동적 모드면) 유니버스 전부.
         # 후속주만인 종목까지 통보하면 가드가 쓰지도 않을 이벤트를 받는다.
+        self._leader_high: dict[str, tuple[float, datetime]] = {}
         self._leader_codes: set[str] = set(self._by_leader)
         if self._dynamic:
             self._leader_codes |= self._universe
@@ -860,6 +872,7 @@ class PairDetector:
         limit = self.limit_up(code)
         if limit is None:
             return                             # 전일종가 미주입 — 상한가를 모르니 통보 없음
+        self._check_leader_fade(code, ts, price)
         if price >= limit:
             self._lock_since.setdefault(code, ts)
             self._below_since.pop(code, None)
@@ -880,6 +893,45 @@ class PairDetector:
             return                             # 확인 구간(기본 0초 = 즉시) 안 — 아직 보류
         self._below_since.pop(code, None)
         self._emit_lost(code, ts, LOST_UNLOCK)
+
+    def _check_leader_fade(self, code: str, ts: datetime, price: float) -> None:
+        """대장이 **더 못 오르거나 하락하는 순간** 이탈로 본다 — 잠금과 무관하다.
+
+        만쥬 2026-08-29 추가 답변: (비공개 회신 — 공개본에서 뺐다)
+
+        종전 `unlock` 은 A 가 상한가를 **한 번 잠근 뒤** 풀릴 때만 돌았다. 우리가 사는
+        시점은 A 가 상한가 3호가를 남긴 때(§2)라, A 가 상한가에 못 닿고 주저앉는
+        경우가 그 규칙에 없었다. 그때 B 는 자기 가격 손절이나 타임스탑으로만 나왔는데
+        만쥬는 "2등주 가격 지표로 손절하지 말라"고 했다.
+
+        ⚠️ **수치는 원문에 없다**(§5 "모르는 부분"). ``leader_stall_secs`` ·
+        ``leader_drop_ticks`` 는 우리 임의값이고 48번 Q1 로 물어둔 상태다. 0 이면 끈다.
+        """
+        cfg = self.config
+        if cfg.leader_stall_secs <= 0 and cfg.leader_drop_ticks <= 0:
+            return
+        if code not in self._leader_codes:
+            return
+        if self._leader_state.get(code) == LEADER_LOST:
+            return                             # 이미 이탈 — 중복 통보 금지
+        high, since = self._leader_high.get(code, (0.0, ts))
+        if price > high:
+            self._leader_high[code] = (price, ts)   # 신고가 — 아직 오르는 중이다
+            return
+        self._leader_high[code] = (high, since)
+        if cfg.leader_drop_ticks > 0:
+            if price <= high - cfg.leader_drop_ticks * tick_size(high):
+                self._emit_fade(code, ts, LOST_FADE)
+                return
+        if cfg.leader_stall_secs > 0:
+            if (ts - since).total_seconds() >= cfg.leader_stall_secs:
+                self._emit_fade(code, ts, LOST_STALL)
+
+    def _emit_fade(self, code: str, ts: datetime, reason: str) -> None:
+        """정체·하락 이탈 — 잠긴 적이 없어도 낸다(`_emit_lost` 는 잠김을 요구한다)."""
+        self._leader_state[code] = LEADER_LOST
+        self._relock_block.add(code)           # 다시 붙어도 이 회차는 끝난 것으로 본다
+        self._leader_events.append(LeaderEvent(code, ts, LEADER_LOST, reason))
 
     def _emit_lost(self, code: str, ts: datetime, reason: str) -> None:
         """대장 이탈을 **한 번만** 큐에 넣는다. 사유는 곁다리 속성으로 싣는다.

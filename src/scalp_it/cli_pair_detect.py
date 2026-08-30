@@ -129,6 +129,10 @@ def build_config(args: argparse.Namespace) -> DetectorConfig:
         over["lock_wall_decay"] = args.lock_wall_decay
     if args.dump_krw is not None:
         over["dump_krw"] = args.dump_krw
+    if args.leader_stall is not None:
+        over["leader_stall_secs"] = args.leader_stall
+    if args.leader_drop_ticks is not None:
+        over["leader_drop_ticks"] = args.leader_drop_ticks
     if args.big_trades is not None:
         over["min_big_trades"] = args.big_trades
     if args.stale_sector_limitups > 0:
@@ -1405,6 +1409,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "짧으면 등록만 낭비하고 길면 오후 대장이 붙을 자리가 없다")
     p.add_argument("--collect-fill-pool", type=int, default=300,
                    help="수집 후보 풀 크기(전일 거래대금 상위 N종목)")
+    p.add_argument("--leader-stall", type=float, default=None,
+                   help="대장이 이 초 동안 신고가를 못 내면 이탈로 본다(만쥬 2026-08-29: "
+                        "'더 이상 올라가지 못하는 순간'). 0 = 끔. 원문에 수치 없음 — 임의값")
+    p.add_argument("--leader-drop-ticks", type=int, default=None,
+                   help="대장이 당일 고점 대비 이 호가 아래로 밀리면 이탈로 본다"
+                        "(만쥬: '하락하는 순간'). 0 = 끔. 원문에 수치 없음 — 임의값")
     p.add_argument("--big-trades", type=int, default=None,
                    help="대장에 필요한 대량체결(기본 5천만원↑) 최소 건수 — 만쥬 §5-1 "
                         "순간 체결량 확인. 0 = 끔")

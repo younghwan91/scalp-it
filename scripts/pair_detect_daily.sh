@@ -179,6 +179,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --take-profit 0 --stop-loss -0.005 --disaster-line -0.02 --hold 180 \
     --trail-arm 0.03 --trail 0.015 --entry-ticks-up 2 --halt-below-jo 5 \
     --limitup-near-ticks 3 --limitup-require-surge --vi-near 0.01 \
+    --leader-stall 15 --leader-drop-ticks 3 \
     --follower-priority manju --cosurge 0 --premove 0.002 \
     --universe-size 12 --max-roundtrip-bp 20 --order-krw 10000000 \
     --leader-scan-interval 10 --leader-scan-min-rt 12 --leader-scan-max 8 \
