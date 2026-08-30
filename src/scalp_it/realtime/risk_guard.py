@@ -87,6 +87,10 @@ __all__ = [
 KILL_DAILY_LOSS = "daily_loss"
 KILL_CONSECUTIVE = "consecutive_losses"
 KILL_MANUAL = "manual_stop"
+#: 정점 이익의 절반을 반납하면 그날 끝. 만쥬 지시서 §5 "TRAILING PROFIT DRAWDOWN
+#: (50% Rule) — HARD STOP. Terminate all open positions and shutdown trading."
+#: `drawdown_krw`(비중 축소)와 **다른 축**이다 — 이쪽은 진짜 킬이다.
+KILL_GIVEBACK = "profit_giveback"
 
 # 대장 상태(만쥬 §5-3) — **감지기가 판정해 넘겨준다**. 이 모듈은 DB·시계를 모르므로
 # 상한가 여부를 스스로 계산하지 않는다. 여기 오는 건 이미 내려진 판정뿐이다.
@@ -124,6 +128,11 @@ class RiskGuardConfig:
     #: 국면 배수(§8-1)와 이익 절제(§9-6)만 이 값을 **줄이는** 방향으로 곱한다.
     position_notional: float = 100_000.0      # 가상 포지션 1건 명목(원) — 수익률→원 환산
     max_consecutive_losses: int = 3           # 연속 손절 상한(킬 트리거 b)
+    # 만쥬 지시서 §5 — 정점 이익 대비 이 비율 이하로 떨어지면 **그날 하드스톱**.
+    # 정점이 `profit_giveback_min_krw` 를 넘긴 뒤에만 본다("significant P_peak") —
+    # 안 그러면 +100원 벌고 +40원으로 준 순간 그날이 끝난다. 0 = 끔.
+    profit_giveback_ratio: float = 0.0
+    profit_giveback_min_krw: float = 0.0
     # 추세 추종(만쥬). "+0.5% 고정 청산이 아니라 2등주 +3% 도달 시 트레일링 스탑".
     # **수익이 난 뒤에야** 켜진다 — 진입부터 켜면 2등주 자체 가격 노이즈에 털린다.
     trail_arm: float = 0.0                    # 이만큼 오르면 트레일링 무장. 0 = 끔
@@ -413,6 +422,14 @@ class RiskGuard:
                 and self.peak_realized_krw - self.realized_krw >= cfg.drawdown_krw - _EPS):
             self.drawdown_capped = True
         if self.killed:
+            return
+        # 정점 이익의 절반 반납 = 하드스톱(지시서 §5). 비중 축소인 `drawdown_capped`
+        # 와 달리 이건 그날을 끝낸다 — 열린 포지션도 정리된다.
+        if (cfg.profit_giveback_ratio > 0
+                and self.peak_realized_krw >= cfg.profit_giveback_min_krw
+                and self.peak_realized_krw > 0
+                and self.realized_krw <= self.peak_realized_krw * cfg.profit_giveback_ratio + _EPS):
+            self._trigger_kill(KILL_GIVEBACK)
             return
         if self._stop_file_present():
             self._trigger_kill(KILL_MANUAL)

@@ -101,7 +101,7 @@ def test_cron_turns_the_fade_exit_on(cron_args):
 
     cfg = build_config(cron_args)
     assert cfg.leader_stall_secs == 15.0
-    assert cfg.leader_drop_ticks == 2, "만쥬 A2 '1~2호가라도 밀리는 순간'"
+    assert cfg.leader_drop_ticks == 1, "지시서 §3 'ticks down by 1 tick'"
 
 
 def test_wall_window_matches_manju_three_seconds(cron_args):

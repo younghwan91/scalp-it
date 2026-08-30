@@ -179,7 +179,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --take-profit 0 --stop-loss -0.005 --disaster-line -0.02 --hold 180 \
     --trail-arm 0.03 --trail 0.015 --entry-ticks-up 2 --halt-below-jo 5 \
     --limitup-near-ticks 3 --limitup-require-surge --vi-near 0.01 \
-    --leader-stall 15 --leader-drop-ticks 2 --lock-wall-window 3 \
+    --leader-stall 15 --leader-drop-ticks 1 --lock-wall-window 3 \
     --leader-scan-window 0900-1000 --no-entry-after 1000 --scout-gate-jo 8 \
     --follower-priority manju --cosurge 0 --premove 0.002 \
     --universe-size 12 --max-roundtrip-bp 20 --order-krw 10000000 \
@@ -189,6 +189,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --position-notional 10000000 \
     --lock-min-krw 300000000 --lock-wall-decay 0.7 \
     --dump-krw 100000000 --big-trades 2 --drawdown-krw 100000 \
+    --max-consecutive-losses 2 --profit-giveback 0.5 --profit-giveback-min 30000 \
     --shadow-when-blocked --stop-needs-leader-weak \
     --new-listing-days 5 \
     --breaking-interval 90 --breaking-min-weight 0.7 --breaking-max 3 \

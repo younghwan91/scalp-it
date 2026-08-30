@@ -168,6 +168,8 @@ def build_guard(args: argparse.Namespace) -> RiskGuard | None:
         trail_arm=args.trail_arm,
         trail_pct=args.trail,
         drawdown_krw=args.drawdown_krw,
+        profit_giveback_ratio=args.profit_giveback,
+        profit_giveback_min_krw=args.profit_giveback_min,
         shadow_when_blocked=args.shadow_when_blocked,
         stop_needs_leader_weak=args.stop_needs_leader_weak,
         drawdown_size_multiplier=args.drawdown_size,
@@ -1455,6 +1457,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "짧으면 등록만 낭비하고 길면 오후 대장이 붙을 자리가 없다")
     p.add_argument("--collect-fill-pool", type=int, default=300,
                    help="수집 후보 풀 크기(전일 거래대금 상위 N종목)")
+    p.add_argument("--profit-giveback", type=float, default=0.0,
+                   help="정점 이익 대비 이 비율 이하로 반납하면 그날 하드스톱(0.5 = 절반). "
+                        "만쥬 지시서 §5 '50% Rule'. 0 = 끔")
+    p.add_argument("--profit-giveback-min", type=float, default=0.0,
+                   help="위 규칙을 적용하기 시작하는 최소 정점 이익(원). "
+                        "'significant P_peak' 단서 — 작은 정점으로 하루를 끝내지 않는다")
     p.add_argument("--scout-gate-jo", type=float, default=0.0,
                    help="코스닥 거래대금이 이 조원 미만이면 정찰병 비중(1/10)으로 매매한다. "
                         "만쥬 A1 의 Gate 0(7~8조). 0 = 끔")
