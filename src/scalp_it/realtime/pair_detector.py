@@ -205,7 +205,7 @@ def _sweep_vwap(levels: Sequence[Level], krw: float) -> float | None:
 
 def liquidity_size_multiplier(bp: float | None, *, thin_bp: float,
                               thin_multiplier: float) -> float:
-    """호가 두께로 비중 배수를 정한다 — 만쥬 지시서 §4 Liquidity-Based Sizing.
+    """호가 두께로 비중 배수를 정한다 — 만쥬 A-2 Thin Orderbook Restriction.
 
     > Thick Orderbook: Normal allocation.
     > Thin Orderbook: Cap size to prevent slippage (**Max 10-20% of normal size**).

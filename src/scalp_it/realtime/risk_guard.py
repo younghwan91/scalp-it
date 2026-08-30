@@ -88,7 +88,7 @@ __all__ = [
 ]
 
 def pyramid_multiplier(ret: float, *, arm: float, max_mult: float) -> float:
-    """불타기 배수 — 만쥬 지시서 §4.
+    """불타기 배수 — 만쥬 A-4.
 
     > Only permitted when position is in confirmed profit **>= +3.0% ~ +4.0%**.
     > Sizing limit: **Maximum 2x** initial size.
@@ -105,7 +105,10 @@ def pyramid_multiplier(ret: float, *, arm: float, max_mult: float) -> float:
 KILL_DAILY_LOSS = "daily_loss"
 KILL_CONSECUTIVE = "consecutive_losses"
 KILL_MANUAL = "manual_stop"
-#: 정점 이익의 절반을 반납하면 그날 끝. 만쥬 지시서 §5 "TRAILING PROFIT DRAWDOWN
+#: 정점 이익의 절반을 반납하면 그날 끝. **타 트레이더 B 엔진 B-3**(51번 명세)
+#: "INTRADAY PROFIT TRAILING STOP (50% RULE)". 만쥬가 아니다 — 46 §10 의 만쥬 원문은
+#: "1/3~1/5 **축소**"였고 킬이 아니었다. 조이는 방향이라 채택하되 출처는 정확히 둔다.
+#: 원문 "TRAILING PROFIT DRAWDOWN
 #: (50% Rule) — HARD STOP. Terminate all open positions and shutdown trading."
 #: `drawdown_krw`(비중 축소)와 **다른 축**이다 — 이쪽은 진짜 킬이다.
 KILL_GIVEBACK = "profit_giveback"
@@ -146,18 +149,18 @@ class RiskGuardConfig:
     #: 국면 배수(§8-1)와 이익 절제(§9-6)만 이 값을 **줄이는** 방향으로 곱한다.
     position_notional: float = 100_000.0      # 가상 포지션 1건 명목(원) — 수익률→원 환산
     max_consecutive_losses: int = 3           # 연속 손절 상한(킬 트리거 b)
-    # 만쥬 지시서 §5 — 정점 이익 대비 이 비율 이하로 떨어지면 **그날 하드스톱**.
+    # 타 트레이더 B B-3 — 정점 이익 대비 이 비율 이하로 떨어지면 **그날 하드스톱**.
     # 정점이 `profit_giveback_min_krw` 를 넘긴 뒤에만 본다("significant P_peak") —
     # 안 그러면 +100원 벌고 +40원으로 준 순간 그날이 끝난다. 0 = 끔.
     profit_giveback_ratio: float = 0.0
     profit_giveback_min_krw: float = 0.0
-    # 만쥬 지시서 §3 Phase 1 Trigger 2 — "Stock B fails to move upward within 1-2
+    # **타 트레이더 B B-2** "Immediate Acceleration Rule" — "Stock B fails to move within 1-2
     # ticks post-entry -> EXECUTE SCRATCH STOP(매수가 즉시 손절/본절 탈출)".
     # 짝꿍은 '키 맞추기 슈팅'을 먹는 것이라, 사고 나서 안 뜨면 슈팅이 아니라 물린
     # 것이다. −0.5% 손절까지 기다릴 이유가 없다.
     #   ⚠️ **시간 기준은 원문에 없다** — "1~2호가"는 가격 폭이지 시간이 아니다.
     #   `scratch_secs` 는 우리 값이다. 둘 중 하나가 0 이면 끈다.
-    # 만쥬 지시서 §4 Liquidity-Based Sizing — "Thin Orderbook: Cap size to prevent
+    # 만쥬 A-2 Thin Orderbook Restriction — "Cap size to prevent
     # slippage (Max 10-20% of normal size)". 종전 `max_roundtrip_bp` 는 얇으면
     # **배제**했는데, 만쥬는 배제가 아니라 **축소**하라고 한다. 0 = 끔.
     thin_book_bp: float = 0.0          # 왕복 충격이 이 bp 를 넘으면 얇다고 본다
@@ -394,7 +397,7 @@ class RiskGuard:
     def _alert_notional(self, alert: Alert) -> float:
         """이 알림의 명목 — 국면·절제 배수에 **호가 두께 배수**를 더 곱한다.
 
-        만쥬 지시서 §4: 얇은 개별 테마주는 평소의 10~20% 로만. `Alert.rt_bp` 가
+        만쥬 A-2: 얇은 개별 테마주는 평소의 10~20% 로만. `Alert.rt_bp` 가
         필터를 통과하며 이미 잰 왕복 충격이라 여기서 다시 호가를 볼 필요가 없다
         (미측정이면 −1 로 오는데, `liquidity_size_multiplier` 는 모르면 얇은 쪽으로
         본다 — 모르면 작게 가는 게 안전하다).
@@ -474,7 +477,7 @@ class RiskGuard:
             self.drawdown_capped = True
         if self.killed:
             return
-        # 정점 이익의 절반 반납 = 하드스톱(지시서 §5). 비중 축소인 `drawdown_capped`
+        # 정점 이익의 절반 반납 = 하드스톱(타 트레이더 B B-3). 비중 축소인 `drawdown_capped`
         # 와 달리 이건 그날을 끝낸다 — 열린 포지션도 정리된다.
         if (cfg.profit_giveback_ratio > 0
                 and self.peak_realized_krw >= cfg.profit_giveback_min_krw
@@ -607,7 +610,7 @@ class RiskGuard:
         pos.mae = min(pos.mae, ret)
         pos.mfe = max(pos.mfe, ret)
 
-        # 본절 탈출(지시서 §3 Phase 1 Trigger 2) — 익절·손절보다 **먼저** 본다.
+        # 본절 탈출(타 트레이더 B B-2) — 익절·손절보다 **먼저** 본다.
         # 한 번이라도 위로 떴으면 대상이 아니다(슈팅이 시작된 것이다).
         cfg = self.config
         if cfg.scratch_ticks > 0 and cfg.scratch_secs > 0 and not pos.lifted:

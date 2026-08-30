@@ -1,4 +1,4 @@
-"""정점 이익 50% 반납 = 그날 하드스톱 (만쥬 지시서 §5 TRAILING PROFIT DRAWDOWN).
+"""정점 이익 50% 반납 = 그날 하드스톱 — **타 트레이더 B B-3**(51번 명세).
 
 > Track intraday peak net profit (P_peak).
 > If (P_current <= P_peak * 0.50) after achieving significant P_peak:

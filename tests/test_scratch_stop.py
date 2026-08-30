@@ -1,4 +1,4 @@
-"""진입 후 후속주가 안 뜨면 본절 탈출 — 만쥬 지시서 §3 Phase 1 Trigger 2.
+"""진입 후 후속주가 안 뜨면 본절 탈출 — **타 트레이더 B B-2**(51번 명세).
 
 > **Trigger 2 (Execution Failure)**: Stock B fails to move upward within 1-2 ticks
 > post-entry. -> Action: EXECUTE SCRATCH STOP (매수가 즉시 손절/본절 탈출).
