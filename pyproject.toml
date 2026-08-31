@@ -40,6 +40,7 @@ scalp-tick-collect = "scalp_it.cli_tick:main"
 scalp-tick-health = "scalp_it.cli_tick_health:main"
 scalp-pair-detect = "scalp_it.cli_pair_detect:main"
 scalp-morning = "scalp_it.morning_report:main"
+scalp-coverage = "scalp_it.cli_coverage:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/scalp_it"]
