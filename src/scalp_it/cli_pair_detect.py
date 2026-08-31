@@ -576,10 +576,44 @@ async def _watch_program_flow(
             bus.notice(f"[프로그램수급] 조회 실패(계속): {exc}")
 
 
+async def _preempt_collect_slots(
+    collector: Any, detector: PairDetector, guard: RiskGuard | None,
+    collect_taken: dict[str, float] | None, rejected: Sequence[str],
+) -> tuple[list[str], list[str]]:
+    """자리가 없어 거절당한 종목을 위해 **수집 자리를 뺏어** 다시 붙인다.
+
+    → ``(뺏어서 붙인 것, 그래도 못 붙인 것)``
+
+    2026-08-31 이 이 함수를 만들었다. 수집채움이 09:05 에 39자리를 잡아 정원 50 을
+    채웠고, 예비분 12자리는 스캐너가 붙인 종목이 안 식어 열리지 않았다. 그날 대장스캔은
+    **233회 거절**당했고(317330 이 60회, 178780 이 55회 두드렸다) 돌발재료 010140 도
+    자리가 없어 놓쳤다. 예비 슬롯 수를 키우는 건 미봉책이다 — 자리를 나누는 게 아니라
+    **우선순위**를 정해야 한다. 매매가 저장을 이긴다.
+
+    수집이 내줄 게 없으면 조용히 원래 거절 목록을 돌려준다(스캔을 죽이지 않는다).
+    """
+    from .realtime.collect_fill import plan_preemption
+
+    if not rejected or not collect_taken:
+        return [], list(rejected)
+    keep = set(detector.codes)
+    if guard is not None:
+        for pos in guard.open_positions:
+            keep.add(pos.follower)
+            keep.add(pos.leader)
+    freed = plan_preemption(collect_taken, need=len(rejected), keep=keep)
+    if not freed:
+        return [], list(rejected)
+    await collector.remove_codes(freed)
+    for code in freed:
+        collect_taken.pop(code, None)
+    return await collector.add_codes(rejected)
+
+
 async def _watch_leader_scan(
     collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
     guard: RiskGuard | None = None, executor: OrderExecutor | None = None,
-    movers: list[str] | None = None,
+    movers: list[str] | None = None, collect_taken: dict[str, float] | None = None,
 ) -> None:
     """장중 시장 전체 대장 스캔 — 만쥬가 등락률 상위 창으로 하는 일(§2).
 
@@ -663,6 +697,15 @@ async def _watch_leader_scan(
                 for c in stale:
                     hot.pop(c, None)
             added, rejected = await collector.add_codes(fresh)
+            if rejected:
+                # 수집이 잡은 자리를 뺏어서라도 붙인다 — 대장을 못 보면 그날 그
+                # 종목은 없는 것이고, 저장은 내일 다시 할 수 있다.
+                stolen, rejected = await _preempt_collect_slots(
+                    collector, detector, guard, collect_taken, rejected)
+                if stolen:
+                    added = [*added, *stolen]
+                    bus.notice(f"[대장스캔] 수집 자리 {len(stolen)}개 선점 — "
+                               f"{', '.join(stolen[:5])}")
             enter = codes_to_enter(fresh, added, rejected)
             already = [c for c in enter if c not in added]
             if enter:
@@ -675,8 +718,11 @@ async def _watch_leader_scan(
                            f"{f'(수집 선점 {len(already)})' if already else ''}"
                            f" — 상위 {names}")
             if rejected:
+                # 수집 자리까지 뺏고도 모자란 상태다. 남는 건 매매가 쓰는 자리뿐이라
+                # 유니버스(--universe-size)나 스캔 폭(--leader-scan-max)을 줄여야 한다.
                 bus.notice(f"[대장스캔] 자리 없어 거절 {len(rejected)}종목 "
-                           f"— --universe-size 를 줄여 스캔 자리를 늘려라")
+                           f"— 수집 자리까지 선점해도 부족하다. "
+                           f"--universe-size 나 --leader-scan-max 를 줄여라")
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — 스캔 실패로 감지를 죽이지 않는다
@@ -786,7 +832,7 @@ async def _watch_entry_cutoff(
 async def _watch_collect_fill(
     collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
     conn: Any = None, movers: list[str] | None = None,
-    guard: RiskGuard | None = None,
+    guard: RiskGuard | None = None, taken: dict[str, float] | None = None,
 ) -> None:
     """감지기가 안 쓰는 등록 자리를 **수집 전용**으로 채운다.
 
@@ -822,7 +868,10 @@ async def _watch_collect_fill(
     if not pool:
         bus.notice("[수집채움] 후보 0종목 → 비활성")
         return
-    taken: dict[str, float] = {}   # 수집이 붙인 종목 → 마지막으로 순위에 보인 시각
+    # 수집이 붙인 종목 → 마지막으로 순위에 보인 시각. **호출부와 공유한다** —
+    # 대장스캔·돌발재료가 자리가 없을 때 이 목록에서 뺏어 간다(_preempt_collect_slots).
+    if taken is None:
+        taken = {}
     loop = asyncio.get_running_loop()
 
     # 채우고 나서 쉰다 — 장 시작 직후가 가장 아까운 구간이라 첫 사이클을 미루지 않는다.
@@ -876,7 +925,8 @@ async def _watch_collect_fill(
 
 async def _watch_breaking_materials(
     collector: Any, detector: PairDetector, bus: AlertBus, args: argparse.Namespace,
-    executor: OrderExecutor | None = None,
+    executor: OrderExecutor | None = None, guard: RiskGuard | None = None,
+    collect_taken: dict[str, float] | None = None,
 ) -> None:
     """장중 돌발 재료 감시 — 만쥬 §6.
 
@@ -916,6 +966,12 @@ async def _watch_breaking_materials(
             if not take:
                 continue
             added, rejected = await collector.add_codes(take)
+            if rejected:
+                # §6 의 돌발 재료는 그 순간을 놓치면 끝이다 — 수집 자리를 뺏는다.
+                stolen, rejected = await _preempt_collect_slots(
+                    collector, detector, guard, collect_taken, rejected)
+                if stolen:
+                    added = [*added, *stolen]
             # **구독만 늘리면 아무 일도 안 일어난다** — 감지기가 모르는 코드의
             # 틱은 on_tick 첫 줄에서 버려진다. 섹터·전일종가를 같이 넣어야
             # 그 종목이 대장이 될 수 있다(§6 의 목적). 수집 채움이 먼저 붙여둔
@@ -928,7 +984,8 @@ async def _watch_breaking_materials(
                 bus.notice(f"[돌발재료] 장중 편입 {len(det_added)}종목: "
                            f"{', '.join(det_added)} — 강한 재료 공시 접수")
             if rejected:
-                bus.notice(f"[돌발재료] 구독 자리 없어 놓침 {len(rejected)}종목: "
+                bus.notice(f"[돌발재료] 수집 자리까지 선점하고도 놓침 "
+                           f"{len(rejected)}종목: "
                            f"{', '.join(rejected[:5])}")
         except Exception as exc:  # noqa: BLE001 — 감시 실패로 수집을 죽이지 않는다
             print(f"[돌발재료][경보] 감시 중 예외(계속): {exc}", file=sys.stderr)
@@ -1304,6 +1361,9 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
         # 스캐너가 받아온 등락률 순위를 수집 채움이 함께 본다 — 같은 프로세스라
         # 목록 하나를 공유하면 된다(스캐너가 쓰고 채움이 읽기만 한다).
         movers: list[str] = []
+        # 수집채움이 잡은 자리 — 매매(대장스캔·돌발재료)가 자리가 없으면 여기서
+        # 뺏어 간다. 2026-08-31 에 수집이 정원을 먹고 대장스캔이 233회 거절당했다.
+        collect_taken: dict[str, float] = {}
         if args.program_interval > 0:
             # 만쥬 — 프로그램이 쏟아내는 장세면 신호가 떠도 안 산다.
             watchers.append(asyncio.create_task(
@@ -1313,7 +1373,7 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             # 안에서만 대장을 기다리게 되고, 실측 커버리지는 2% 였다.
             watchers.append(asyncio.create_task(
                 _watch_leader_scan(collector, detector, bus, args, guard, executor,
-                                   movers)))
+                                   movers, collect_taken)))
         if args.no_entry_after.strip():
             # 만쥬 49 §1-5 — 오후 추격 매매 배제. 신규 진입만 막고 청산은 돈다.
             watchers.append(asyncio.create_task(
@@ -1323,12 +1383,13 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             # 신호·주문 경로에는 한 줄도 안 닿는다(tests/test_collect_fill.py).
             watchers.append(asyncio.create_task(
                 _watch_collect_fill(collector, detector, bus, args, conn, movers,
-                                    guard)))
+                                    guard, collect_taken)))
         watcher = None
         if args.breaking_interval > 0:
             # 만쥬 §6 — 장중 돌발 재료. 수집과 나란히 돌고, 죽어도 수집은 계속된다.
             watcher = asyncio.create_task(
-                _watch_breaking_materials(collector, detector, bus, args, executor))
+                _watch_breaking_materials(collector, detector, bus, args, executor,
+                                          guard, collect_taken))
         try:
             await collector.run(duration=duration)
         finally:

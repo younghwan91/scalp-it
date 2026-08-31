@@ -60,3 +60,25 @@ def plan_evictions(last_seen: dict[str, float], *, now: float, ttl: float,
     stale = [(t, c) for c, t in last_seen.items()
              if now - t >= ttl and c not in hold]
     return [c for _, c in sorted(stale)]
+
+
+def plan_preemption(last_seen: dict[str, float], *, need: int,
+                    keep: set[str] | None = None) -> list[str]:
+    """매매가 자리를 달랄 때 수집이 내줄 종목 — 가장 오래 안 뜨거웠던 것부터 ``need`` 개.
+
+    :func:`plan_evictions` 과 다르다. 저쪽은 "식었으니 내린다"(시간 기준)이고 이쪽은
+    "매매가 필요하다니 내린다"(수요 기준)다. 예비분(``reserve``)만으로는 안 되는 게
+    2026-08-31 에 드러났다 — 수집채움이 09:05 에 39자리를 잡아 정원 50 을 채웠고,
+    스캐너 몫 12자리는 붙인 종목이 아직 안 식어 열리지 않았다. 그날 대장스캔은
+    **233회 거절**당했고(317330 이 60회, 178780 이 55회) 돌발재료 010140 도 자리가
+    없어 놓쳤다. 저장이 매매를 밀어낸 것이라 본말전도다.
+
+    ``keep`` 은 절대 안 내리는 종목 — 감지기가 보는 종목과 열린 포지션. 수집이 붙인
+    종목이 대장·짝꿍으로 승격되는 일이 흔하고, 그때 구독을 끊으면 신호가 죽고 포지션이
+    있으면 청산 판정이 멈춘다(손절도 대장이탈도 못 하고 물린다).
+    """
+    if need <= 0:
+        return []
+    hold = keep or set()
+    cold = sorted((t, c) for c, t in last_seen.items() if c not in hold)
+    return [c for _, c in cold[:need]]

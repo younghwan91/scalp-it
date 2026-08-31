@@ -365,3 +365,94 @@ def test_watcher_keeps_a_promoted_code_even_when_it_leaves_the_ranking(tmp_path)
 
     assert "PROMOTED" not in collector.removed, "감지기가 보는 종목은 안 내린다"
     assert "OTHER" in collector.removed, "그냥 수집 종목은 자리를 내준다"
+
+
+# ── 선점: 매매가 수집 자리를 뺏는다 ──────────────────────────────────────────
+#
+# 2026-08-31 실측이 이 함수를 만든 이유다. 수집채움이 09:05 에 39자리를 잡고
+# 정원 50 을 채웠고, 그 뒤로 대장스캔이 **하루 종일 233회 거절**당했다
+# (317330 이 60회, 178780 이 55회 두드리고 못 붙었다). `--collect-reserve 12`
+# 는 스캐너가 붙인 12종목이 아직 안 식으면 아무 소용이 없다 — 예비분은 한 번
+# 차면 다시 안 열리는 자리라서다. 저장이 매매를 밀어낸 날이었다.
+from scalp_it.realtime.collect_fill import plan_preemption
+
+
+def test_preempts_the_coldest_collection_slots_first():
+    """매매가 자리를 달라면 수집은 **가장 오래 안 뜨거웠던 것부터** 내준다."""
+    got = plan_preemption({"A": 10.0, "B": 30.0, "C": 20.0}, need=2)
+    assert got == ["A", "C"]
+
+
+def test_preempts_only_what_trading_asked_for():
+    """필요한 만큼만 내준다 — 더 내리면 그만큼 틱을 버린다."""
+    assert plan_preemption({"A": 1.0, "B": 2.0, "C": 3.0}, need=1) == ["A"]
+
+
+def test_never_preempts_a_code_trading_is_using():
+    """감지기가 보는 종목·열린 포지션은 절대 안 내린다.
+
+    수집이 붙인 종목이 대장·짝꿍으로 승격되는 일이 흔하고, 그때 구독을 끊으면
+    신호가 죽고 포지션이 있으면 청산 판정이 멈춘다(손절도 대장이탈도 못 한다).
+    """
+    got = plan_preemption({"A": 1.0, "B": 2.0}, need=2, keep={"A"})
+    assert got == ["B"]
+
+
+def test_nothing_to_give_is_not_an_error():
+    """수집이 잡은 게 없으면 조용히 빈 손 — 스캔을 죽이지 않는다."""
+    assert plan_preemption({}, need=3) == []
+    assert plan_preemption({"A": 1.0}, need=0) == []
+
+
+# ── 배선: 거절 → 수집 자리 선점 → 재시도 ────────────────────────────────────
+import asyncio
+
+from scalp_it.cli_pair_detect import _preempt_collect_slots
+
+
+class _FakeCollector:
+    """등록 한도가 있는 소켓 흉내 — 자리가 나야 붙는다."""
+
+    def __init__(self, subscribed, cap):
+        self.subscribed, self.cap = list(subscribed), cap
+        self.removed: list[str] = []
+
+    async def remove_codes(self, codes):
+        for c in codes:
+            self.subscribed.remove(c)
+        self.removed.extend(codes)
+
+    async def add_codes(self, codes):
+        ok, rejected = [], []
+        for c in codes:
+            if len(self.subscribed) < self.cap:
+                self.subscribed.append(c)
+                ok.append(c)
+            else:
+                rejected.append(c)
+        return ok, rejected
+
+
+class _FakeDetector:
+    def __init__(self, codes):
+        self.codes = list(codes)
+
+
+def test_preempt_frees_collection_slots_and_retries():
+    """정원이 찼어도 수집 자리를 뺏어 대장을 붙인다."""
+    col = _FakeCollector(subscribed=["매매1", "수집A", "수집B"], cap=3)
+    taken = {"수집A": 10.0, "수집B": 20.0}
+    added, rejected = asyncio.run(_preempt_collect_slots(
+        col, _FakeDetector(["매매1"]), None, taken, ["대장X"]))
+    assert added == ["대장X"] and rejected == []
+    assert col.removed == ["수집A"]        # 가장 오래된 것부터
+    assert taken == {"수집B": 20.0}        # 뺏긴 자리는 목록에서도 빠진다
+
+
+def test_preempt_is_a_noop_when_collection_holds_nothing():
+    """수집이 잡은 게 없으면 원래 거절 목록 그대로 — 스캔은 계속 돈다."""
+    col = _FakeCollector(subscribed=["매매1"], cap=1)
+    added, rejected = asyncio.run(_preempt_collect_slots(
+        col, _FakeDetector(["매매1"]), None, {}, ["대장X"]))
+    assert added == [] and rejected == ["대장X"]
+    assert col.removed == []
