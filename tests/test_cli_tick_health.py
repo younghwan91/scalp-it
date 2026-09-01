@@ -194,6 +194,26 @@ def test_best_bid_gt_ask_is_fail(conn):
     assert price.status is H.Status.FAIL
 
 
+def test_ask_zero_limit_up_is_not_crossed_book(conn):
+    """매도호가가 **0** 인 건 역전이 아니라 상한가로 매도벽이 소진된 것이다.
+
+    2026-09-01 실측: ticks 832,954행 중 best_bid>best_ask 가 9,468행인데 전부
+    ``best_ask = 0`` 이고, 그 종목은 067290·198440·320000·308080·261520 —
+    그날 상한가에 간 대장들이다. 키움 0B 는 매도호가가 없으면 FID 27 을 ``"-0"``
+    으로 보낸다. 호가(0D) 쪽은 2026-08-28 에 같은 가드를 넣었는데 체결(0B) 쪽만
+    빠져 있었다. 만쥬 방아쇠가 바로 대장 상한가라, 이 오진은 **우리가 가장 보고
+    싶은 종목에서만** 매일 [실패]를 찍는다.
+    """
+    insert_ticks(conn, [_tick(i, seq=i, side=(1 if i % 2 else -1),
+                              best_bid=274500, best_ask=0) for i in range(5)])
+    st = H.fetch_tick_stats(conn, NOW - timedelta(minutes=15))
+    assert st.bid_gt_ask == 0, "매도호가 0 은 역전이 아니다"
+    assert st.ask_zero == 5, "상한가 매도벽 소진은 따로 센다"
+    price = _by_name(H.run_checks(conn, minutes=15, expected=1, now=NOW))["4. 가격 정합"]
+    assert price.status is H.Status.OK
+    assert "매도호가 0" in price.detail
+
+
 def test_price_fallback_when_no_today_bars(conn):
     """당일 daily_bars 가 없으면 최근일로 폴백해 스케일만 넓게 본다(경고 아님)."""
     conn.execute("delete from daily_bars where date = ?", (TRADE_DATE,))

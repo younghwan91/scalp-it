@@ -18,7 +18,7 @@
 2. **체결 방향 부호** — side 에 +1 과 -1 이 둘 다 나오는가. 한쪽뿐이면 실패.
 3. **체결강도 분포** — strength 가 상수·전부 NULL 이 아니고 그럴듯한 범위인가.
 4. **가격 정합** — tick price 가 그날(없으면 최근) daily_bars 고저 범위/스케일 안,
-   best_bid ≤ best_ask.
+   best_bid ≤ best_ask (매도호가 0 = 상한가 소진은 역전으로 세지 않는다).
 5. **호가** — bid1<ask1, 총잔량>0, 10호가 채움, ts 갱신(1초 스냅샷), vi_flag 수신.
 6. **VI 이벤트** — vi_events 최근 N분 수신 건수. VI 는 드문 이벤트라 0 건도 실패가
    아니다(장중이면 경고까지만).
@@ -83,7 +83,8 @@ class TickStats:
     strength_min: float | None = None
     strength_max: float | None = None
     strength_distinct: int = 0
-    bid_gt_ask: int = 0  # best_bid > best_ask 위반 행 수
+    bid_gt_ask: int = 0  # best_bid > best_ask 위반 행 수(둘 다 0 초과인 진짜 역전)
+    ask_zero: int = 0  # best_ask = 0 행 수 — 상한가로 매도벽 소진(역전 아님)
     price_min: dict[str, int] = field(default_factory=dict)  # code -> min price
     price_max: dict[str, int] = field(default_factory=dict)  # code -> max price
     latest_ts: str | None = None
@@ -174,13 +175,18 @@ def fetch_tick_stats(conn: Any, cutoff: datetime) -> TickStats:
     st.strength_max = None if r[3] is None else float(r[3])
     st.strength_distinct = int(r[4] or 0)
 
+    # best_ask 가 **0** 인 건 역전이 아니라 상한가로 매도벽이 소진된 것이다.
+    # 키움 0B 는 매도호가가 없으면 FID 27 을 "-0" 으로 보낸다(0D 쪽 가드는 항목 5).
+    # 만쥬 방아쇠가 대장 상한가라, 이걸 세면 가장 보고 싶은 종목에서만 매일 실패가 뜬다.
     cur.execute(
-        f"select count(*) from ticks where ts >= {ph} "
-        "and best_bid is not null and best_ask is not null "
-        "and best_bid > best_ask",
+        "select count(*) filter (where best_bid > best_ask and best_bid > 0 and best_ask > 0), "
+        f"count(*) filter (where best_ask = 0) from ticks where ts >= {ph} "
+        "and best_bid is not null and best_ask is not null",
         (cut,),
     )
-    st.bid_gt_ask = int((cur.fetchone() or [0])[0] or 0)
+    row = cur.fetchone() or (0, 0)
+    st.bid_gt_ask = int(row[0] or 0)
+    st.ask_zero = int(row[1] or 0)
 
     cur.execute(
         f"select code, min(price), max(price) from ticks where ts >= {ph} "
@@ -418,6 +424,13 @@ def judge_strength(tick: TickStats) -> Check:
     return Check(name, Status.OK, detail)
 
 
+def _ask_zero_note(tick: TickStats) -> str:
+    """상한가로 매도벽이 소진된 행 수를 덧붙인다. 이상이 아니라 방아쇠의 흔적이다."""
+    if tick.ask_zero <= 0:
+        return ""
+    return f" · 매도호가 0(상한가 소진) {tick.ask_zero:,}행"
+
+
 def judge_price(
     tick: TickStats,
     ranges: dict[str, tuple[float, float]],
@@ -436,7 +449,9 @@ def judge_price(
         return Check(name, Status.WARN, "price 전부 NULL — FID(10) 미매핑")
     if not ranges:
         return Check(
-            name, Status.WARN, "daily_bars 참조 불가 — 가격 스케일 미확인 (best_bid≤best_ask 는 OK)"
+            name, Status.WARN,
+            "daily_bars 참조 불가 — 가격 스케일 미확인 "
+            f"(best_bid≤best_ask 는 OK{_ask_zero_note(tick)})",
         )
     # 당일이면 고저 범위 그대로, 폴백이면 스케일만(±30% 상한가 + 여유) 넓게 본다.
     lo_factor, hi_factor = (1.0, 1.0) if same_day else (0.5, 2.0)
@@ -462,7 +477,10 @@ def judge_price(
             status,
             f"{mode} 범위 이탈 {len(offenders)}/{checked}종목 — 스케일 의심: {sample}",
         )
-    return Check(name, Status.OK, f"{mode} 범위 내 {checked}종목 · best_bid≤best_ask OK")
+    return Check(
+        name, Status.OK,
+        f"{mode} 범위 내 {checked}종목 · best_bid≤best_ask OK{_ask_zero_note(tick)}",
+    )
 
 
 def judge_quotes(quote: QuoteStats, *, market: bool, now: datetime | None = None) -> Check:
