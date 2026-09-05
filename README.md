@@ -117,7 +117,7 @@ uv run scalp-cbet-watch --score                              # 종가베팅 전�
 
 | 레포 | 역할 |
 |---|---|
-| [kiwoom-rest-api](https://github.com/younghwan91/kiwoom-rest-api) | 시세·수급·분봉·테마·주문 (182 REST + WebSocket) |
+| [kiwoom-client](https://github.com/younghwan91/kiwoom-client) | 시세·수급·분봉·테마·주문 (182 REST + WebSocket) |
 | [kr-quant](https://github.com/younghwan91/kr-quant) | 검증 프레임워크 (walk-forward·음성대조) + 이관된 저빈도 팩터(PEAD·저변동성) |
 | quant-airflow | 일일 데이터 적재 → TimescaleDB (**컨테이너 공유** — 위 "DB 의존성" 참고) |
 

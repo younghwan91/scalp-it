@@ -21,7 +21,7 @@
 ### 형제 레포
 - `kr-quant`·`quant-airflow`·`quantbox`: 뉴스 관련 코드 없음(grep 히트는 `naver_consensus`·`naver_supply_demand`·`naver_delisted_bars` 수집기 — 네이버 금융 **시세/수급/컨센서스** 크롤이지 뉴스 아님). 단, 이 수집기들이 이미 `finance.naver.com/item/frgn.naver`·`m.stock.naver.com/api/stock` 을 치고 있다는 사실은 기록해 둔다(robots.txt상 Disallow 경로).
 - `gpt_quant/news_parser`: **미국** 주식(Tiingo 뉴스 + OpenAI 분석, nasdaq small caps). 한국 뉴스 무관.
-- `kiwoom-rest-api`(자체): 186개 엔드포인트 전부 열거돼 있고 뉴스 없음(아래 3).
+- `kiwoom-client`(자체): 186개 엔드포인트 전부 열거돼 있고 뉴스 없음(아래 3).
 
 ## 2. DB·DART 현황
 - **TimescaleDB(kr_quant)**: public 스키마 14개 테이블 — `consensus, credit_balance, daily_bars, daily_bars_adjusted, delisted_stocks, earnings, minute_bars, sector_index, shares_outstanding_history, short_selling, stocks, supply_demand, theme_groups, theme_members`. **뉴스·공시 본문 테이블 없음.** title/body/content 류 컬럼도 없음.
@@ -32,7 +32,7 @@
 
 ## 3. 키움 REST API — 뉴스 엔드포인트 없음 (확인)
 - 공식 가이드(openapi.kiwoom.com/m/guide/apiguide) 카테고리 OAuth·국내주식·미국주식 전부 훑어도 이름에 뉴스·공시가 들어간 API 없음. 종목정보는 ka10001/ka10099/ka10100(기본정보·종목 리스트)뿐.
-- 자체 래퍼 `kiwoom-rest-api` README 지원 목록 186개(계좌33·종목정보31·시세25·주문8·신용4·차트21·순위23·업종6·기관외국인4·공매도1·대차4·테마2·조건검색4·ELW11·ETF9 + 실시간19종)에도 뉴스 없음. 스펙에도 "뉴스 엔드포인트는 없음"으로 적혀 있음.
+- 자체 래퍼 `kiwoom-client` README 지원 목록 186개(계좌33·종목정보31·시세25·주문8·신용4·차트21·순위23·업종6·기관외국인4·공매도1·대차4·테마2·조건검색4·ELW11·ETF9 + 실시간19종)에도 뉴스 없음. 스펙에도 "뉴스 엔드포인트는 없음"으로 적혀 있음.
 - 따라서 **호출해 볼 ID 자체가 없다**(크레덴셜 미사용). 과거 히스토리 여부는 질문 자체가 성립 안 함.
 
 ## 4. 외부 소스 비교표

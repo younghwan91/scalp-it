@@ -19,7 +19,7 @@
 * **미체결**: ``ka10075`` (미체결요청), ``/api/dostk/acnt``, 바디
   ``{all_stk_tp:"0", trde_tp:"0", stex_tp:"0"}``. 리스트 키 ``oso``.
 
-주문 API (키움 문서 + younghwan91/kiwoom-rest-api 래퍼로 확인, 실호출 안 함)
+주문 API (키움 문서 + younghwan91/kiwoom-client 래퍼로 확인, 실호출 안 함)
 ====================================================================
 
 * 경로는 셋 다 ``/api/dostk/ordr``. api-id 로 구분한다.

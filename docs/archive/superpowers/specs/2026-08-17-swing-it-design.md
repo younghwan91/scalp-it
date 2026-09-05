@@ -175,7 +175,7 @@ kr-quant 게이트로 그대로 적용할 수 있다. LLM 의 주관은 시그�
 |---|---|---|
 | **공시 (①②③층의 재료 소스)** | **OpenDART** | **무료**, 10년+, 접수일자 point-in-time. 인증키 3개 이미 보유(`quant-airflow/.env`). `list.json` 검색 + `document.xml` 원문 |
 | 가격·수급·신용·공매도 | `quant-airflow` → TimescaleDB | 매일 적재 중 |
-| 시세·수급 API | `kiwoom-rest-api` (자체) | 182 REST + 19 실시간 WebSocket. **뉴스 엔드포인트는 없음** |
+| 시세·수급 API | `kiwoom-client` (자체) | 182 REST + 19 실시간 WebSocket. **뉴스 엔드포인트는 없음** |
 | 검증 프레임워크 | `kr-quant` | walk-forward · DSR · 음성대조 · 비용스윕 |
 | 뉴스 (④층, 나중) | 뉴스토어 / 빅카인즈 / `krx-news-rest-api` | 아래 참조 |
 
@@ -287,7 +287,7 @@ PEAD 자체를 스윙으로 이식하는 작업은 여전히 이 스펙 범위 �
 ```
 quant-airflow        수집 · 적재       → TimescaleDB (가격·수급·신용·공매도)
 krx-news-rest-api    뉴스·공시 수집    → 실시간 (+ 영구저장 추가 필요)
-kiwoom-rest-api      시세·수급·주문    → 182 REST + WebSocket
+kiwoom-client      시세·수급·주문    → 182 REST + WebSocket
 kr-quant             검증 프레임워크   → walk-forward · DSR · 음성대조
 scalp-it             제품              → 주간 후보 리스트 + 근거 카드
 ```

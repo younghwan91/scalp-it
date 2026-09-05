@@ -92,7 +92,7 @@ WebSocket `LOGIN`·`REG`(체결 0B + 호가 0D)가 모두 `return_code=0` 으로
 
 ## 5. 최소 착수 형태 (오늘부터 쌓으려면)
 
-1. **WebSocket 데몬**(asyncio ~150줄 또는 사용자 자체 래퍼 `younghwan91/kiwoom-rest-api` 재사용):
+1. **WebSocket 데몬**(asyncio ~150줄 또는 사용자 자체 래퍼 `younghwan91/kiwoom-client` 재사용):
    connect→LOGIN(기존 토큰)→REG(0B+0D)→listen, 끊기면 재연결+재REG, 배치 insert.
 2. **구독 종목 = 전일 이벤트 후보 ~50~100개**: 기존 스캐너(`scripts/*_events.py`, `top_universe`)를
    장전(08:50)에 돌려 후보 리스트 생성 → REG. 0B+0D면 커넥션당 ~50종목이라 **커넥션 1~2개**.
