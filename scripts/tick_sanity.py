@@ -283,6 +283,44 @@ def _load_code_day(conn, code: str, date: str):
     return ts_sec, hms, price, side, volume, strength
 
 
+def load_date_ticks(conn, date: str) -> dict[str, tuple]:
+    """하루치 전 종목 체결을 **한 번의 쿼리**로 읽어 종목별로 쪼갠다.
+
+    ``_codes_for_date`` + 종목별 ``_load_code_day`` 를 N일 풀링에 그대로 쓰면
+    쿼리 수가 (일수 × 종목수)로 불어난다(예: 10일 × 1,500종목 ≈ 15,000회).
+    `tick_sanity_confirm.py` 처럼 여러 날을 한 프로세스에서 도는 경우 이 함수로
+    하루당 쿼리 1회로 줄인다. 하루 한 번만 도는 `tick_sanity.py` 자체 흐름은
+    `_load_code_day` 그대로 둔다(바꿀 이유가 없다).
+    """
+    cur = conn.cursor()
+    ph = "%s" if conn.__class__.__module__.startswith("psycopg2") else "?"
+    cur.execute(
+        f"select code, ts, price, side, volume, strength from ticks "
+        f"where ts >= {ph} and ts < {ph} order by code, ts, seq",
+        (f"{date} 00:00:00", f"{date} 23:59:59"),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    if not rows:
+        return {}
+    import pandas as pd
+
+    df = pd.DataFrame(
+        rows, columns=["code", "ts", "price", "side", "volume", "strength"]
+    )
+    out: dict[str, tuple] = {}
+    for code, g in df.groupby("code", sort=False):
+        ts = pd.to_datetime(g["ts"])
+        ts_sec = epoch_seconds(ts)
+        hms = ts.dt.strftime("%H:%M:%S").to_numpy()
+        price = g["price"].astype(float).to_numpy()
+        side = g["side"].fillna(0).astype(int).to_numpy()
+        volume = g["volume"].fillna(0.0).astype(float).to_numpy()
+        strength = g["strength"].astype(float).to_numpy()
+        out[str(code).strip()] = (ts_sec, hms, price, side, volume, strength)
+    return out
+
+
 # ============================================================ 집계
 
 
@@ -391,11 +429,21 @@ def _arr(x) -> np.ndarray:
     return np.array(x, dtype=np.float64)
 
 
-def build_report(acc: Accum, date: str) -> str:
+def build_report(acc: Accum, date: str, *, pooled_days: int | None = None) -> str:
+    """``acc`` 로 sanity 리포트를 만든다.
+
+    ``pooled_days`` 를 주면 여러 거래일을 풀링한 확정 판정 문구로 낸다
+    (`tick_sanity_confirm.py` 가 씀). ``None`` 이면 하루치 sanity 문구.
+    """
+    scope = (
+        f"**{pooled_days}거래일 풀링 확정 판정.** 사전등록 §0의 '며칠~몇 주 더 쌓은 뒤' 조건 충족."
+        if pooled_days
+        else "**하루치 sanity, 확정 아님.**"
+    )
     L = []
     L.append(f"# 틱 스캘핑 sanity — {date}")
     L.append("")
-    L.append(f"> 사전등록 `docs/research/manju/28`. **하루치 sanity, 확정 아님.** "
+    L.append(f"> 사전등록 `docs/research/manju/28`. {scope} "
              f"W∈{list(WINDOWS)}s, 강도{int(STRENGTH_PCTL)}분위, 매수비율≥{BUY_RATIO_THR}, "
              f"n≥{MIN_COUNT}, 쿨다운{COOLDOWN}s, N∈{list(HORIZONS)}s, 비용{list(map(int,COST_BP))}bp.")
     L.append("")
@@ -465,7 +513,12 @@ def build_report(acc: Accum, date: str) -> str:
     L.append("## 판정 (사전등록 4절)")
     L.append("")
     if verdict_dir_ok and verdict_net_ok and mono_ok:
-        L.append("**신호 있음(잠정) → 며칠 더 쌓아 확정.** 방향(+CI)·비용후(net≥0)·단조성 모두 충족.")
+        verdict_text = (
+            "**신호 있음 → 채택 검토.** 방향(+CI)·비용후(net≥0)·단조성 모두 충족(풀링 확정)."
+            if pooled_days
+            else "**신호 있음(잠정) → 며칠 더 쌓아 확정.** 방향(+CI)·비용후(net≥0)·단조성 모두 충족."
+        )
+        L.append(verdict_text)
     else:
         miss = []
         if not verdict_dir_ok:
@@ -474,9 +527,16 @@ def build_report(acc: Accum, date: str) -> str:
             miss.append("비용후 net_close<0")
         if not mono_ok:
             miss.append("단조성 미충족")
-        L.append(f"**신호 약함/미확인.** 미충족: {', '.join(miss)}. (하루치라 t·CI 참고, 방향·효과크기 위주.)")
+        caveat = "풀링 확정 판정" if pooled_days else "하루치라 t·CI 참고, 방향·효과크기 위주"
+        L.append(f"**신호 약함/미확인.** 미충족: {', '.join(miss)}. ({caveat})")
     L.append("")
-    L.append("_주의: 하루치 sanity. 다중검정·과최적화 경계. 초기일 데이터는 thrash 섞일 수 있음._")
+    if pooled_days:
+        L.append(
+            "_주의: 풀링 판정. 날짜 간 파라미터 재조정 없음(28번 고정값 그대로). "
+            "일자별 개별 sanity 는 `data/tick_sanity_YYYYMMDD.md` 참고._"
+        )
+    else:
+        L.append("_주의: 하루치 sanity. 다중검정·과최적화 경계. 초기일 데이터는 thrash 섞일 수 있음._")
     return "\n".join(L)
 
 
