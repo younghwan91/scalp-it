@@ -174,10 +174,13 @@ while [ "$(date +%s)" -lt "$END" ]; do
   #   **오늘은 4.69조라 배수 0이다.** dry-run 이므로 --size-by-regime 을 켜지 않고
   #   기록만 한다 — 만쥬가 쉬라고 한 국면의 표본도 검증에 필요하기 때문. 실발주로
   #   전환할 때 이 플래그를 켜야 한다.
+  # 불타기(만쥬 A-4, 2026-09-06 사용자 승인) — +3%·+6% 확정 수익마다 1주씩
+  # 추가매수(기본 1주 → 최대 3주). 물타기는 arm 이 양수라 구조적으로 안 걸린다.
   /home/young/.local/bin/uv run --extra pg scalp-pair-detect \
     --live --live-order --confirm-real --duration "$(date '+%H:%M')-15:20" \
     --take-profit 0 --stop-loss -0.005 --disaster-line -0.02 --hold 180 \
     --trail-arm 0.03 --trail 0.015 --entry-ticks-up 2 --halt-below-jo 5 \
+    --pyramid-arm 0.03 --pyramid-arm 0.06 --pyramid-add-qty 1 \
     --limitup-near-ticks 3 --limitup-require-surge --vi-near 0.01 \
     --leader-stall 15 --leader-drop-ticks 1 --lock-wall-window 3 \
     --leader-scan-window 0900-1000 --no-entry-after 1000 --scout-gate-jo 8 \
