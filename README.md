@@ -42,6 +42,81 @@
 DART 재료 필터 · 장중 궤적→익일 갭 · 청산 4기법(MFE·트레일링·3:3:4) ·
 기계 시장가 틱 스캘핑(세금이 순엣지를 먹는다)
 
+## 아키텍처 (실전 주경로: `scalp-pair-detect --live`)
+
+```mermaid
+flowchart TD
+    subgraph EXT["외부"]
+        WS["키움 WebSocket\n0B 체결 · 0D 호가"]
+        REST["키움 REST\n주문·시세 API"]
+        DART["OpenDART\n공시"]
+    end
+
+    subgraph PROC["cli_pair_detect.py run_live — 한 프로세스"]
+        COL["KiwoomRealtimeCollector\n(realtime/collector.py)\n프레임 파싱"]
+        DET["PairDetector\n(realtime/pair_detector.py)\non_tick/on_quote → Alert"]
+        GUARD["RiskGuard\n(realtime/risk_guard.py)\n가상포지션·킬스위치·국면배수"]
+        EXE["OrderExecutor\n(realtime/order_executor.py)\n매수/청산 상태기계"]
+        LEAD["leader_scan\n시장전체 대장 탐색(ka10027)"]
+        PROG["program_flow\n프로그램 순매도 게이트(ka90005)"]
+        BREAK["breaking materials\nDART 돌발재료"]
+        BUS["AlertBus\n(realtime/alerts.py)"]
+    end
+
+    subgraph SINK["알림/기록"]
+        LOG["LogFileSink\ndata/pair_alerts.log\ndata/pair_positions.log"]
+        DISCORD["DiscordSink\n웹훅"]
+    end
+
+    subgraph DB["TimescaleDB (quant-airflow 컨테이너 공유)"]
+        TICKS[("ticks / quotes")]
+    end
+
+    subgraph BATCH["배치·검증 (읽기 전용)"]
+        HEALTH["scalp-tick-health\n수집 헬스체크"]
+        SANITY["scripts/tick_sanity.py\n신호 sanity check"]
+        SUMMARY["scripts/pair_daily_summary.py\n일일 성과 집계"]
+    end
+
+    WS -->|REAL 프레임| COL
+    COL -->|on_frame 콜백: ticks/quotes| DET
+    COL -->|저장| TICKS
+    LEAD -->|구독 종목 추가| COL
+    LEAD -.감시 신호 보정.-> DET
+    DART --> BREAK
+    BREAK -.돌발재료 알림/진입.-> DET
+
+    DET -->|Alert| GUARD
+    PROG -.순매도 시 억제.-> GUARD
+    GUARD -->|게이트 통과 알림| EXE
+    GUARD -->|게이트 통과 알림| BUS
+    EXE -->|지정가 매수/청산 주문| REST
+    EXE -.체결 결과.-> BUS
+
+    BUS --> LOG
+    BUS --> DISCORD
+
+    TICKS --> HEALTH
+    TICKS --> SANITY
+    LOG --> SUMMARY
+```
+
+**흐름 요약**
+
+1. **수집** — `KiwoomRealtimeCollector` 가 키움 WebSocket 0B/0D 프레임을 받아 파싱하고
+   `ticks`/`quotes` 로 TimescaleDB 에 저장한다(수집·감지 겸용, App key 1세션 제약).
+2. **감지** — 같은 프레임을 `PairDetector.on_tick`/`on_quote` 에 즉시 흘려 대장-후속
+   짝꿍 신호를 판정한다(DB 폴링 없이 지연 ~0). `leader_scan`(시장 전체 대장 탐색)과
+   `breaking materials`(DART 돌발재료)가 감시 종목·신호를 보강한다.
+3. **게이트** — 감지된 `Alert` 는 `RiskGuard` 를 반드시 거친다 — 일일 손실한도·연속
+   손절·수동정지 킬스위치, 국면별 비중, 대장이탈 조건부 청산을 여기서 판정하고,
+   `program_flow`(프로그램 순매도)가 진입을 추가로 억제할 수 있다.
+4. **실행/알림** — 게이트를 통과하면 `OrderExecutor` 가 키움 REST 로 1주 지정가
+   매수·청산 주문을 내고(기본 dry-run), `AlertBus` 가 로그 파일과 Discord 웹훅으로
+   사람에게 알린다(주문은 자동, 사람 개입 없음이 원칙이나 알림 채널은 사람용).
+5. **검증(배치, 읽기 전용)** — `scalp-tick-health` 가 수집 헬스를, `tick_sanity.py` 가
+   신호 가설을, `pair_daily_summary.py` 가 dry-run 일일 성과를 각각 사후 집계한다.
+
 ## 실행
 
 ```bash
