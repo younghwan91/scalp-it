@@ -464,11 +464,15 @@ def build_report(acc: Accum, date: str, *, pooled_days: int | None = None) -> st
     for w in WINDOWS:
         L.append(f"- W={w}s 트리거 {acc.n_trig[w]:,} 건")
     L.append("")
-    # 1) 트리거 vs 비트리거
+    # 1) 트리거 vs 비트리거 — close·MFE 둘 다 방향(부트 CI) 검정(사전등록 §4 "MFE·close")
     L.append("## 1. 트리거군 vs 비트리거군 (forward N초, %)")
     L.append("")
-    L.append("| W | N | 트리거n | 트리거 close 평균 | 비트리거 close 평균 | 차(부트 95%CI) | 트리거 MFE 평균 | net_close 50bp |")
-    L.append("|--:|--:|--:|--:|--:|--:|--:|--:|")
+    L.append(
+        "| W | N | 트리거n | 트리거 close 평균/중앙 | 비트리거 close 평균/중앙 | "
+        "차 close(부트 95%CI) | 트리거 MFE 평균/중앙 | 비트리거 MFE 평균/중앙 | "
+        "차 MFE(부트 95%CI) | net_close 50bp |"
+    )
+    L.append("|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|")
     verdict_net_ok = False
     verdict_dir_ok = False
     for w in WINDOWS:
@@ -476,39 +480,54 @@ def build_report(acc: Accum, date: str, *, pooled_days: int | None = None) -> st
             t = _arr(acc.trig[w][n])
             b = _arr(acc.base[w][n])
             tm = _arr(acc.trig_mfe[w][n])
+            bm = _arr(acc.base_mfe[w][n])
             d, lo, hi = bootstrap_diff_ci(t, b)
+            dm, lom, him = bootstrap_diff_ci(tm, bm)
             tc = t.mean() if t.size else float("nan")
             bc = b.mean() if b.size else float("nan")
+            tc_med = np.median(t) if t.size else float("nan")
+            bc_med = np.median(b) if b.size else float("nan")
+            tm_mean = tm.mean() if tm.size else float("nan")
+            tm_med = np.median(tm) if tm.size else float("nan")
+            bm_mean = bm.mean() if bm.size else float("nan")
+            bm_med = np.median(bm) if bm.size else float("nan")
             net = (tc * 10000 - 50.0) if t.size else float("nan")
-            if np.isfinite(d) and lo > 0:
+            close_dir_ok = np.isfinite(d) and lo > 0
+            mfe_dir_ok = np.isfinite(dm) and lom > 0
+            if close_dir_ok and mfe_dir_ok:
                 verdict_dir_ok = True
             if np.isfinite(net) and net >= 0:
                 verdict_net_ok = True
             L.append(
-                f"| {w} | {n} | {t.size} | {tc*100:+.3f} | {bc*100:+.3f} | "
-                f"{d*100:+.3f} [{lo*100:+.3f},{hi*100:+.3f}] | {tm.mean()*100 if tm.size else float('nan'):+.3f} "
+                f"| {w} | {n} | {t.size} | {tc*100:+.3f}/{tc_med*100:+.3f} | {bc*100:+.3f}/{bc_med*100:+.3f} | "
+                f"{d*100:+.3f} [{lo*100:+.3f},{hi*100:+.3f}] | {tm_mean*100:+.3f}/{tm_med*100:+.3f} | "
+                f"{bm_mean*100:+.3f}/{bm_med*100:+.3f} | {dm*100:+.3f} [{lom*100:+.3f},{him*100:+.3f}] "
                 f"| {net:+.1f}bp |"
             )
     L.append("")
     L.append("net_close 50bp = 트리거 close 평균 − 50bp. 다른 비용 시나리오: **40bp = 표값 +10bp, 60bp = 표값 −10bp**.")
+    L.append(
+        "방향 판정은 close·MFE **둘 다**의 부트 CI 하한이 0 초과인 (W,N)이 있어야 충족(사전등록 §4)."
+    )
     L.append("")
-    # 2) 분위 단조성
-    L.append("## 2. 신호 분위별 forward 수익 (W=30, close %, 5분위)")
+    # 2) 분위 단조성 — W=30·W=60 둘 다, 강도·매수비율 둘 다 단조 증가해야 충족(사전등록 §4)
+    L.append("## 2. 신호 분위별 forward 수익 (close %, 5분위)")
     L.append("")
-    mono_ok = False
-    for label, sig in (("체결강도", acc.qsig_str[30]), ("매수비율", acc.qsig_buy[30])):
-        L.append(f"### {label} 5분위 → close 60s")
-        L.append("| 분위 | n | 신호평균 | ret_close_60 평균(%) |")
-        L.append("|--:|--:|--:|--:|")
-        qm = quintile_means(_arr(sig), _arr(acc.qret[30][60]))
-        vals = []
-        for q, row in enumerate(qm):
-            cnt, smean, rmean = row
-            vals.append(rmean)
-            L.append(f"| Q{q+1} | {cnt} | {smean:.2f} | {rmean*100:+.3f} |")
-        if len(vals) == 5 and np.isfinite(vals[0]) and np.isfinite(vals[4]) and vals[4] > vals[0]:
-            mono_ok = True
-        L.append("")
+    mono_ok = True
+    for w in WINDOWS:
+        for label, sig in ((f"체결강도(W={w})", acc.qsig_str[w]), (f"매수비율(W={w})", acc.qsig_buy[w])):
+            L.append(f"### {label} 5분위 → close 60s")
+            L.append("| 분위 | n | 신호평균 | ret_close_60 평균(%) |")
+            L.append("|--:|--:|--:|--:|")
+            qm = quintile_means(_arr(sig), _arr(acc.qret[w][60]))
+            vals = []
+            for q, row in enumerate(qm):
+                cnt, smean, rmean = row
+                vals.append(rmean)
+                L.append(f"| Q{q+1} | {cnt} | {smean:.2f} | {rmean*100:+.3f} |")
+            if not (len(vals) == 5 and np.isfinite(vals[0]) and np.isfinite(vals[4]) and vals[4] > vals[0]):
+                mono_ok = False
+            L.append("")
     # 3) 상위 20 눈으로
     L.append("## 3. 트리거 상위 20건 눈으로 (W=60, 강도순, 다음 60초 궤적 %)")
     L.append("")
