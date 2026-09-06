@@ -841,3 +841,141 @@ def test_live_partial_fill_uses_holdings_delta():
     hold[0]["qty"] = 2                                               # 2주만 체결됨
     ex.on_tick("294570", t0 + timedelta(seconds=7), 10030)
     assert ex.positions[0].status == "filled" and ex.positions[0].qty == 2
+
+
+# ------------------------------------------------------------------ 불타기(만쥬 A-4)
+
+
+def test_pyramid_disabled_by_default():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=99999, sl=1))
+    ex.on_tick("294570", t0 + timedelta(seconds=1), 9999)      # 체결
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10500)     # +5% — arm 없으면 무시
+    assert len(c.buys) == 1 and ex.positions[0].qty == 1
+
+
+def test_pyramid_add_buy_then_fill_increases_qty():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1, pyramid_arms=(0.03,), pyramid_add_qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=99999, sl=1))
+    ex.on_tick("294570", t0 + timedelta(seconds=1), 9999)       # 체결(entry)
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10300)      # +3% 도달 → 추가매수 접수
+    pos = ex.positions[0]
+    assert len(c.buys) == 2 and c.buys[1] == ("294570", 1, 10300, False)
+    assert pos.add_pending_qty == 1 and pos.qty == 1            # 아직 체결 전
+    ex.on_tick("294570", t0 + timedelta(seconds=6), 10299)      # 관통 → 추가매수 체결
+    assert pos.qty == 2 and pos.add_pending_qty == 0 and pos.pyramid_next == 1
+
+
+def test_pyramid_two_stages():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1, pyramid_arms=(0.03, 0.06), pyramid_add_qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=99999, sl=1))
+    ex.on_tick("294570", t0 + timedelta(seconds=1), 9999)
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10300)      # 1단계 발동
+    ex.on_tick("294570", t0 + timedelta(seconds=6), 10299)      # 1단계 체결 → qty 2
+    pos = ex.positions[0]
+    assert pos.qty == 2 and pos.pyramid_next == 1
+    ex.on_tick("294570", t0 + timedelta(seconds=7), 10600)      # 2단계(+6%) 발동
+    assert pos.add_pending_qty == 1
+    ex.on_tick("294570", t0 + timedelta(seconds=8), 10599)      # 2단계 체결 → qty 3
+    assert pos.qty == 3 and pos.pyramid_next == 2
+    ex.on_tick("294570", t0 + timedelta(seconds=9), 20000)      # 더 올라도 단계 끝 — 추가 없음
+    assert len(c.buys) == 3
+
+
+def test_pyramid_no_double_buy_while_add_pending():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1, pyramid_arms=(0.03,), pyramid_add_qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=99999, sl=1))
+    ex.on_tick("294570", t0 + timedelta(seconds=1), 9999)
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10300)      # 발동, 접수
+    ex.on_tick("294570", t0 + timedelta(seconds=6), 10400)      # 아직 미체결(관통 안 됨) — 재발주 금지
+    ex.on_tick("294570", t0 + timedelta(seconds=7), 10500)
+    assert len(c.buys) == 2                                     # entry 1 + add 1, 재시도 없음
+
+
+def test_pyramid_never_fires_on_loss():
+    """물타기(손실 중 추가매수)는 arm 이 항상 양수라 구조적으로 안 걸린다."""
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1, pyramid_arms=(0.03,), pyramid_add_qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=99999, sl=None))
+    ex.on_tick("294570", t0 + timedelta(seconds=1), 9999)
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 9500)       # −5% 손실
+    assert len(c.buys) == 1                                      # 추가매수 없음
+
+
+def test_pyramid_unfilled_cancel_advances_stage_no_retry_storm():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1, pyramid_arms=(0.03,), pyramid_add_qty=1,
+                       unfilled_timeout=15.0)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=99999, sl=1))
+    ex.on_tick("294570", t0 + timedelta(seconds=1), 9999)
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10300)       # 발동, 접수 @10300
+    # 15초 동안 관통(through) 없이 계속 그 이상에서만 거래 → 미체결
+    ex.on_tick("294570", t0 + timedelta(seconds=21), 10310)      # 데드라인 경과 → 취소
+    pos = ex.positions[0]
+    assert pos.add_pending_qty == 0 and pos.pyramid_next == 1 and c.cancels
+    ex.on_tick("294570", t0 + timedelta(seconds=22), 20000)      # 더 올라도 재시도 없음(단계 소진)
+    assert len(c.buys) == 2
+
+
+def test_pyramid_blocked_result_skips_stage():
+    class BlockOnSecondBuy(FakeClient):
+        def buy_limit(self, code, qty, price, *, live=False, ref_price=None, exchange="KRX"):
+            if len(self.buys) == 1:  # 두 번째 호출(추가매수) 이 함수 진입 전 buys 길이가 1
+                self.buys.append((code, qty, price, live))
+                intent = OrderIntent(side="buy", code=code, qty=qty, price=price)
+                return OrderResult(intent=intent, dry_run=not live, submitted=False,
+                                   blocked=True, blocked_reason="가격밴드")
+            return super().buy_limit(code, qty, price, live=live, ref_price=ref_price)
+
+    c = BlockOnSecondBuy()
+    ex = OrderExecutor(c, qty=1, pyramid_arms=(0.03,), pyramid_add_qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=99999, sl=1))
+    ex.on_tick("294570", t0 + timedelta(seconds=1), 9999)
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10300)       # 차단됨 — 단계 건너뜀
+    pos = ex.positions[0]
+    assert pos.add_pending_qty == 0 and pos.pyramid_next == 1 and pos.qty == 1
+    ex.on_tick("294570", t0 + timedelta(seconds=6), 20000)       # 재시도 없음
+    assert len(c.buys) == 2
+
+
+def test_pyramid_exception_skips_stage():
+    class RaiseOnSecondBuy(FakeClient):
+        def buy_limit(self, code, qty, price, *, live=False, ref_price=None, exchange="KRX"):
+            if len(self.buys) == 1:
+                raise KiwoomError("일시 오류")
+            return super().buy_limit(code, qty, price, live=live, ref_price=ref_price)
+
+    c = RaiseOnSecondBuy()
+    ex = OrderExecutor(c, qty=1, pyramid_arms=(0.03,), pyramid_add_qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=99999, sl=1))
+    ex.on_tick("294570", t0 + timedelta(seconds=1), 9999)
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10300)       # 예외 — 단계 건너뜀, 크래시 없음
+    pos = ex.positions[0]
+    assert pos.add_pending_qty == 0 and pos.pyramid_next == 1
+
+
+def test_flush_cancels_pending_pyramid_add_before_close_sell():
+    c = FakeClient()
+    ex = OrderExecutor(c, qty=1, pyramid_arms=(0.03,), pyramid_add_qty=1)
+    t0 = datetime(2026, 8, 25, 9, 30, 0)
+    ex.on_signal(_alert(ts=t0, entry=10000, tp=99999, sl=1))
+    ex.on_tick("294570", t0 + timedelta(seconds=1), 9999)
+    ex.on_tick("294570", t0 + timedelta(seconds=5), 10300)       # 추가매수 접수, 미체결
+    pos = ex.positions[0]
+    assert pos.add_pending_qty == 1
+    ex.flush(t0 + timedelta(seconds=6))
+    assert pos.add_pending_qty == 0                              # 마감 전 취소됨
+    assert any(cancel[0] == "B1" for cancel in c.cancels)        # 추가매수 주문 취소 접수
+    assert _last(ex).status in ("selling", "exited")             # 원 포지션은 정상 마감청산

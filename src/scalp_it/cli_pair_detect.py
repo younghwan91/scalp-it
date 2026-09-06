@@ -1127,6 +1127,8 @@ def build_order_executor(
                          partial_exit_ratio=args.partial_exit,
                          partial_exit_gain=args.partial_exit_gain,
                          partial_exit_after_s=args.partial_exit_after,
+                         pyramid_arms=tuple(sorted(args.pyramid_arm or ())),
+                         pyramid_add_qty=args.pyramid_add_qty,
                          notice=lambda s: print(s, flush=True))
 
 
@@ -1679,6 +1681,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="이 수익률에 닿으면 1차 분할(예 0.002 = +0.2%%)")
     g.add_argument("--partial-exit-after", type=float, default=None,
                    help="체결 후 이 초가 지나면 1차 분할(예 60)")
+    g.add_argument("--pyramid-arm", type=float, action="append", default=None,
+                   help="불타기 발동 수익률(entry 대비 누적, 만쥬 A-4: 0.03~0.04). "
+                        "여러 번 줘서 단계를 늘릴 수 있다(예: --pyramid-arm 0.03 "
+                        "--pyramid-arm 0.06 = 2단계). 안 주면 꺼짐(기존 동작). "
+                        "물타기는 arm 이 항상 양수라 구조적으로 안 걸린다")
+    g.add_argument("--pyramid-add-qty", type=int, default=1,
+                   help="불타기 1단계당 추가매수 수량. 기본 1주")
     g.add_argument("--daily-profit-target", type=float, default=0.0,
                    help="일일 이익 목표(원). 도달하면 이후 진입 비중을 줄인다 — 만쥬 "
                         "§9-6 \"오전 수익 뒤 오후에 무리하게 베팅하는 패턴을 가장 경계\". "

@@ -87,6 +87,13 @@ class LivePosition:
     partial_qty: int = 0                # 분할로 이미 판 누적 수량
     partial_price: int | None = None    # 분할 체결가(접수가)
     partial_reason: str = ""            # 분할익절 | 분할시간청산
+    # 불타기(만쥬 A-4) — entry 대비 확정 수익 arm 마다 같은 크기로 추가매수.
+    # 물타기(손실 중 추가매수)는 arm 이 항상 양수라 구조적으로 안 걸린다.
+    pyramid_next: int = 0               # 다음에 시도할 단계 인덱스(arms 리스트 기준)
+    add_pending_qty: int = 0            # 접수한 추가매수 수량(0 = 대기 없음)
+    add_ord_no: str | None = None
+    add_price: int | None = None        # 접수한 추가매수 지정가
+    add_deadline: datetime | None = None    # 이 시각까지 안 붙으면 취소
 
 
 class OrderExecutor:
@@ -106,6 +113,8 @@ class OrderExecutor:
         partial_exit_ratio: float = 0.0,
         partial_exit_gain: float | None = None,
         partial_exit_after_s: float | None = None,
+        pyramid_arms: tuple[float, ...] = (),
+        pyramid_add_qty: int = 1,
         notice: Callable[[str], None] | None = None,
     ) -> None:
         self._client = client
@@ -124,6 +133,10 @@ class OrderExecutor:
         self._partial_ratio = float(partial_exit_ratio)
         self._partial_gain = partial_exit_gain
         self._partial_after_s = partial_exit_after_s
+        # 불타기(만쥬 A-4). arms 는 entry 대비 누적 수익률 오름차순(예: (0.03, 0.06)).
+        # 빈 튜플 = 끔(기존 동작). 각 단계마다 pyramid_add_qty 주씩 추가매수.
+        self._pyramid_arms = tuple(float(a) for a in pyramid_arms)
+        self._pyramid_add_qty = max(1, int(pyramid_add_qty))
         self._notice = notice or (lambda _s: None)
         self.positions: list[LivePosition] = []
         self.history: list[LivePosition] = []
@@ -262,7 +275,8 @@ class OrderExecutor:
         elif ts >= pos.exit_ts:
             reason = "시간청산"
         if reason is None:
-            # 전량 청산 사유가 하나도 안 걸린 뒤에만 1차 분할을 본다(만쥬 §5-2).
+            # 전량 청산 사유가 하나도 안 걸린 뒤에만 불타기·1차 분할을 본다.
+            self._maybe_pyramid(pos, ts, price)
             self._maybe_partial(pos, ts, price)
             return False
         # N-1/N-2/C-1: 매도는 **접수**까지만. 접수 성공이면 selling 으로 두고 계속 틱을
@@ -349,6 +363,85 @@ class OrderExecutor:
         pos.sell_chases = 0
         pos.chase_alerted = False
 
+    def _maybe_pyramid(self, pos: LivePosition, ts: datetime, price: float) -> None:
+        """불타기(만쥬 A-4) — entry 대비 확정 수익 arm 마다 같은 크기로 추가매수.
+
+        > "1차 진입 후 방향성이 맞고 3~4% 이상 확정 수익이 붙었을 때만 비중을 2배
+        >  확대." (49번 §3-2) / "물타기(평단 하향 추가매수)는 절대 금지."
+
+        **물타기가 구조적으로 안 걸리는 이유**: ``_pyramid_arms`` 는 전부 entry 대비
+        수익률이라 항상 양수고, 이 메서드는 :meth:`_advance`가 익절·대장이탈·손절·
+        재난선·시간청산 중 **어느 것도 안 걸린** 틱에서만 부른다 — 손실 구간에선
+        에초에 호출되지 않거나, 호출돼도 ``ret`` 이 양수 arm 을 못 넘어 아무 일도
+        없다.
+
+        한 번에 한 단계씩만 접수한다(``add_pending_qty`` 게이트) — 매수 접수 자체는
+        빠르지만 체결 확인 전에 다음 단계를 또 접수하면 이중 발주가 될 수 있다.
+        체결 확인 전 미체결취소 시각이 지나면 취소를 시도하고, 취소가 **성사되면**
+        그 단계는 건너뛴다(``pyramid_next`` 전진) — 실패한 단계를 매 틱 재시도하면
+        가격이 계속 유리한 동안 취소·재시도가 무한 반복될 수 있다. 취소 자체가
+        실패(브로커 거부)하면 포지션을 그대로 두고 다음 틱 재시도한다(N-2 원칙).
+        """
+        if not self._pyramid_arms:
+            return
+        if pos.add_pending_qty > 0:
+            if self._is_buy_filled(pos.add_ord_no, float(pos.add_price or 0), pos.code, price):
+                pos.qty += pos.add_pending_qty
+                pos.pyramid_next += 1
+                self._notice(
+                    f"[주문] 불타기 체결 — {pos.name}({pos.code}) +{pos.add_pending_qty}주 "
+                    f"@ {pos.add_price:,} (누적 {pos.qty}주)"
+                )
+                pos.add_pending_qty = 0
+                pos.add_ord_no = None
+                pos.add_price = None
+                pos.add_deadline = None
+                return
+            if pos.add_deadline is not None and ts >= pos.add_deadline:
+                if self._try_cancel(
+                    pos, "불타기미체결취소", ord_no=pos.add_ord_no, qty=pos.add_pending_qty
+                ):
+                    self._notice(
+                        f"[주문] 불타기미체결취소 — {pos.name}({pos.code}) {pos.add_pending_qty}주"
+                    )
+                    pos.add_pending_qty = 0
+                    pos.add_ord_no = None
+                    pos.add_price = None
+                    pos.add_deadline = None
+                    pos.pyramid_next += 1  # 이 단계는 건너뛴다 — 재시도 스톰 방지
+                # 취소 실패면 다음 틱 재시도(포지션 유지, add_pending_qty 그대로)
+            return
+        if pos.pyramid_next >= len(self._pyramid_arms) or pos.entry <= 0:
+            return
+        ret = price / pos.entry - 1.0
+        if ret < self._pyramid_arms[pos.pyramid_next]:
+            return
+        add_qty = self._pyramid_add_qty
+        add_price = round(price)
+        try:
+            result = self._client.buy_limit(pos.code, add_qty, add_price, live=self._live, ref_price=price)
+        except Exception as exc:  # noqa: BLE001 — N-2 와 동일 원칙: 매수 실패로 크래시 금지
+            self._notice(
+                f"[주문][경보] 불타기 실패(예외) — {pos.name}({pos.code}) @ {add_price:,}: "
+                f"{exc} · 이 단계 건너뜀"
+            )
+            pos.pyramid_next += 1
+            return
+        if result.blocked:
+            self._notice(
+                f"[주문] 불타기 차단 — {pos.name}({pos.code}): {result.blocked_reason} · 이 단계 건너뜀"
+            )
+            pos.pyramid_next += 1
+            return
+        pos.add_pending_qty = add_qty
+        pos.add_ord_no = result.ord_no
+        pos.add_price = add_price
+        pos.add_deadline = ts + timedelta(seconds=self._unfilled_timeout)
+        self._notice(
+            f"[주문] 불타기 발동 — {pos.name}({pos.code}) +{add_qty}주 @ {add_price:,} "
+            f"(수익률 {ret*100:.1f}%, {pos.pyramid_next + 1}/{len(self._pyramid_arms)}단계)"
+        )
+
     def _maybe_partial(self, pos: LivePosition, ts: datetime, price: float) -> bool:
         """1차 분할 매도를 접수한다(만쥬 §5-2 "분할 또는 전량 매도"). 접수했으면 True.
 
@@ -377,21 +470,27 @@ class OrderExecutor:
             return False
         return self._sell(pos, ts, round(price), reason, qty=pqty)
 
-    def _check_fill(self, pos: LivePosition, ts: datetime, price: float) -> bool:
-        """대기 매수가 체결됐는지. live 는 미체결조회, dry 는 틱 관통 근사."""
-        if self._live and pos.buy_ord_no:
+    def _is_buy_filled(self, ord_no: str | None, ref_price: float, code: str, price: float) -> bool:
+        """매수 지정가(``ref_price``)가 체결됐는지. live 는 미체결조회, dry 는 틱 관통 근사.
+
+        :meth:`_check_fill`(진입)과 불타기 추가매수 양쪽이 같은 판정을 쓰도록 뽑아냈다
+        — 판정 기준이 갈리면 같은 틱열에서 회계와 실행기가 서로 다른 체결을 기록한다
+        (2026-08-25 033340 사고와 같은 종류).
+        """
+        if self._live and ord_no:
             try:
-                filled = self._client.is_filled(pos.buy_ord_no, pos.code)
+                return self._client.is_filled(ord_no, code)
             except Exception:  # noqa: BLE001 — 조회 실패 시 체결로 단정하지 않는다
-                filled = False
-        else:
-            # dry-run 근사 — 회계 기준(RiskGuard.fill_basis)과 **같은 가정**을 써야 한다.
-            # through(보수·기본): 지정가를 관통(미만)해야 큐가 비워져 내 주문이 채워진다.
-            # touch(낙관): 지정가를 찍기만 하면 체결. 큐 맨 앞이라는 가정.
-            # 두 가정이 갈리면 같은 틱열에서 실행기는 익절·가드는 손절을 기록해
-            # (2026-08-25 033340) dry-run 으로 측정한 엣지가 주문기 거동과 달라진다.
-            filled = (price < pos.entry - _EPS if self._fill_basis == "through"
-                      else price <= pos.entry + _EPS)
+                return False
+        # dry-run 근사 — 회계 기준(RiskGuard.fill_basis)과 **같은 가정**을 써야 한다.
+        # through(보수·기본): 지정가를 관통(미만)해야 큐가 비워져 내 주문이 채워진다.
+        # touch(낙관): 지정가를 찍기만 하면 체결. 큐 맨 앞이라는 가정.
+        return (price < ref_price - _EPS if self._fill_basis == "through"
+                else price <= ref_price + _EPS)
+
+    def _check_fill(self, pos: LivePosition, ts: datetime, price: float) -> bool:
+        """대기 매수가 체결됐는지."""
+        filled = self._is_buy_filled(pos.buy_ord_no, pos.entry, pos.code, price)
         if filled:
             pos.status = "filled"
             pos.fill_ts = ts
@@ -597,6 +696,26 @@ class OrderExecutor:
                 self.positions.remove(pos)
                 self.history.append(pos)
             elif pos.status == "filled":
+                if pos.add_pending_qty > 0:
+                    # 불타기 추가매수가 미체결로 남아 있다 — 마감청산 전에 반드시
+                    # 취소해야 한다. 안 그러면 진입 매수와 같은 C-3(오버나이트 잔존
+                    # 주문) 이 추가매수 쪽에서 그대로 재발한다.
+                    if not self._try_cancel(
+                        pos, "불타기마감취소", ord_no=pos.add_ord_no, qty=pos.add_pending_qty
+                    ):
+                        self._notice(
+                            f"[주문][경보] 불타기 미체결 마감취소 실패 — {pos.name}({pos.code}) "
+                            f"{pos.add_pending_qty}주 @ {(pos.add_price or 0):,} · 수동 확인 필요, "
+                            f"이번 flush 는 이 포지션을 건너뛴다"
+                        )
+                        continue
+                    self._notice(
+                        f"[주문] 불타기마감취소 — {pos.name}({pos.code}) {pos.add_pending_qty}주"
+                    )
+                    pos.add_pending_qty = 0
+                    pos.add_ord_no = None
+                    pos.add_price = None
+                    pos.add_deadline = None
                 if pos.last_price is None:
                     self._notice(
                         f"[주문][경보] 마감청산 불가 — {pos.name}({pos.code}) {pos.qty}주: "
