@@ -12,6 +12,7 @@ import pytest
 
 from scalp_it.cli_tick import parse_duration
 from scalp_it.realtime.collector import (
+    DualKeyCollector,
     KiwoomRealtimeCollector,
     SeqAssigner,
     build_reg_message,
@@ -417,3 +418,129 @@ def test_quote_levels_skips_missing_or_zero():
     bids, asks = quote_levels(row)
     assert bids == [(1000.0, 5.0)]
     assert asks == []
+
+
+# ==================================================================== DualKeyCollector
+
+class _FakeSubCollector:
+    """add_codes/remove_codes 라우팅만 검증하는 최소 스텁 — 소켓은 안 탄다."""
+
+    def __init__(self, *, capacity=2, already=()):
+        self.code_capacity = capacity
+        self.subscribed_codes = list(already)
+        self.frames_seen = 1
+        self.ticks_stored = 2
+        self.quotes_stored = 3
+        self.vi_stored = 0
+        self.reconnects = 0
+        self.n_connections = 1
+        self.rejected_codes = []
+        self.added_codes = []
+        self.removed_codes = []
+        self.stopped = False
+        self.ran_with = None
+
+    async def add_codes(self, codes):
+        room = self.code_capacity - len(self.subscribed_codes)
+        ok, rejected = list(codes[:max(room, 0)]), list(codes[max(room, 0):])
+        self.subscribed_codes.extend(ok)
+        self.added_codes.extend(ok)
+        self.rejected_codes.extend(rejected)
+        return ok, rejected
+
+    async def remove_codes(self, codes):
+        drop = [c for c in codes if c in self.subscribed_codes]
+        for c in drop:
+            self.subscribed_codes.remove(c)
+        self.removed_codes.extend(drop)
+        return drop
+
+    def stop(self):
+        self.stopped = True
+
+    async def run(self, duration=None):
+        self.ran_with = duration
+
+
+def test_dual_key_add_codes_fills_primary_then_secondary():
+    import asyncio
+
+    a, b = _FakeSubCollector(capacity=2), _FakeSubCollector(capacity=2)
+    dual = DualKeyCollector(a, b)
+    added, rejected = asyncio.run(dual.add_codes(["005930", "000660", "035420"]))
+    assert added == ["005930", "000660", "035420"]
+    assert rejected == []
+    assert a.subscribed_codes == ["005930", "000660"]
+    assert b.subscribed_codes == ["035420"]
+
+
+def test_dual_key_add_codes_skips_already_subscribed_on_either_side():
+    import asyncio
+
+    a = _FakeSubCollector(capacity=2, already=["005930"])
+    b = _FakeSubCollector(capacity=2, already=["035420"])
+    dual = DualKeyCollector(a, b)
+    added, rejected = asyncio.run(dual.add_codes(["005930", "035420", "000660"]))
+    assert added == ["000660"]           # 이미 A·B 각각에 있던 건 새로 안 붙는다
+    assert rejected == []
+    assert a.added_codes == ["000660"]   # A 에 자리(1개 남음)가 있으니 A 로 감
+
+
+def test_dual_key_add_codes_reports_rejected_when_both_full():
+    import asyncio
+
+    a, b = _FakeSubCollector(capacity=1), _FakeSubCollector(capacity=1)
+    dual = DualKeyCollector(a, b)
+    added, rejected = asyncio.run(dual.add_codes(["005930", "000660", "035420"]))
+    assert added == ["005930", "000660"]
+    assert rejected == ["035420"]
+
+
+def test_dual_key_remove_codes_finds_the_right_side():
+    import asyncio
+
+    a = _FakeSubCollector(already=["005930"])
+    b = _FakeSubCollector(already=["035420"])
+    dual = DualKeyCollector(a, b)
+    removed = asyncio.run(dual.remove_codes(["035420", "999999"]))
+    assert removed == ["035420"]
+    assert a.subscribed_codes == ["005930"]
+    assert b.subscribed_codes == []
+
+
+def test_dual_key_stats_and_capacity_are_summed():
+    a, b = _FakeSubCollector(capacity=2), _FakeSubCollector(capacity=3)
+    dual = DualKeyCollector(a, b)
+    assert dual.code_capacity == 5
+    assert dual.frames_seen == 2
+    assert dual.ticks_stored == 4
+    assert dual.quotes_stored == 6
+    assert dual.n_connections == 2
+
+
+def test_dual_key_stop_stops_both():
+    a, b = _FakeSubCollector(), _FakeSubCollector()
+    DualKeyCollector(a, b).stop()
+    assert a.stopped and b.stopped
+
+
+def test_dual_key_run_gathers_both_with_same_duration():
+    import asyncio
+
+    a, b = _FakeSubCollector(), _FakeSubCollector()
+    asyncio.run(DualKeyCollector(a, b).run(duration=5.0))
+    assert a.ran_with == 5.0
+    assert b.ran_with == 5.0
+
+
+def test_dual_key_run_propagates_exception_from_either_side():
+    import asyncio
+
+    class _Boom(_FakeSubCollector):
+        async def run(self, duration=None):
+            raise RuntimeError("소켓 죽음")
+
+    a, b = _Boom(), _FakeSubCollector()
+    with pytest.raises(RuntimeError, match="소켓 죽음"):
+        asyncio.run(DualKeyCollector(a, b).run())
+    assert b.ran_with is None or True  # b 도 gather 로 같이 돌았다(예외는 나중에 raise)

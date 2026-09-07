@@ -1263,6 +1263,13 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
       2. **수집 대체**: 전용 키가 없으면 기본 ``KIWOOM_APP_KEY`` 로 붙되, 이 프로세스가
          곧 그 키의 유일한 세션이어야 한다 — tick-collect 데몬을 내리고 --live 로
          대체(감지+저장 겸함)하라. 안 내리면 서로 kick·재연결을 반복한다.
+
+    **정원 2배 확장(2026-09-07)**: 위 두 해법 다 앱키가 하나라 정원(≈50종목)은
+    그대로다. ``KIWOOM_APP_KEY_2``/``KIWOOM_APP_SECRET_2`` 를 두면
+    :class:`~scalp_it.realtime.collector.DualKeyCollector` 로 커넥션을 하나 더
+    열어 정원을 두 배(≈100종목)로 늘린다 — 09-07 커버리지 확인에서 급등 9종목 중
+    3개·12%+ 31종목 중 15개를 구독 자체를 못 해서 놓친 것이 계기다. 두 커넥션
+    모두 같은 ``on_frame`` 으로 흘러 같은 감지기·가드·실행기를 본다.
     """
     from .adapters.kiwoom import KiwoomClient, KiwoomError, api_credentials
     from .realtime.collector import (
@@ -1270,8 +1277,10 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
         TYPE_TRADE,
         WS_URL,
         WS_URL_MOCK,
+        DualKeyCollector,
         KiwoomRealtimeCollector,
         SeqAssigner,
+        codes_per_connection,
         parse_real_message,
         quote_levels,
     )
@@ -1279,18 +1288,11 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
 
     url = WS_URL_MOCK if args.mock else WS_URL
     types = [TYPE_TRADE, TYPE_QUOTE]
-    codes = _cap_codes_for_single_key(
-        sorted(detector.codes), types,
-        dedicated=bool(os.environ.get("PAIR_DETECT_APP_KEY")))
+    codes_all = sorted(detector.codes)
     store = not args.no_store and not args.dry_run
     bus = build_default_bus(log_path=args.log, bell=args.bell,
                             discord=not args.no_discord, dry_run=args.dry_run)
     poslog = build_poslog(args, guard)
-
-    conn = None
-    if store:
-        conn = connect(args.dsn or os.environ.get("KR_QUANT_DB"))
-        init_realtime_tables(conn)
 
     # 전용 키 우선 — 없으면 기본 키(그 경우 tick-collect 를 대체해야 함).
     env = dict(os.environ)
@@ -1308,7 +1310,36 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
     except KiwoomError as exc:
         print(f"\n{exc}\n", file=sys.stderr)
         return 1
+
+    # 두 번째 앱키(KIWOOM_APP_KEY_2/KIWOOM_APP_SECRET_2) 가 있으면 정원을 2배로.
+    # 2026-09-07 사용자 결정 — 09-07 커버리지 확인(급등 9종목 중 3개, 12%+ 31종목
+    # 중 15개를 구독 자체를 못 해서 놓침)에서 나온 조치. 앱키가 다르면 독립
+    # 세션이라 같은 키로 커넥션을 늘릴 때의 kick 문제가 없다(모듈 docstring 참고).
+    key2 = os.environ.get("KIWOOM_APP_KEY_2", "").strip()
+    secret2 = os.environ.get("KIWOOM_APP_SECRET_2", "").strip()
+    dual_key = bool(key2 and secret2)
+
     token = KiwoomClient(appkey, secret).token
+    token2 = KiwoomClient(key2, secret2).token if dual_key else None
+
+    conn = None
+    conn2 = None
+    if store:
+        conn = connect(args.dsn or os.environ.get("KR_QUANT_DB"))
+        init_realtime_tables(conn)
+        if dual_key:
+            conn2 = connect(args.dsn or os.environ.get("KR_QUANT_DB"))
+
+    if dual_key:
+        cap = codes_per_connection(types)
+        codes_a, codes_b = codes_all[:cap], codes_all[cap:cap * 2]
+        if len(codes_all) > cap * 2:
+            print(f"[경고] 종목 {len(codes_all)}개 > 앱키 2개 정원 {cap * 2}개 — "
+                  f"앞의 {cap * 2}개만 구독한다.", file=sys.stderr, flush=True)
+        print(f"# 앱키 2개 사용 — 정원 {cap} x 2 = {cap * 2}", file=sys.stderr)
+    else:
+        codes_a = _cap_codes_for_single_key(codes_all, types, dedicated=bool(dedicated))
+        codes_b = []
 
     trade_date = date.today()  # noqa: DTZ011 — KST naive, 프로젝트 표준
     seq = SeqAssigner()
@@ -1342,13 +1373,23 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             print(f"[감지][경보] 프레임 처리 중 예외 — 소켓 루프 계속: {exc}",
                   file=sys.stderr, flush=True)
 
-    collector = KiwoomRealtimeCollector(
-        token, codes, conn=conn, dsn=(args.dsn if store else None),
+    collector_a = KiwoomRealtimeCollector(
+        token, codes_a, conn=conn, dsn=(args.dsn if store else None),
         types=types, url=url, store=store, trade_date=trade_date,
         on_frame=on_frame, flush_interval=args.flush_interval,
     )
+    if dual_key:
+        collector_b = KiwoomRealtimeCollector(
+            token2, codes_b, conn=conn2, dsn=(args.dsn if store else None),
+            types=types, url=url, store=store, trade_date=trade_date,
+            on_frame=on_frame, flush_interval=args.flush_interval,
+        )
+        collector = DualKeyCollector(collector_a, collector_b)
+    else:
+        collector = collector_a
+    n_codes = len(codes_a) + len(codes_b)
     duration = _duration_seconds(args.duration)
-    print(f"# 소켓 직결 감지 시작 — 쌍 {len(detector.pairs)}개, 종목 {len(codes)}개, "
+    print(f"# 소켓 직결 감지 시작 — 쌍 {len(detector.pairs)}개, 종목 {n_codes}개, "
           f"저장 {'켬' if store else '끔'}, 로그 {args.log}"
           + (" [dry-run]" if args.dry_run else ""), file=sys.stderr, flush=True)
 
@@ -1405,6 +1446,8 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
     finally:
         if conn is not None:
             conn.close()
+        if conn2 is not None:
+            conn2.close()
     if executor is not None:
         executor.flush(datetime.now())  # noqa: DTZ005
         print(executor.summary(), file=sys.stderr, flush=True)

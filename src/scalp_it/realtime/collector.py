@@ -728,6 +728,116 @@ class KiwoomRealtimeCollector:
             await asyncio.wait_for(self._stop.wait(), timeout=seconds)
 
 
+class DualKeyCollector:
+    """App key 두 개로 :class:`KiwoomRealtimeCollector` 두 개를 나란히 굴린다.
+
+    App key 는 동시 세션 1개라 정원(≈50종목, 0B+0D)이 키 하나에 묶인다(모듈
+    docstring 참고). 두 번째 키를 받으면 커넥션을 하나 더 열어 정원을 두 배로
+    늘릴 수 있다 — 같은 키로 커넥션을 늘리면 서로 kick 하지만, 키가 다르면
+    독립된 세션이라 문제없다.
+
+    두 인스턴스가 받은 프레임은 **같은 `on_frame` 콜백**으로 흘러야 한다(둘 다
+    같은 `PairDetector`/`RiskGuard`/`OrderExecutor` 를 보게) — 그건 생성하는
+    쪽(:func:`scalp_it.cli_pair_detect.run_live`)의 책임이고, 이 클래스는 두
+    인스턴스를 하나처럼 보이게 감싸기만 한다. `KiwoomRealtimeCollector` 를 쓰는
+    호출부(`add_codes`·`remove_codes`·`subscribed_codes`·`code_capacity`·`run`·
+    `stop`·`frames_seen`·`ticks_stored` 등)와 같은 인터페이스를 낸다 — 드롭인
+    교체라 워처 함수(`_watch_leader_scan` 등)는 수정이 필요 없다.
+    """
+
+    def __init__(self, primary: KiwoomRealtimeCollector, secondary: KiwoomRealtimeCollector) -> None:
+        self._a = primary
+        self._b = secondary
+
+    # ------------------------------------------------------------- 통계(합산)
+
+    @property
+    def frames_seen(self) -> int:
+        return self._a.frames_seen + self._b.frames_seen
+
+    @property
+    def ticks_stored(self) -> int:
+        return self._a.ticks_stored + self._b.ticks_stored
+
+    @property
+    def quotes_stored(self) -> int:
+        return self._a.quotes_stored + self._b.quotes_stored
+
+    @property
+    def vi_stored(self) -> int:
+        return self._a.vi_stored + self._b.vi_stored
+
+    @property
+    def reconnects(self) -> int:
+        return self._a.reconnects + self._b.reconnects
+
+    @property
+    def n_connections(self) -> int:
+        return self._a.n_connections + self._b.n_connections
+
+    @property
+    def rejected_codes(self) -> list[str]:
+        return [*self._a.rejected_codes, *self._b.rejected_codes]
+
+    @property
+    def added_codes(self) -> list[str]:
+        return [*self._a.added_codes, *self._b.added_codes]
+
+    @property
+    def removed_codes(self) -> list[str]:
+        return [*self._a.removed_codes, *self._b.removed_codes]
+
+    # ------------------------------------------------------------- 구독 관리
+
+    @property
+    def subscribed_codes(self) -> list[str]:
+        return [*self._a.subscribed_codes, *self._b.subscribed_codes]
+
+    @property
+    def code_capacity(self) -> int:
+        """두 커넥션 정원의 합."""
+        return self._a.code_capacity + self._b.code_capacity
+
+    async def add_codes(self, codes: Sequence[str]) -> tuple[list[str], list[str]]:
+        """이미 구독 중인 건 제외하고, A 먼저 채우고 남으면 B 로 넘긴다."""
+        have = set(self.subscribed_codes)
+        new = [str(c) for c in dict.fromkeys(codes) if str(c) not in have]
+        if not new:
+            return [], []
+        added_a, rejected_a = await self._a.add_codes(new)
+        if not rejected_a:
+            return added_a, []
+        added_b, rejected_b = await self._b.add_codes(rejected_a)
+        return [*added_a, *added_b], rejected_b
+
+    async def remove_codes(self, codes: Sequence[str]) -> list[str]:
+        """각 종목이 실제로 붙어있는 쪽(A 또는 B)에서 내린다."""
+        removed_a = await self._a.remove_codes(codes)
+        remaining = [c for c in codes if c not in removed_a]
+        removed_b = await self._b.remove_codes(remaining) if remaining else []
+        return [*removed_a, *removed_b]
+
+    # ------------------------------------------------------------- 실행
+
+    def stop(self) -> None:
+        self._a.stop()
+        self._b.stop()
+
+    async def run(self, duration: float | None = None) -> None:
+        """두 커넥션을 동시에 돌린다. 하나가 죽어도 나머지는 계속(``return_exceptions``).
+
+        완전히 독립된 세션이라 한쪽의 재연결·REG 실패가 다른 쪽 구독을 건드리지
+        않는다 — 키를 나눈 목적 자체가 이 격리다.
+        """
+        results = await asyncio.gather(
+            self._a.run(duration=duration), self._b.run(duration=duration),
+            return_exceptions=True,
+        )
+        for r in results:
+            if isinstance(r, Exception):
+                raise r
+
+
 async def dry_run(
     token: str,
     codes: Sequence[str],
