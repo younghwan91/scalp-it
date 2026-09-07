@@ -1280,3 +1280,47 @@ def test_wall_rejection_is_not_bypassed_by_vi():
     assert det._limitup_kind("000001", BASE + timedelta(seconds=30), 13_000) is None
     assert det._leader_trigger("000001", BASE + timedelta(seconds=30), 13_000) is None, (
         "벽 거부가 VI 로 우회됐다")
+
+
+# ==================================================================== 가격 이상 감지 (2026-09-07)
+
+
+def test_price_jump_recorded_when_neighboring_ticks_diverge():
+    """직전 틱 대비 10%+ 급변(짧은 간격)이면 큐에 남는다."""
+    det = _det()
+    _feed(det, PAIR.follower, 0, 6960.0)
+    _feed(det, PAIR.follower, 1, 5570.0)   # 1초 만에 -20% — 2026-09-07 실제 사례
+    recs = det.drain_price_anomalies()
+    assert len(recs) == 1
+    r = recs[0]
+    assert r["code"] == PAIR.follower
+    assert r["prev_price"] == 6960.0
+    assert r["price"] == 5570.0
+    assert r["pct"] == pytest.approx(5570.0 / 6960.0 - 1.0)
+    assert r["gap_sec"] == pytest.approx(1.0)
+
+
+def test_price_jump_not_recorded_for_small_moves():
+    """정상적인 틱 단위 변동(10% 미만)은 안 남는다."""
+    det = _det()
+    _feed(det, PAIR.follower, 0, 1000.0)
+    _feed(det, PAIR.follower, 1, 1050.0)   # +5%
+    assert det.drain_price_anomalies() == []
+
+
+def test_price_jump_not_recorded_across_long_gap():
+    """틱 간격이 PRICE_JUMP_MAX_GAP 을 넘으면 정상적인 급등(랠리)일 수 있어 안 잰다."""
+    det = _det()
+    _feed(det, PAIR.follower, 0, 1000.0)
+    _feed(det, PAIR.follower, 60, 1300.0)  # 60초 뒤 +30% — 이 시스템이 원래 잡는 급등
+    assert det.drain_price_anomalies() == []
+
+
+def test_price_jump_drain_empties_queue_but_keeps_going():
+    det = _det()
+    _feed(det, PAIR.follower, 0, 1000.0)
+    _feed(det, PAIR.follower, 1, 1200.0)
+    assert len(det.drain_price_anomalies()) == 1
+    assert det.drain_price_anomalies() == []      # 비운 뒤엔 다시 안 나온다
+    _feed(det, PAIR.follower, 2, 900.0)           # 다시 급변하면 또 잡힌다
+    assert len(det.drain_price_anomalies()) == 1

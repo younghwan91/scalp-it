@@ -686,6 +686,11 @@ class PairDetector:
         # 필터로 버린 신호 — 누계(집계용)와 아직 안 알린 큐(CLI 가 비워간다).
         self.filtered_count = 0
         self._filtered: list[FilteredSignal] = []
+        # 가격 이상 감지(2026-09-07) — `_price_at` 이 그날 시가에서 크게 벗어난 값을
+        # 돌려주면(원인 미확인 이상 사례 1건 관측, 재현 실패) 조용히 넘기지 않고
+        # 큐에 남긴다. 판정을 막지는 않는다 — 오탐이어도 매매를 못 하게 하면 더 큰
+        # 손해라, 일단 알리기만 한다.
+        self._price_anomalies: list[dict[str, Any]] = []
 
     # ----- 구독/커버리지 확인 -------------------------------------------------
 
@@ -760,6 +765,9 @@ class PairDetector:
             self._session_base.clear()
         self._session_base.setdefault(code, price)
         hist = self._prices[code]
+        if hist:
+            prev_ts, prev_price = hist[-1]
+            self._check_price_jump(code, ts, price, prev_ts, prev_price)
         hist.append((ts, price))
         self._trim(hist, ts)
         if bid1:
@@ -1224,6 +1232,12 @@ class PairDetector:
         self._filtered = []
         return out
 
+    def drain_price_anomalies(self) -> list[dict[str, Any]]:
+        """가격 이상 감지 큐를 꺼내고 비운다. 각 원소는 code/ts/price/prev_ts/prev_price/pct/gap_sec."""
+        out = self._price_anomalies
+        self._price_anomalies = []
+        return out
+
     def drain_leader_events(self) -> list[tuple[str, datetime, str]]:
         """대장 상태 **전이**를 꺼내고 큐를 비운다 — ``(대장코드, 시각, 상태)``.
 
@@ -1281,6 +1295,37 @@ class PairDetector:
             if dt_ <= t:
                 return px
         return None
+
+    PRICE_JUMP_PCT = 0.10       # 직전 틱 대비 이 이상 튀면 기록(판정은 막지 않는다)
+    PRICE_JUMP_MAX_GAP = 30.0   # 이 초를 넘게 떨어진 틱끼리는 안 잰다(정상적인 급등도 걸림)
+
+    def _check_price_jump(self, code: str, ts: datetime, price: float,
+                          prev_ts: datetime, prev_price: float) -> None:
+        """직전 틱 대비 급변하면 큐에 남긴다 — 세션 시가 대비가 아니라 **이웃 틱 간** 비교.
+
+        2026-09-07 — `_check_follower` 가 어느 종목에 그날 실제 체결·호가 범위 밖의
+        가격을 ``entry`` 로 써서 로그에 남긴 사례가 있었다(원인 미확인, 재현 불가 —
+        이미 끝난 프로세스라 그 순간의 `self._prices` 내용을 복기할 수 없었다).
+
+        세션 시가 대비 편차로는 못 잡는다 — 이 시스템이 원래 잡으려는 종목 자체가
+        하루 20~30%씩 급등하므로, 시가 기준 문턱은 (a) 그 정도로 튄 진짜 이상값은
+        못 걸러내고 (b) 정상적인 큰 랠리에 오탐만 쏟아낸다. 대신 **바로 이전 틱과의
+        간격**을 본다 — 정상 체결은 짧은 시간에 이 정도로 안 튄다. ``PRICE_JUMP_MAX_GAP``
+        보다 틱 간격이 벌어지면(그 사이 정말 급변했을 수 있어) 비교하지 않는다.
+        판정을 막으면 오탐 시 매매 기회를 놓치는 게 더 큰 손해라 **경고만** 남긴다.
+        """
+        if prev_price <= 0:
+            return
+        gap = (ts - prev_ts).total_seconds()
+        if gap < 0 or gap > self.PRICE_JUMP_MAX_GAP:
+            return
+        pct = price / prev_price - 1.0
+        if abs(pct) < self.PRICE_JUMP_PCT:
+            return
+        self._price_anomalies.append({
+            "code": code, "ts": ts, "price": price,
+            "prev_ts": prev_ts, "prev_price": prev_price, "pct": pct, "gap_sec": gap,
+        })
 
     def _ret(self, code: str, end: datetime, window: float) -> float | None:
         """``[end-window, end]`` 구간 수익률. 기준가·현재가 없으면 None."""

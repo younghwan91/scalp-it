@@ -1015,6 +1015,19 @@ def _drain_filtered(detector: PairDetector, bus: AlertBus) -> None:
         bus.notice(rec.to_line())
 
 
+def _drain_price_anomalies(detector: PairDetector, bus: AlertBus) -> None:
+    """직전 틱 대비 급변한 가격을 알림 로그에 남긴다(2026-09-07 원인미상 사례 대응).
+
+    판정은 안 막는다 — 조용히 넘어가면 재발해도 못 잡으니 경고만 남긴다.
+    """
+    for rec in detector.drain_price_anomalies():
+        bus.notice(
+            f"[가격이상] {rec['code']} {rec['ts']:%H:%M:%S} {rec['price']:,.0f}원"
+            f" (직전 {rec['prev_ts']:%H:%M:%S} {rec['prev_price']:,.0f}원,"
+            f" {rec['gap_sec']:.1f}초 간격, {rec['pct']:+.1%}) — 확인 필요"
+        )
+
+
 def _emit_guarded(alert: Alert, bus: AlertBus, guard: RiskGuard | None,
                   poslog: PositionLogSink | None,
                   executor: OrderExecutor | None = None) -> bool:
@@ -1066,6 +1079,7 @@ def _feed(detector: PairDetector, bus: AlertBus, rows: list[tuple],
                 n += 1
         _drain_leader_events(detector, guard, executor)
         _drain_filtered(detector, bus)
+        _drain_price_anomalies(detector, bus)
     return n
 
 
@@ -1369,6 +1383,7 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
                     _emit_guarded(alert, bus, guard, poslog, executor)
                 _drain_leader_events(detector, guard, executor)
                 _drain_filtered(detector, bus)
+                _drain_price_anomalies(detector, bus)
         except Exception as exc:  # noqa: BLE001 — 프레임 오류로 소켓 감지 죽지 않게
             print(f"[감지][경보] 프레임 처리 중 예외 — 소켓 루프 계속: {exc}",
                   file=sys.stderr, flush=True)
