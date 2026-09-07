@@ -33,8 +33,12 @@ def connect(dsn: str | None = None) -> Any:
     return sqlite3.connect(target)
 
 
+def is_postgres(conn: Any) -> bool:
+    return conn.__class__.__module__.startswith("psycopg2")
+
+
 def _placeholder(conn: Any) -> str:
-    return "%s" if conn.__class__.__module__.startswith("psycopg2") else "?"
+    return "%s" if is_postgres(conn) else "?"
 
 
 def _query(conn: Any, sql: str, params: tuple, columns: list[str]) -> pd.DataFrame:

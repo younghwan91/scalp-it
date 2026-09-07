@@ -10,15 +10,13 @@ fixture 로 돌리고 운영은 postgres 로 돌리므로 둘이 갈라지면 �
 
 from __future__ import annotations
 
-import os
-import sqlite3
 from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import Any
 
 import pandas as pd
 
-_PG_PREFIXES = ("postgresql://", "postgres://")
+from ..adapters.db import connect, is_postgres, _placeholder  # noqa: F401 — re-exported
 
 MINUTE_COLUMNS: list[str] = [
     "code", "ts", "open", "high", "low", "close", "volume", "trade_value",
@@ -49,26 +47,6 @@ _UPSERT = (
     "open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close, "
     "volume=excluded.volume, trade_value=excluded.trade_value"
 )
-
-
-def is_postgres(conn: Any) -> bool:
-    return conn.__class__.__module__.startswith("psycopg2")
-
-
-def _placeholder(conn: Any) -> str:
-    return "%s" if is_postgres(conn) else "?"
-
-
-def connect(dsn: str | None = None) -> Any:
-    """DSN 또는 ``KR_QUANT_DB`` 로 접속한다. postgres 면 psycopg2, 아니면 sqlite."""
-    target = dsn or os.environ.get("KR_QUANT_DB")
-    if not target:
-        raise ValueError("DSN 이 없다. 인자로 넘기거나 KR_QUANT_DB 를 설정하라.")
-    if target.startswith(_PG_PREFIXES):
-        import psycopg2  # 지연 임포트 — sqlite 전용 사용자는 설치할 필요가 없다
-
-        return psycopg2.connect(target)
-    return sqlite3.connect(target)
 
 
 def init_minute_bars(conn: Any) -> Any:
