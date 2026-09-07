@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from .adapters.db import _placeholder as _ph
+
 __all__ = [
     "COLD",
     "DEAD",
@@ -132,10 +134,6 @@ def _note_for(regime: str, turnover_jo: float) -> str:
 
 
 # --------------------------------------------------------------------- DB 읽기
-
-def _ph(conn: Any) -> str:
-    """psycopg2 는 %s, sqlite3 는 ? — adapters/db.py 와 같은 규약."""
-    return "%s" if conn.__class__.__module__.startswith("psycopg2") else "?"
 
 
 def fetch_market_turnover(conn: Any, day: date | str, market: str = KOSDAQ) -> float | None:

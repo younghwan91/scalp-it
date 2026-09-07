@@ -74,19 +74,15 @@ BUCKETS = [
 ]
 
 
-def _load_env(path: str = "/home/young/Documents/git/kr-quant/.env") -> None:
-    """``KR_QUANT_DB`` 가 없으면 kr-quant/.env 에서 읽는다 (따옴표 제거)."""
+def _load_env() -> None:
+    """``KR_QUANT_DB`` 가 없으면 관례대로 ../kr-quant/.env 를 시도한다(있으면 유지)."""
     if os.environ.get("KR_QUANT_DB"):
         return
-    p = pathlib.Path(path)
-    if not p.exists():
-        return
-    for line in p.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip().strip("\"'"))
+    try:
+        import _envload  # noqa: F401  import 만으로 환경변수 주입
+    except Exception as exc:                                   # noqa: BLE001
+        print(f"[경고] .env 자동 로드 실패({exc}) — KR_QUANT_DB 를 직접 export 하라.",
+              file=sys.stderr)
 
 
 def limit_up_price(prev_close: float) -> float:

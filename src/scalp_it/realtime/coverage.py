@@ -20,6 +20,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..adapters.db import _placeholder as _ph
+
 #: 등락률 경계의 부동소수점 허용오차. 호가 단위가 원 단위라 1e-9 면 충분하다.
 _EPS = 1e-9
 
@@ -102,15 +104,6 @@ def measure_coverage(events: Sequence[SurgeEvent],
         (covered if ok else missed).append(ev.code)
     return Coverage(n_events=len(events), n_covered=len(covered),
                     covered=covered, missed=missed)
-
-
-def _ph(conn: Any) -> str:
-    """placeholder — ``market_regime._ph`` 와 **같은 규약**이다.
-
-    판정 방향을 뒤집어 쓰면(sqlite 를 기본으로 두면) 드라이버가 늘었을 때 두 모듈이
-    서로 다른 답을 내므로, 기존 규약 그대로 psycopg2 만 ``%s`` 로 본다.
-    """
-    return "%s" if conn.__class__.__module__.startswith("psycopg2") else "?"
 
 
 def fetch_surge_rows(conn: Any, *, day: str, market: str) -> list[tuple]:

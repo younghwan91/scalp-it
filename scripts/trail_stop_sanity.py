@@ -37,6 +37,7 @@ from tick_sanity import (  # noqa: E402
     WINDOWS,
     _arr,
     _load_env,
+    _session_mask,
     bootstrap_diff_ci,
     find_trigger_indices,
     load_date_ticks,
@@ -48,8 +49,6 @@ COOLDOWN = 120
 TRAIL_PCT = 0.0040     # 진입 후 최고가 대비 40bp 하락하면 청산 (15bp는 틱노이즈에 거의 다 털림 — 08-24~09-04 실측)
 MAX_HOLD = 300         # 최대 보유 300초(트레일링 스탑에 안 걸리면 이 시점 청산)
 COST_BP = 50.0
-SESSION_START = "09:00:00"
-SESSION_END = "15:20:00"
 BASELINE_PER_CODE = 300
 RNG_SEED = 20260824
 
@@ -81,10 +80,6 @@ def trailing_stop_exit(
         return None
     p, t = last
     return p / entry - 1.0, float(t - ts_sec[i])
-
-
-def _session_mask(hms: np.ndarray) -> np.ndarray:
-    return (hms >= SESSION_START) & (hms <= SESSION_END)
 
 
 class Acc:

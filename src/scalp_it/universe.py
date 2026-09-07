@@ -46,6 +46,8 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
+from .adapters.db import _placeholder as _ph
+
 __all__ = [
     "Bar",
     "Candidate",
@@ -398,9 +400,6 @@ def select_universe(
 
 
 # --------------------------------------------------------------------- DB 읽기
-
-def _ph(conn: Any) -> str:
-    return "%s" if conn.__class__.__module__.startswith("psycopg2") else "?"
 
 
 def trading_days(conn: Any, asof: date | str, count: int) -> list[date]:

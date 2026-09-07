@@ -39,8 +39,6 @@ SURGE_WINDOW = 30.0            # PairConfig 기본값 그대로
 SURGE_RET = 0.015              # 〃
 HALF = SURGE_WINDOW / 2.0      # 15초
 COOLDOWN = SURGE_WINDOW        # 트리거 후 같은 종목 억제(초)
-SESSION_START = "09:00:00"
-SESSION_END = "15:20:00"
 COST_BP = (40.0, 50.0, 60.0)
 REF_THRESHOLDS = (1.0,)        # 분위 후보에 항상 추가하는 참조값
 MIN_GROUP_N = 100              # pass/fail 최소표본 게이트 (N=60 라벨)

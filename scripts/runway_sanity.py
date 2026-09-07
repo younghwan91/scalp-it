@@ -46,8 +46,6 @@ from accel_sanity_minute import (  # noqa: E402
 WINDOW_MIN = 4.0
 SURGE_RET = 0.02
 COOLDOWN_SEC = WINDOW_MIN * 60.0
-SESSION_START = "09:00:00"
-SESSION_END = "15:20:00"
 HORIZONS_MIN = (5, 10, 20)
 HORIZONS_SEC = tuple(int(n * 60) for n in HORIZONS_MIN)
 MIN_GROUP_N = 100
