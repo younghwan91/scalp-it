@@ -4,9 +4,12 @@
 #    되돌리려면 아래 실행줄에서 --confirm-real 을 지운다 — 그 즉시 dry-run.
 # App key 1세션 제약: 이 프로세스가 tick-collect 를 대체한다(감지+저장).
 # 크래시 시 15:20 까지 자동 재시작해 하루를 통째로 날리지 않는다.
+# 2026-09-07: KIWOOM_APP_KEY_2/SECRET_2 가 있으면 DualKeyCollector 로 정원이
+# 2배(≈100종목)가 된다 — 09-07 커버리지 확인(급등 종목 상당수를 구독 자체를
+# 못 해서 놓침)이 계기. 없으면 기존대로 단일 키(정원 50)로 돈다.
 set -u
 cd /home/young/Documents/git/scalp-it
-export $(grep -E '^KIWOOM_APP_(KEY|SECRET)=' ../quant-airflow/.env | xargs)
+export $(grep -E '^KIWOOM_APP_(KEY|SECRET|KEY_2|SECRET_2)=' ../quant-airflow/.env | xargs)
 export $(grep -v '^#' ../kr-quant/.env | xargs)
 pkill -f "scalp-tick-collect" 2>/dev/null; sleep 2
 END=$(date -d "15:20" +%s)
