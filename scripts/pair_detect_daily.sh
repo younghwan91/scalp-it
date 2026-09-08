@@ -20,7 +20,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
   # ⚠️ --confirm-real 켜짐 → **진짜 주문이 나간다**(2026-08-27 사용자 승인).
   #   안전장치는 그대로다: --qty 1 주(설정으로도 못 넘는 하드캡 10), 지정가 참조가
   #   ±3% 밖 거부, 화이트리스트(그날 유니버스)·보유종목 차단, 일일 주문 20회,
-  #   연속손절 3회 킬스위치. 유니버스 최고가 432,500원 → 주문 1건 최대 노출 43만원.
+  #   연속손절 2회 킬스위치(지시서 §5). 유니버스 최고가 432,500원 → 주문 1건 최대 노출 43만원.
   #   되돌리려면 --confirm-real 을 지우면 된다(그 즉시 dry-run).
   # --duration 이 15:20 에 자체 종료.
   # ── 만쥬 방식 (docs/research/manju/44-manju-method-from-videos.md) ──────────
@@ -76,7 +76,14 @@ while [ "$(date +%s)" -lt "$END" ]; do
   # 종목 선정(§3·§4-2) — 고정 쌍이 아니라 그날 유니버스에서 섹터별로 새로 고른다.
   #   유니버스 선정이 실패하면 기존 워치리스트로 자동 폴백한다(하루를 날리지 않는다).
   #   45종목 = 단일 앱키 한도 50 안. 넘기면 커넥션이 쪼개져 서로 kick 한다(08-24 사고).
-  # 호가 두께(§4-1, 만쥬 최우선 필터) — 1000만원 왕복 충격 20bp 초과 종목은 배제.
+  # 호가 두께(§4-1, 만쥬 최우선 필터) — 1000만원 왕복 충격 30bp 초과 종목은 배제.
+  #   2026-09-09: 09-08 실거래 복기 — 배제 121건 중 대다수가 roundtrip_bp 컷이라
+  #   실거래 표본을 늘리려고 20→30bp 로 완화(사용자 결정, "조금 더 공격적으로").
+  #   연속손절 킬(--max-consecutive-losses)은 2 그대로 둔다 — 지시서(50번 문서) §5
+  #   "On 2 consecutive losses ... Freeze"를 그대로 못박은 test_profit_giveback.py
+  #   ::test_cron_arms_the_circuit_breakers 가 있다. 이건 임의 안전마진이 아니라
+  #   만쥬 기법 자체의 규칙이라 "완화"의 대상이 아니다 — 표본을 늘리려면 진입 문턱
+  #   (roundtrip_bp) 쪽을 건드리는 게 맞다.
   # 돌발 재료(§6) — 장중 새 공시로 강한 재료가 뜬 종목을 구독에 추가한다.
   #   "예상치 못한 돌발 뉴스가 나오면 즉각 관련 종목 매수". 90초마다 확인하고
   #   한 번에 3종목까지. 구독 상한(50)이 있어 자리가 없으면 거절을 로그에 남긴다.
@@ -188,7 +195,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --leader-stall 15 --leader-drop-ticks 1 --lock-wall-window 3 \
     --leader-scan-window 0900-1000 --no-entry-after 1000 --scout-gate-jo 8 \
     --follower-priority manju --cosurge 0 --premove 0.002 \
-    --universe-size 12 --max-roundtrip-bp 20 --order-krw 10000000 \
+    --universe-size 12 --max-roundtrip-bp 30 --order-krw 10000000 \
     --leader-scan-interval 10 --leader-scan-min-rt 12 --leader-scan-max 8 \
     --collect-fill-interval 60 --collect-reserve 12 --collect-fill-ttl 600 \
     --program-interval 60 --program-dump-qty 700 \
