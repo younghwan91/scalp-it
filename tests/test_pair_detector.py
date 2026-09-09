@@ -1324,3 +1324,14 @@ def test_price_jump_drain_empties_queue_but_keeps_going():
     assert det.drain_price_anomalies() == []      # 비운 뒤엔 다시 안 나온다
     _feed(det, PAIR.follower, 2, 900.0)           # 다시 급변하면 또 잡힌다
     assert len(det.drain_price_anomalies()) == 1
+
+
+def test_notice_records_the_day(tmp_path):
+    """통지에는 시각만 있고 날짜가 없어 일지가 지난 며칠치 배제를 전부 '오늘'로 읽었다."""
+    from datetime import date
+
+    log = tmp_path / "alerts.log"
+    LogFileSink(log, echo=False).notice("[09:00:00] 짝꿍 필터배제(roundtrip_bp) a(1) → b(2)")
+    record = json.loads(log.read_text(encoding="utf-8").strip())
+    assert record["notice"].startswith("[09:00:00]")
+    assert record["day"] == date.today().isoformat()  # noqa: DTZ011 — 싱크와 같은 시계

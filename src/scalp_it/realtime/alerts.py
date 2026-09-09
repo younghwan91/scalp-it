@@ -20,6 +20,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -54,8 +55,10 @@ class LogFileSink:
 
     def notice(self, text: str) -> None:
         """알림이 아닌 상태 메시지(킬스위치 배너 등)를 로그·stdout 에 남긴다."""
+        # 통지 본문엔 시각만 있어 날짜를 같이 남긴다 — 일지가 날짜로 걸러 읽는다.
+        day = date.today().isoformat()  # noqa: DTZ011 — KST naive, 프로젝트 표준
         with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"notice": text}, ensure_ascii=False) + "\n")
+            fh.write(json.dumps({"notice": text, "day": day}, ensure_ascii=False) + "\n")
         if self.echo:
             print(text, flush=True)
 

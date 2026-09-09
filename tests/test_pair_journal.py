@@ -133,3 +133,25 @@ def test_entries_serialize_to_jsonl():
     assert line["follower"] == "200000"
     assert line["pnl_krw"] == 560.0
     assert "why_entry" in line and "why_exit" in line
+
+
+def test_load_keeps_only_that_days_notices(tmp_path):
+    """날짜 있는 통지는 그날 것만, 날짜 없는 옛 통지는 버린다 — 09-09 일지에 09-01~08 배제가 섞였다."""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "pair_journal", Path(__file__).resolve().parents[1] / "scripts" / "pair_journal.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    log = tmp_path / "alerts.log"
+    log.write_text("\n".join([
+        json.dumps({"ts": "2026-09-09 09:00:00", "follower": "1"}),
+        json.dumps({"notice": "[09:01:00] 짝꿍 필터배제(roundtrip_bp) a(1) → b(2)", "day": "2026-09-09"}),
+        json.dumps({"notice": "[09:02:00] 짝꿍 필터배제(roundtrip_bp) a(1) → c(3)", "day": "2026-09-08"}),
+        json.dumps({"notice": "[09:03:00] 짝꿍 필터배제(roundtrip_bp) a(1) → d(4)"}),
+    ]) + "\n", encoding="utf-8")
+    recs, notices = mod._load(str(log), "2026-09-09")
+    assert len(recs) == 1
+    assert [n["notice"][:10] for n in notices] == ["[09:01:00]"]

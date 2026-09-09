@@ -47,8 +47,10 @@ def _load(path: str, day: str) -> tuple[list[dict], list[dict]]:
         except json.JSONDecodeError:
             continue
         if "notice" in d:
-            # 통지에는 날짜가 없다(시각만) — 그날 파일 안에 있으면 그날 것으로 본다.
-            notices.append(d)
+            # 날짜 없는 옛 통지는 어느 날 것인지 알 수 없어 버린다(전부 '오늘'로 읽혀
+            # 09-09 일지에 09-01~08 배제가 섞였다).
+            if d.get("day") == day:
+                notices.append(d)
         elif str(d.get("ts", "")).startswith(day):
             recs.append(d)
     return recs, notices
