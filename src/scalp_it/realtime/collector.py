@@ -34,7 +34,8 @@ import json
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, ClassVar
 
 WS_URL = "wss://api.kiwoom.com:10000/api/dostk/websocket"
 WS_URL_MOCK = "wss://mockapi.kiwoom.com:10000/api/dostk/websocket"
@@ -441,6 +442,7 @@ class KiwoomRealtimeCollector:
         reg_limit: int = REG_LIMIT,
         max_backoff: float = 30.0,
         log: Callable[[str], None] | None = None,
+        spool_dir: str | Path | None = None,
     ) -> None:
         self._token = token
         self._types = list(types)
@@ -467,6 +469,16 @@ class KiwoomRealtimeCollector:
         self._quote_buf: list[dict] = []
         self._vi_buf: list[dict] = []
         self._stop = asyncio.Event()
+
+        # DB 순단이 "프로세스 생존 중"이면 위 버퍼 재시도로 충분하지만, 그동안
+        # 프로세스 자체가 죽으면(재시작·OOM·서버 재부팅) 메모리 버퍼는 통째로
+        # 사라진다 — 틱은 그 순간 못 받으면 영영 복구 불가능이라 이 손실은
+        # 특히 위험하다(2026-09-11, DB 를 이 수집기와 다른 호스트로 옮기기 전
+        # 선행 조건). spool_dir 를 주면 flush 실패마다 그 시점 버퍼를 통째로
+        # 디스크에 미러링하고, 다음 프로세스가 뜰 때 그걸 읽어 버퍼로 되살린다.
+        self._spool_dir = Path(spool_dir) if spool_dir else None
+        if self._spool_dir:
+            self._load_spool()
 
         # 통계
         self.frames_seen = 0
@@ -703,6 +715,61 @@ class KiwoomRealtimeCollector:
                 self._log(f"DB 재연결 실패: {exc}")
             return False
 
+    _SPOOL_FILES: ClassVar[dict[str, str]] = {
+        "_tick_buf": "ticks.jsonl",
+        "_quote_buf": "quotes.jsonl",
+        "_vi_buf": "vi.jsonl",
+    }
+
+    def _spool_path(self, buf_attr: str) -> Path | None:
+        if not self._spool_dir:
+            return None
+        return self._spool_dir / self._SPOOL_FILES[buf_attr]
+
+    def _write_spool(self, buf_attr: str, batch: list[dict]) -> None:
+        """그 시점 버퍼 전체를 spool 파일에 통째로 다시 쓴다(추가 아니라 미러).
+
+        누적 실패마다 버퍼가 자라므로, append 하면 예전에 쓴 행이 중복으로 쌓인다.
+        전체를 다시 쓰면 파일은 항상 "지금 안 들어간 것 전부"만 담는다.
+        """
+        path = self._spool_path(buf_attr)
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            text = "\n".join(json.dumps(row, default=str) for row in batch)
+            path.write_text(text + "\n" if text else "")
+        except OSError as exc:
+            if self._log:
+                self._log(f"spool 쓰기 실패({buf_attr}): {exc}")
+
+    def _clear_spool(self, buf_attr: str) -> None:
+        path = self._spool_path(buf_attr)
+        if path is not None and path.exists():
+            path.unlink()
+
+    def _load_spool(self) -> None:
+        """이전 프로세스가 flush 못 하고 남긴 spool 을 버퍼로 되살린다.
+
+        아직 지우지 않는다 — 이 프로세스도 flush 전에 죽으면 다음 번이 또
+        읽어야 하므로, 실제로 DB 에 들어가고 나서(``_clear_spool``)만 지운다.
+        """
+        for buf_attr in self._SPOOL_FILES:
+            path = self._spool_path(buf_attr)
+            if path is None or not path.exists():
+                continue
+            try:
+                lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
+                rows = [json.loads(ln) for ln in lines]
+            except (OSError, json.JSONDecodeError) as exc:
+                if self._log:
+                    self._log(f"spool 복구 실패({buf_attr}), 원본 파일 보존: {exc}")
+                continue
+            if rows:
+                getattr(self, buf_attr).extend(rows)
+                if self._log:
+                    self._log(f"spool 복구({buf_attr}): {len(rows)}건 되살림")
+
     def _flush(self) -> None:
         if not self._store:
             self._tick_buf.clear()
@@ -712,7 +779,9 @@ class KiwoomRealtimeCollector:
         from .store import insert_quotes, insert_ticks, insert_vi_events
 
         # DB 순단에 견딘다: insert 가 실패하면 배치를 버퍼에 되돌리고(유실 방지)
-        # 커넥션을 재생성해 다음 flush 에서 재시도한다. flush 루프는 죽지 않는다.
+        # + spool_dir 가 있으면 디스크에도 미러링해 프로세스가 죽어도 살아남게
+        # 하고, 커넥션을 재생성해 다음 flush 에서 재시도한다. flush 루프는
+        # 죽지 않는다.
         def _try(buf_attr: str, insert_fn: Any, counter: str) -> None:
             buf = getattr(self, buf_attr)
             if not buf or self._conn is None:
@@ -721,9 +790,11 @@ class KiwoomRealtimeCollector:
             try:
                 setattr(self, counter, getattr(self, counter) + insert_fn(self._conn, batch))
                 buf.clear()
+                self._clear_spool(buf_attr)
             except Exception as exc:  # noqa: BLE001 — DB 순단: 배치 보존 후 재연결
                 if self._log:
                     self._log(f"insert 실패({buf_attr}), 배치 {len(batch)}건 보존·재연결 시도: {exc}")
+                self._write_spool(buf_attr, batch)
                 self._reconnect_db()  # 버퍼는 그대로 두어 다음 flush 에서 재시도(순서 유지)
 
         if self._conn is None:

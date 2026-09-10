@@ -142,8 +142,6 @@ def test_locked_leader_is_never_stalled_out():
 
 def test_phase1_uses_manju_one_to_two_ticks():
     """Phase 1 하락 문턱은 만쥬의 **1~2호가**다 — 3호가는 우리가 늦게 잡은 값이었다."""
-    from tests.conftest import __file__ as _  # noqa: F401  (fixture 경로 고정용)
-
     d = PairDetector(pairs=[], config=DetectorConfig(
         leader_stall_secs=15.0, leader_drop_ticks=2),
         universe=["LEADER", "FOLLOWER"],

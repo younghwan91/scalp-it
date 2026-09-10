@@ -141,6 +141,37 @@ def _try_hypertable(conn: Any, table: str) -> None:
         cur.close()
 
 
+#: compress_after=14일 — ticks 는 ON CONFLICT DO NOTHING(불변, 즉시 안전)이고
+#: quotes 는 같은 초 스냅샷을 그날 안에서만 DO UPDATE 로 덮어쓴다. 다음
+#: 거래일부터 그 청크에 쓰기가 없으므로 14일 뒤 압축해도 재압축 churn 이
+#: 없다(quant-airflow CLAUDE.md §3 이 경고하는 패턴). vi_events 는 하루
+#: 몇 건뿐이라 압축 대상에서 뺀다 — 이득보다 정책 관리 비용이 크다.
+_COMPRESS_AFTER = "14 days"
+
+
+def _try_compression(conn: Any, table: str, segmentby: str) -> None:
+    """압축 설정 + 정책을 건다. 이미 걸려 있거나 확장이 없으면 조용히 넘어간다."""
+    if not is_postgres(conn):
+        return
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"ALTER TABLE {table} SET ("
+            "timescaledb.compress, "
+            f"timescaledb.compress_segmentby = '{segmentby}', "
+            "timescaledb.compress_orderby = 'ts DESC')"
+        )
+        cur.execute(
+            "SELECT add_compression_policy(%s, INTERVAL %s)",
+            (table, _COMPRESS_AFTER),
+        )
+        conn.commit()
+    except Exception:  # noqa: BLE001 — 이미 설정됨 등 전부 무해
+        conn.rollback()
+    finally:
+        cur.close()
+
+
 def init_realtime_tables(conn: Any) -> Any:
     """``ticks`` · ``quotes`` · ``vi_events`` 와 ``ts`` 인덱스를 만든다.
 
@@ -158,6 +189,8 @@ def init_realtime_tables(conn: Any) -> Any:
     _try_hypertable(conn, "ticks")
     _try_hypertable(conn, "quotes")
     _try_hypertable(conn, "vi_events")
+    _try_compression(conn, "ticks", "code")
+    _try_compression(conn, "quotes", "code")
     return conn
 
 

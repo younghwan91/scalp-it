@@ -323,6 +323,99 @@ def test_flush_survives_db_outage_and_preserves_batch(conn):
     assert count_ticks(conn) >= 1
 
 
+# ----- 프로세스 재시작 durability — 디스크 스풀 -------------------------------
+#
+# 위 test_flush_survives_db_outage_and_preserves_batch 는 "프로세스가 살아있는
+# 동안의" DB 순단만 다룬다. 그동안 버퍼는 메모리에만 있어서, DB 가 안 살아난
+# 채로 프로세스 자체가 죽으면(OOM·재시작·서버 재부팅) 그 순간 버퍼에 있던
+# 틱·호가가 전부 사라진다 — 복구 불가능한 데이터라 이 손실은 재현이 안 된다.
+# spool_dir 를 주면 flush 실패 시 배치를 디스크에도 남기고, 다음 프로세스가
+# 뜰 때 그걸 읽어 버퍼로 되살린다.
+
+
+def test_flush_spools_batch_to_disk_on_persistent_failure(conn, tmp_path):
+    """insert 가 계속 실패하면 배치를 spool 파일에도 남긴다(메모리 유실 대비)."""
+    spool_dir = tmp_path / "spool"
+    collector = KiwoomRealtimeCollector(
+        "tok", ["005930"], conn=conn, store=True, trade_date=TDAY,
+        log=lambda m: None, spool_dir=spool_dir,
+    )
+    from scalp_it.realtime.collector import SeqAssigner, parse_real_message
+    msg = {"trnm": "REAL", "data": [
+        {"type": "0B", "item": "005930", "values": _tick_values()}]}
+    ticks, _q, _v = parse_real_message(
+        msg, TDAY, SeqAssigner(), received_at=datetime(2026, 8, 24, 9, 0, 1))
+    collector._tick_buf.extend(ticks)
+
+    class _DeadConn:
+        def cursor(self):
+            raise RuntimeError("server closed the connection unexpectedly")
+
+    collector._conn = _DeadConn()
+    collector._dsn = None
+    collector._flush()
+
+    spool_file = spool_dir / "ticks.jsonl"
+    assert spool_file.exists()
+    lines = spool_file.read_text().strip().splitlines()
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["code"] == "005930"
+
+
+def test_flush_clears_spool_after_successful_insert(conn, tmp_path):
+    """재연결 후 flush 가 성공하면 그 배치의 spool 파일은 지운다(중복 리플레이 방지)."""
+    spool_dir = tmp_path / "spool"
+    collector = KiwoomRealtimeCollector(
+        "tok", ["005930"], conn=conn, store=True, trade_date=TDAY,
+        log=lambda m: None, spool_dir=spool_dir,
+    )
+    from scalp_it.realtime.collector import SeqAssigner, parse_real_message
+    msg = {"trnm": "REAL", "data": [
+        {"type": "0B", "item": "005930", "values": _tick_values()}]}
+    ticks, _q, _v = parse_real_message(
+        msg, TDAY, SeqAssigner(), received_at=datetime(2026, 8, 24, 9, 0, 1))
+    collector._tick_buf.extend(ticks)
+
+    class _DeadConn:
+        def cursor(self):
+            raise RuntimeError("server closed the connection unexpectedly")
+
+    collector._conn = _DeadConn()
+    collector._dsn = None
+    collector._flush()
+    assert (spool_dir / "ticks.jsonl").exists()
+
+    collector._conn = conn
+    collector._flush()
+    assert count_ticks(conn) >= 1
+    assert not (spool_dir / "ticks.jsonl").exists()
+
+
+def test_collector_replays_pending_spool_on_construction(conn, tmp_path):
+    """이전 프로세스가 죽기 직전 남긴 spool 파일을 새 인스턴스가 버퍼로 되살린다."""
+    spool_dir = tmp_path / "spool"
+    spool_dir.mkdir()
+    row = {
+        "code": "005930", "ts": "2026-08-24 09:00:01", "seq": 0,
+        "price": 274500, "volume": -30, "side": None, "strength": 120.5,
+        "cum_volume": 1000000, "best_bid": 274500, "best_ask": 274600, "raw": None,
+    }
+    (spool_dir / "ticks.jsonl").write_text(json.dumps(row) + "\n")
+
+    collector = KiwoomRealtimeCollector(
+        "tok", ["005930"], conn=conn, store=True, trade_date=TDAY,
+        log=lambda m: None, spool_dir=spool_dir,
+    )
+    assert len(collector._tick_buf) == 1
+    assert collector._tick_buf[0]["code"] == "005930"
+
+    # 되살린 걸 정상적으로 flush 할 수 있어야 한다(round-trip)
+    collector._flush()
+    assert count_ticks(conn) >= 1
+    assert not (spool_dir / "ticks.jsonl").exists()
+
+
 # ----- 만쥬 §6 장중 돌발 재료 — 구독 종목 추가 --------------------------------
 
 def test_build_reg_message_supports_incremental_add():

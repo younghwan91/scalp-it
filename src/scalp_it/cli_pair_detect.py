@@ -1388,10 +1388,12 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             print(f"[감지][경보] 프레임 처리 중 예외 — 소켓 루프 계속: {exc}",
                   file=sys.stderr, flush=True)
 
+    spool_base = args.spool_dir or None
     collector_a = KiwoomRealtimeCollector(
         token, codes_a, conn=conn, dsn=(args.dsn if store else None),
         types=types, url=url, store=store, trade_date=trade_date,
         on_frame=on_frame, flush_interval=args.flush_interval,
+        spool_dir=f"{spool_base}/a" if spool_base else None,
     )
     if dual_key:
         collector_b = KiwoomRealtimeCollector(
@@ -1399,6 +1401,7 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             types=types, url=url, store=store, trade_date=trade_date,
             on_frame=on_frame, flush_interval=args.flush_interval,
             log=lambda m: print(f"[key2]{m}", flush=True),
+            spool_dir=f"{spool_base}/b" if spool_base else None,
         )
         collector = DualKeyCollector(collector_a, collector_b)
     else:
@@ -1517,6 +1520,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="소켓: 이 프로세스에서 ticks·quotes 저장 안 함(감지만)")
     p.add_argument("--flush-interval", type=float, default=1.5,
                    help="소켓: 저장 배치 간격 초 (기본 1.5)")
+    p.add_argument("--spool-dir", default="data/spool",
+                   help="DB 순단 중 프로세스가 죽어도 버퍼를 잃지 않게 미러링할 "
+                        "디렉터리(기본 data/spool). 빈 문자열이면 끔")
     p.add_argument("--log", default="data/pair_alerts.log", help="알림 로그 파일")
     p.add_argument("--dry-run", action="store_true", help="로그·웹훅 안 쓰고 stdout 미리보기만")
     p.add_argument("--bell", action="store_true", help="알림 시 터미널 벨")

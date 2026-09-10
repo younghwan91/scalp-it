@@ -89,6 +89,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "1개라 여러 커넥션은 thrash 한다 — 초과분 종목은 잘라낸다")
     parser.add_argument("--flush-interval", type=float, default=1.5,
                         help="배치 저장 간격(초)")
+    parser.add_argument("--spool-dir", default="data/spool",
+                        help="DB 순단 중 프로세스가 죽어도 버퍼를 잃지 않게 "
+                             "미러링할 디렉터리(기본 data/spool). 빈 문자열이면 끔")
     parser.add_argument("--mock", action="store_true",
                         help="모의투자 WebSocket 엔드포인트 사용")
     parser.add_argument("--dry-run", action="store_true",
@@ -167,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         collector = KiwoomRealtimeCollector(
             token, codes, conn=conn, dsn=args.dsn, types=types, url=url,
             flush_interval=args.flush_interval, trade_date=date.today(),  # noqa: DTZ011
+            spool_dir=args.spool_dir or None,
         )
         print(f"커넥션 {collector.n_connections}개 · 종료까지 "
               f"{'무기한' if duration is None else f'{duration/60:.0f}분'}", file=sys.stderr)

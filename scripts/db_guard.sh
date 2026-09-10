@@ -2,25 +2,18 @@
 # 장중 DB 컨테이너 헬스가드 — 틱 수집(scalp-tick-collect, 평일 08:50~15:40)이 쓰는
 # KR_QUANT_DB(quant-airflow-timescaledb-1, localhost:5432)가 장중에 죽지 않게 지킨다.
 #
-# 왜 필요한가:
-#   1) 형제 레포 quant-airflow 의 cron 이 매일 10:00 `docker compose up -d`,
-#      10:10 `wait_and_stop.sh` 를 돌린다. wait_and_stop 은 그날 예정 DAG 가 모두
-#      끝나면 `docker compose stop` 으로 스택 전체를 내린다 — 그 스택에는 우리 틱 DB 인
-#      timescaledb 가 포함된다(같은 컨테이너 공유: quant-airflow 의 TIMESCALE_DB=kr_quant
-#      == 우리 KR_QUANT_DB 의 localhost:5432/kr_quant). DAG 가 장중에 일찍 끝나면
-#      장중에 우리 DB 가 꺼져 그날 틱 수집이 죽는다.
-#   2) 전날 저녁 `docker compose stop` 뒤 compose 의 `restart: unless-stopped` 는
-#      명시적으로 stop 된 컨테이너를 되살리지 않는다. 그래서 다음날 10:00 `compose up`
-#      전까지 — 즉 08:50 데몬 시작 시점엔 — DB 가 내려가 있을 수 있다.
+# 2026-09-11 갱신 — 이 가드가 막던 근본 원인은 이제 없다. quant-airflow 의
+# timescaledb 는 docker-compose.timescale.yml 로 분리돼 24/7 상시고, Airflow(예전엔
+# 같은 스택으로 하루 4번 up/down 하던 그것)는 simnode 로 옮겨 그쪽에서 자체
+# 컴포즈로 돈다 — 더는 이 컨테이너를 내렸다 올리는 주체가 없다. 그리고 어제
+# (2026-09-10) collector.py 에 `_reconnect_db`/`_flush` 재연결이 들어가 DB 순단
+# 중에도 데몬이 안 죽고 버퍼를 보존한다(2026-09-11 spool_dir 로 프로세스 재시작
+# durability 까지 보강, tests/test_realtime_collector.py 의 spool 테스트 참고).
 #
-# 이 스크립트는 우리 쪽에서만 도는 비침습 방어다. quant-airflow 는 절대 건드리지
-# 않는다(읽지도 쓰지도 않음, docker start 대상 컨테이너 하나만 만진다).
-# 멱등: 이미 정상이면 아무것도 안 하고 조용히 끝난다. 죽어 있으면 `docker start`
-# 후 pg_isready 로 복구를 확인한다. cron 메일 스팸을 피하려고 정상일 땐 로그도 안 남긴다.
-#
-# 잔여 위험(주의): 데몬(collector.py `_flush`)은 DB 순단 시 재연결하지 못하고 flush
-# 태스크가 죽는다 — 이 가드는 DB 를 다시 살리지만, 순단이 이미 났다면 데몬 자체 복구는
-# 못 한다. 데몬 복원력 개선(제안 별도)이 함께 필요하다.
+# 그래도 이 스크립트는 지운다. 방금 막은 위험이 사라졌다고 그 자리에서 바로
+# 안전망까지 걷어내는 건 검증 기간 없는 성급한 정리다 — 컨테이너가 죽어 있어도
+# 멱등하게 아무 해가 없으니(정상이면 조용히 종료) 당분간 무해한 이중 방어로 둔다.
+# 며칠 지켜본 뒤에도 발동 이력이 없으면(`data/db_guard.log` 확인) 지워도 된다.
 set -uo pipefail
 
 CONTAINER="${DB_GUARD_CONTAINER:-quant-airflow-timescaledb-1}"

@@ -18,6 +18,14 @@ import pandas as pd
 
 from ..adapters.db import connect, is_postgres, _placeholder  # noqa: F401 — re-exported
 
+#: 압축 대상: (code, ts) 로만 필터하는 조회가 대부분이라 segmentby='code',
+#: 최신 우선 조회가 많아 orderby='ts DESC'. compress_after=14일은 실측
+#: 근거가 있다 — upsert 는 그날 안에서만 일어나고(장중 재수집이 최신 값으로
+#: 덮어씀), 다음 거래일부터는 그 청크에 쓰기가 없다. 14일이면 재수집 창을
+#: 넉넉히 지나 압축해도 decompress→update→recompress churn 이 없다
+#: (quant-airflow CLAUDE.md §3 이 경고하는 그 패턴).
+_COMPRESS_AFTER = "14 days"
+
 MINUTE_COLUMNS: list[str] = [
     "code", "ts", "open", "high", "low", "close", "volume", "trade_value",
 ]
@@ -49,6 +57,44 @@ _UPSERT = (
 )
 
 
+def _try_hypertable_and_compression(conn: Any) -> None:
+    """postgres·TimescaleDB 면 하이퍼테이블 + 압축 정책을 건다.
+
+    운영 DB 는 2026-09 에 psql 로 수동 승격됐고 이 함수가 그 상태를 코드에
+    반영한다 — 반영 안 하면 새 DB 를 세울 때 minute_bars 만 일반 테이블로
+    남는 드리프트가 난다(quant-airflow 가 겪은 것과 같은 부류의 사고).
+    확장 미설치·권한 없음·이미 설정됨은 전부 무해하게 넘어간다.
+    """
+    if not is_postgres(conn):
+        return
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT create_hypertable(%s, 'ts', "
+            "if_not_exists => TRUE, migrate_data => TRUE)",
+            ("minute_bars",),
+        )
+        conn.commit()
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+    try:
+        cur.execute(
+            "ALTER TABLE minute_bars SET ("
+            "timescaledb.compress, "
+            "timescaledb.compress_segmentby = 'code', "
+            "timescaledb.compress_orderby = 'ts DESC')"
+        )
+        cur.execute(
+            "SELECT add_compression_policy('minute_bars', INTERVAL %s)",
+            (_COMPRESS_AFTER,),
+        )
+        conn.commit()
+    except Exception:  # noqa: BLE001 — 이미 설정됨 등
+        conn.rollback()
+    finally:
+        cur.close()
+
+
 def init_minute_bars(conn: Any) -> Any:
     """``minute_bars`` 와 ``ts`` 인덱스를 만든다. 이미 있으면 아무 일도 없다."""
     cur = conn.cursor()
@@ -56,6 +102,7 @@ def init_minute_bars(conn: Any) -> Any:
     cur.execute(_CREATE_INDEX)
     cur.close()
     conn.commit()
+    _try_hypertable_and_compression(conn)
     return conn
 
 
