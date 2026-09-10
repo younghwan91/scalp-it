@@ -784,7 +784,17 @@ class KiwoomRealtimeCollector:
         # 죽지 않는다.
         def _try(buf_attr: str, insert_fn: Any, counter: str) -> None:
             buf = getattr(self, buf_attr)
-            if not buf or self._conn is None:
+            if not buf:
+                return
+            if self._conn is None:
+                # 콜드 스타트(아직 한 번도 연결 못 함)나 재연결이 방금 또 실패한
+                # 경우 — insert 를 시도할 커넥션 자체가 없다. 그렇다고 그냥
+                # 넘어가면 spool_dir 가 있어도 디스크에 안 쓰여서, 이 상태로
+                # 프로세스가 죽으면 스풀도 못 건진 채 버퍼가 통째로 날아간다
+                # (실전 통합 테스트 2026-09-11 에서 발견 — 단위 테스트는 전부
+                # `self._conn` 에 죽은 커넥션 객체를 넣어 검증해서 이 None
+                # 경로를 못 잡았다). insert 실패와 동일하게 스풀에 미러링한다.
+                self._write_spool(buf_attr, list(buf))
                 return
             batch = list(buf)
             try:

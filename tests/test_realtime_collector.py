@@ -363,6 +363,35 @@ def test_flush_spools_batch_to_disk_on_persistent_failure(conn, tmp_path):
     assert row["code"] == "005930"
 
 
+def test_flush_spools_on_cold_start_when_conn_is_none(tmp_path):
+    """conn=None 으로 시작(재연결도 실패)해도 spool 에는 쓴다.
+
+    ``_DeadConn`` 을 쓰는 위 테스트들은 ``self._conn`` 이 non-None(죽은 객체)
+    이라 insert 예외 경로를 타는데, 프로세스가 갓 떠서 아직 한 번도 연결
+    못 했을 때는 ``self._conn`` 자체가 None 이다. 실전 통합 검증(2026-09-11)
+    에서 이 경로가 그냥 조용히 넘어가고 spool 도 안 쓰는 버그로 드러났다 —
+    이 상태로 프로세스가 죽으면 스풀 없이 버퍼가 통째로 사라진다.
+    """
+    spool_dir = tmp_path / "spool"
+    collector = KiwoomRealtimeCollector(
+        "tok", ["005930"], conn=None, dsn="postgresql://x:x@127.0.0.1:1/x",
+        store=True, trade_date=TDAY, log=lambda m: None, spool_dir=spool_dir,
+    )
+    from scalp_it.realtime.collector import SeqAssigner, parse_real_message
+    msg = {"trnm": "REAL", "data": [
+        {"type": "0B", "item": "005930", "values": _tick_values()}]}
+    ticks, _q, _v = parse_real_message(
+        msg, TDAY, SeqAssigner(), received_at=datetime(2026, 8, 24, 9, 0, 1))
+    collector._tick_buf.extend(ticks)
+    assert collector._conn is None
+
+    collector._flush()  # 재연결 시도 -> 실패(127.0.0.1:1) -> conn 여전히 None
+
+    spool_file = spool_dir / "ticks.jsonl"
+    assert spool_file.exists(), "conn=None 콜드스타트에서도 spool 에 써야 한다"
+    assert len(collector._tick_buf) == 1  # 메모리 버퍼도 그대로 보존
+
+
 def test_flush_clears_spool_after_successful_insert(conn, tmp_path):
     """재연결 후 flush 가 성공하면 그 배치의 spool 파일은 지운다(중복 리플레이 방지)."""
     spool_dir = tmp_path / "spool"
