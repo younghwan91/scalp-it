@@ -1398,6 +1398,7 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             token2, codes_b, conn=conn2, dsn=(args.dsn if store else None),
             types=types, url=url, store=store, trade_date=trade_date,
             on_frame=on_frame, flush_interval=args.flush_interval,
+            log=lambda m: print(f"[key2]{m}", flush=True),
         )
         collector = DualKeyCollector(collector_a, collector_b)
     else:

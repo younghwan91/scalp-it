@@ -544,3 +544,56 @@ def test_dual_key_run_propagates_exception_from_either_side():
     with pytest.raises(RuntimeError, match="소켓 죽음"):
         asyncio.run(DualKeyCollector(a, b).run())
     assert b.ran_with is None or True  # b 도 gather 로 같이 돌았다(예외는 나중에 raise)
+
+
+# ------------------------------------------ 빈 목록으로 시작하는 커넥션(듀얼키 B)
+
+def test_collector_with_no_codes_still_opens_one_connection():
+    """듀얼키 B 는 장전 유니버스가 정원(50)보다 작으면 빈 목록으로 시작한다.
+
+    빈 목록이라고 커넥션을 0개 만들면 LOGIN 자체가 없어 소켓이 안 열리고, 장중
+    추가(add_codes)가 전부 조용히 거절된다 — 09-07~10 나흘 동안 정원이 100 이라
+    믿었는데 실제론 50 이었다.
+    """
+    c = KiwoomRealtimeCollector("tok", [], store=False, log=lambda m: None)
+    assert c.n_connections == 1
+
+
+def test_empty_connection_logs_in_without_reg_and_accepts_adds():
+    import asyncio
+
+    logs: list[str] = []
+
+    async def _run():
+        collector = KiwoomRealtimeCollector("tok", [], store=False, trade_date=TDAY,
+                                            log=logs.append)
+        handshake = [json.dumps({"trnm": "LOGIN", "return_code": 0})]
+        ws = _FakeWS(handshake, [], collector)
+
+        async def fake_connect():
+            return ws
+
+        collector._connect = fake_connect
+        await collector.run(duration=2.0)
+        assert [json.loads(s)["trnm"] for s in ws.sent] == ["LOGIN"]   # REG 는 안 보낸다
+        assert collector._live_ws["1"][1] == []
+        added, rejected = await collector.add_codes(["000001", "000002"])
+        assert added == ["000001", "000002"] and rejected == []
+        reg = json.loads(ws.sent[-1])
+        assert reg["trnm"] == "REG" and reg["refresh"] == "1"
+        assert reg["data"][0]["item"] == ["000001", "000002"]
+
+    asyncio.run(_run())
+    assert any("LOGIN ok" in m for m in logs)
+
+
+def test_add_codes_without_live_socket_says_so():
+    """소켓이 안 붙었을 때의 거절도 로그에 남아야 한다 — 조용히 넘기면 못 본다."""
+    import asyncio
+
+    logs: list[str] = []
+    c = KiwoomRealtimeCollector("tok", [], store=False, log=logs.append)
+    added, rejected = asyncio.run(c.add_codes(["000001"]))
+    assert added == [] and rejected == ["000001"]
+    assert c.rejected_codes == ["000001"]
+    assert any("소켓" in m for m in logs)

@@ -457,7 +457,10 @@ class KiwoomRealtimeCollector:
         self._reg_limit = int(reg_limit)   # 장중 추가(add_codes)가 한도를 알아야 한다
         if per_conn is None:
             per_conn = codes_per_connection(types, reg_limit=reg_limit)
-        self._groups = chunk_codes(codes, per_conn)
+        # 빈 목록이어도 커넥션 하나는 연다 — 듀얼키 B 는 장전 유니버스가 정원보다
+        # 작으면 빈 손으로 시작하는데, 커넥션이 0개면 LOGIN 이 없어 장중 추가가
+        # 전부 조용히 거절된다(09-07~10 정원 100 이라 믿었는데 실제 50).
+        self._groups = chunk_codes(codes, per_conn) or [[]]
 
         self._seq = SeqAssigner()
         self._tick_buf: list[dict] = []
@@ -586,7 +589,10 @@ class KiwoomRealtimeCollector:
         한도를 넘는 건 거절하고 목록으로 돌려준다(조용히 넘기면 왜 못 봤는지 모른다).
         """
         if not self._live_ws:
-            return [], list(codes)
+            rejected = list(codes)
+            self._log(f"소켓 미연결 — 거절 {len(rejected)}종목: {', '.join(rejected[:5])}")
+            self.rejected_codes.extend(rejected)
+            return [], rejected
         # 첫 커넥션에만 붙인다 — 여러 커넥션은 같은 키에서 서로 kick 하므로 애초에
         # 단일 커넥션으로 운영하는 게 전제다.
         grp_no = min(self._live_ws)
@@ -640,6 +646,9 @@ class KiwoomRealtimeCollector:
         login = json.loads(await ws.recv())
         if int(login.get("return_code", -1)) != 0:
             raise RuntimeError(f"LOGIN 실패: {login}")
+        if not codes:
+            self._log(f"[conn{grp_no}] LOGIN ok · 0종목 — 장중 추가 대기")
+            return
         await ws.send(json.dumps(build_reg_message(codes, self._types, grp_no)))
         reg = json.loads(await ws.recv())
         if int(reg.get("return_code", -1)) != 0:
