@@ -1601,7 +1601,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="본절 탈출 판정까지 기다리는 시간(초). 원문에 없는 우리 값")
     p.add_argument("--profit-giveback", type=float, default=0.0,
                    help="정점 이익 대비 이 비율 이하로 반납하면 그날 하드스톱(0.5 = 절반). "
-                        "타 트레이더 B B-3 '50% Rule'(51번). 0 = 끔")
+                        "타 트레이더 B B-3 '50%% Rule'(51번). 0 = 끔")
     p.add_argument("--profit-giveback-min", type=float, default=0.0,
                    help="위 규칙을 적용하기 시작하는 최소 정점 이익(원). "
                         "'significant P_peak' 단서 — 작은 정점으로 하루를 끝내지 않는다")
@@ -1682,7 +1682,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "보다 훨씬 이르다. 실시간 VI 피드 없이 가격으로 계산한다. 0 = 끔")
     p.add_argument("--limitup-require-surge", action="store_true",
                    help="상한가 방아쇠에 서지 조건까지 AND — 상한가 근처에서 정체된 "
-                        "종목에 발동하는 걸 막는다(원본 presurge 는 +25% 교차 AND "
+                        "종목에 발동하는 걸 막는다(원본 presurge 는 +25%% 교차 AND "
                         "그 분 +1%% 모멘텀이었다)")
     p.add_argument("--limitup-lock", type=float, default=None,
                    help="상한가를 이 초만큼 연속 유지하면 발동(잠김). 0 = 끔")

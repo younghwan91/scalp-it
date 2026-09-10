@@ -25,7 +25,6 @@ dev = ["pytest>=8.0", "ruff==0.16.2", "psycopg2-binary>=2.9"]
 
 [project.scripts]
 scalp-baseline = "scalp_it.cli:main"
-scalp-news = "scalp_it.cli_news:main"
 scalp-score = "scalp_it.score.cli:main"
 scalp-layers = "scalp_it.cli_layers:main"
 scalp-today = "scalp_it.cli_today:main"
