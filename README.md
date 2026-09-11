@@ -128,28 +128,44 @@ flowchart TD
 
 ## 운영 (cron, 평일)
 
-| 시각 | 하는 일 |
-|---|---|
-| 08:00~15:55 (5분마다) | `scripts/db_guard.sh` — 장중 DB 컨테이너 헬스가드 |
-| 08:55 | `scripts/pair_detect_daily.sh` — 짝꿍 감지기 dry-run 시작. 틱·호가 수집 겸함, 크래시 자동 재시작, 15:20 자체 종료 |
-| 09:10 · 10:00 | `scalp-tick-health --minutes 20` — 수집 헬스체크 |
-| 15:25 | `scripts/pair_daily_summary.py` — 짝꿍 일일 성과 집계 |
-| 15:40 | 수집·감지 프로세스 종료(`pkill`) |
-| 16:00 | `scripts/tick_sanity.py --date today` |
-| 16:10 | `scalp-theme-snapshot` — 키움 테마 일일 스냅샷 |
+이 레포는 **trader**(실시간 수집·매매)와 **simnode**(재현 가능한 배치·분석) 두 호스트에
+나눠 돈다 — 같은 레포를 양쪽에 clone 해두고, 트리거 시각은 옛 trader 단일 호스트 시절 그대로다.
+
+| 시각 | 호스트 | 하는 일 |
+|---|---|---|
+| 08:55 | trader | `scripts/pair_detect_daily.sh` — 짝꿍 감지기 dry-run 시작. 틱·호가 수집 겸함, 크래시 자동 재시작, 15:20 자체 종료 |
+| 09:10 · 10:00 | trader | `scalp-tick-health --minutes 20` — 수집 헬스체크 |
+| 15:25 | simnode | `scripts/pair_daily_summary.py` — 짝꿍 일일 성과 집계 |
+| 15:40 | trader | 수집·감지 프로세스 종료(`pkill`) |
+| 15:45 | trader | `scalp-morning --date today` — 아침 리포트용 당일치 집계 |
+| 16:00 | trader | `scripts/tick_sanity.py --date today` |
+| 16:05 | simnode | `scripts/news_judge_shadow.py` — 뉴스 판단 반응매매 그림자 |
+| 16:10 | trader | `scalp-theme-snapshot` — 키움 테마 일일 스냅샷 |
+| 18:30 | simnode | `scalp-coverage` — 필터배제 커버리지 측정 |
+
+`scripts/db_guard.sh`(장중 DB 컨테이너 헬스가드)는 **2026-09-11 크론에서 뺐다** — 지금 걸어두면
+아래 "DB 의존성"의 split-brain 위험을 만든다. 스크립트 파일 자체는 남아있으니(trader 가 다시
+PRIMARY 를 맡게 되면 되살릴 근거), 재활성화 전에 파일 헤더 주석과 `pg_is_in_recovery()` 상태를
+반드시 확인할 것.
 
 **키움 App key 1개 = WebSocket 세션 1개.** 그래서 `scalp-tick-collect` 를 따로 띄우지 않고
 짝꿍 감지기가 수집을 겸한다(45종목). 두 프로세스를 동시에 띄우면 서로 kick 해 틱이 유실된다.
 
 ## DB 의존성 (주의)
 
-`KR_QUANT_DB` 는 형제 레포 quant-airflow 의 **`quant-airflow-timescaledb-1` 컨테이너를 공유**한다
-(localhost:5432/kr_quant). 이 컨테이너가 장중에 내려가면 그날 틱 수집이 끊긴다 — 틱·호가는
-**소급 수집이 불가능**하므로 그날 데이터는 영구 손실이다.
+`KR_QUANT_DB`(`kr-quant/.env`)는 **고정 호스트가 아니라 지금 PRIMARY 인 쪽**을 가리킨다 — 어느
+쪽이 PRIMARY 인지는 `pg_is_in_recovery()` 로 확인한다(false = PRIMARY). 자세한 배경·전환 절차는
+형제 레포 quant-airflow 의 README 상단 안내 상자 참고.
 
-`scripts/db_guard.sh` 가 5분마다 컨테이너 생존을 확인해 살아있으면 아무것도 하지 않고, 죽어있으면
-재기동한다. 단, 컨테이너가 **아예 없으면**(`docker compose down` 으로 제거된 경우) db_guard 로는
-못 살린다 — quant-airflow 쪽에서 `docker compose up -d` 해야 한다.
+**2026-09-11 저녁부터**: PRIMARY 는 simnode(`192.168.45.9:5433`), trader 는 읽기 전용 스트리밍
+리플리카(`quant-airflow-timescaledb-1`, localhost:5432)다. `KiwoomRealtimeCollector`(trader 에서
+실행)는 LAN 너머 simnode PRIMARY 에 직접 쓴다 — 원래는 "PRIMARY 는 수집기와 같은 호스트에 있어야
+LAN 순단에도 안 죽는다"는 제약 때문에 반대(trader=PRIMARY)였는데, collector 에 재연결+디스크
+스풀(`spool_dir`)이 들어가 LAN 순단을 스스로 버티는 게 실전 검증되면서 그 제약이 풀렸다.
+
+**틱·호가는 소급 수집이 불가능**하므로, PRIMARY 쪽 DB(지금은 simnode)가 장중에 완전히 죽으면
+그날 데이터는 영구 손실이다 — trader 의 로컬 리플리카가 죽는 것과는 다르다(리플리카는 그냥
+읽기 전용 사본이라 죽어도 수집엔 영향 없음, PRIMARY 에서 다시 시딩하면 됨).
 
 ## 문서
 
@@ -166,7 +182,7 @@ flowchart TD
 |---|---|
 | [kiwoom-client](https://github.com/younghwan91/kiwoom-client) | 시세·수급·분봉·테마·주문 (182 REST + WebSocket) |
 | [kr-quant](https://github.com/younghwan91/kr-quant) | 검증 프레임워크 (walk-forward·음성대조) + 이관된 저빈도 팩터(PEAD·저변동성) |
-| quant-airflow | 일일 데이터 적재 → TimescaleDB (**컨테이너 공유** — 위 "DB 의존성" 참고) |
+| quant-airflow | 일일 데이터 적재 + TimescaleDB PRIMARY/리플리카 구성 (**DB 공유** — 위 "DB 의존성" 참고) |
 
 ## 원칙
 
