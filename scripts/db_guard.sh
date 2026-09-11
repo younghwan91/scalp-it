@@ -2,18 +2,16 @@
 # 장중 DB 컨테이너 헬스가드 — 틱 수집(scalp-tick-collect, 평일 08:50~15:40)이 쓰는
 # KR_QUANT_DB(quant-airflow-timescaledb-1, localhost:5432)가 장중에 죽지 않게 지킨다.
 #
-# 2026-09-11 갱신 — 이 가드가 막던 근본 원인은 이제 없다. quant-airflow 의
-# timescaledb 는 docker-compose.timescale.yml 로 분리돼 24/7 상시고, Airflow(예전엔
-# 같은 스택으로 하루 4번 up/down 하던 그것)는 simnode 로 옮겨 그쪽에서 자체
-# 컴포즈로 돈다 — 더는 이 컨테이너를 내렸다 올리는 주체가 없다. 그리고 어제
-# (2026-09-10) collector.py 에 `_reconnect_db`/`_flush` 재연결이 들어가 DB 순단
-# 중에도 데몬이 안 죽고 버퍼를 보존한다(2026-09-11 spool_dir 로 프로세스 재시작
-# durability 까지 보강, tests/test_realtime_collector.py 의 spool 테스트 참고).
-#
-# 그래도 이 스크립트는 지운다. 방금 막은 위험이 사라졌다고 그 자리에서 바로
-# 안전망까지 걷어내는 건 검증 기간 없는 성급한 정리다 — 컨테이너가 죽어 있어도
-# 멱등하게 아무 해가 없으니(정상이면 조용히 종료) 당분간 무해한 이중 방어로 둔다.
-# 며칠 지켜본 뒤에도 발동 이력이 없으면(`data/db_guard.log` 확인) 지워도 된다.
+# **2026-09-11 크론 비활성화됨(crontab 참고) — 이 스크립트를 그대로 두지 마라.**
+# DB 원본이 trader 에서 simnode(192.168.45.9:5433)로 옮겨갔다(pg_promote). 이
+# 컨테이너(quant-airflow-timescaledb-1)는 이제 **의도적으로 stop 상태**다 —
+# 옛 primary 의 잔해라 살리면 안 된다. 이 가드가 여전히 크론에 걸려 있었다면
+# "컨테이너가 죽어 있다"고 오인해 `docker start` 로 되살렸을 것이고, 그러면
+# 최신 데이터가 없는 옛 DB 가 다시 쓰기 가능 상태로 돌아와 **split-brain**
+# 위험을 만든다 — 예전에 적었던 "멱등하게 아무 해가 없다"는 지금은 틀린
+# 말이다. 파일은 남겨둔다(trader 가 다시 primary 를 맡게 되면 그때 되살릴 수
+# 있게) — 하지만 크론에 다시 걸기 전에 CONTAINER 가 가리키는 게 지금 진짜
+# primary 가 맞는지 반드시 확인할 것.
 set -uo pipefail
 
 CONTAINER="${DB_GUARD_CONTAINER:-quant-airflow-timescaledb-1}"
