@@ -24,6 +24,11 @@ from ..adapters.db import connect, is_postgres, _placeholder  # noqa: F401 — r
 #: 덮어씀), 다음 거래일부터는 그 청크에 쓰기가 없다. 14일이면 재수집 창을
 #: 넉넉히 지나 압축해도 decompress→update→recompress churn 이 없다
 #: (quant-airflow CLAUDE.md §3 이 경고하는 그 패턴).
+#:
+#: ⚠️ 압축된 청크는 형제 레포 quant-airflow의 scripts/backup_to_gdrive.sh 가
+#: "core"(가벼운 일일 백업)에서 제외하는 목록을 빠져나간다 — 왜 그런지와 실제로
+#: 무슨 일이 있었는지는 realtime/store.py 의 같은 주석에 있다. 여기 압축
+#: 대상·주기를 바꾸면 그쪽 exclude 목록도 같이 볼 것.
 _COMPRESS_AFTER = "14 days"
 
 MINUTE_COLUMNS: list[str] = [

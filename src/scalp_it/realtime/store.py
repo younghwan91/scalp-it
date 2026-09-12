@@ -146,6 +146,16 @@ def _try_hypertable(conn: Any, table: str) -> None:
 #: 거래일부터 그 청크에 쓰기가 없으므로 14일 뒤 압축해도 재압축 churn 이
 #: 없다(quant-airflow CLAUDE.md §3 이 경고하는 패턴). vi_events 는 하루
 #: 몇 건뿐이라 압축 대상에서 뺀다 — 이득보다 정책 관리 비용이 크다.
+#:
+#: ⚠️ 압축된 청크는 timescaledb_information.chunks 조회에서 원래 청크명이
+#: 빈 채로 잡히고 실데이터는 compress_hyper_*_chunk 로 옮겨간다 — 형제 레포
+#: quant-airflow의 scripts/backup_to_gdrive.sh(heavy_chunk_excludes)가 이걸
+#: 놓쳐 압축 데이터를 "core"(가벼운 일일 백업)에 그대로 실었다. 이 정책이
+#: 들어온 날(2026-09-11, 이 파일의 압축 도입 커밋)에 08-24 이후 오래된 청크가
+#: 한꺼번에 압축되면서 core 가 420MB → 1.84GB 로 뛰었고, 그게 09-13 에
+#: 발견될 때까지 아무 신호도 없었다(에러가 아니라 파일이 커질 뿐이다).
+#: 여기 압축 대상 테이블이나 compress_after 값을 바꾸면 그쪽 exclude 목록도
+#: 같이 볼 것.
 _COMPRESS_AFTER = "14 days"
 
 
