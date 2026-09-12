@@ -134,7 +134,7 @@ wheels = [
 [[package]]
 name = "kiwoom-client"
 version = "0.3.0"
-source = { git = "https://github.com/younghwan91/kiwoom-client.git?rev=1debc40100d96ce808e14be1ca2e702b7c9983ac#1debc40100d96ce808e14be1ca2e702b7c9983ac" }
+source = { git = "https://github.com/younghwan91/kiwoom-client.git?rev=492aa607f79f8bed0049ff5d93348fbc0e5cd146#492aa607f79f8bed0049ff5d93348fbc0e5cd146" }
 dependencies = [
     { name = "httpx" },
     { name = "websockets", version = "16.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -708,7 +708,7 @@ pg = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
-    { name = "kiwoom-client", git = "https://github.com/younghwan91/kiwoom-client.git?rev=1debc40100d96ce808e14be1ca2e702b7c9983ac" },
+    { name = "kiwoom-client", git = "https://github.com/younghwan91/kiwoom-client.git?rev=492aa607f79f8bed0049ff5d93348fbc0e5cd146" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pandas", specifier = ">=2.0" },
