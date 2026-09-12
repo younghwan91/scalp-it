@@ -8,7 +8,14 @@
 # 2배(≈100종목)가 된다 — 09-07 커버리지 확인(급등 종목 상당수를 구독 자체를
 # 못 해서 놓침)이 계기. 없으면 기존대로 단일 키(정원 50)로 돈다.
 set -u
-cd /home/young/Documents/git/scalp-it
+# 레포 경로는 이 스크립트 위치에서 유도한다. 2026-09-11 레포를
+# ~/Documents/git 에서 ~/git 으로 옮기면서 여기 하드코딩돼 있던 옛 경로가
+# 죽었는데, 이 스크립트는 set -e 가 없어서(크래시 재시작 루프를 살리려고
+# 의도적으로) **cd 가 실패해도 그냥 다음 줄로 갔다** — 그러면 상대경로
+# ../quant-airflow/.env · ../kr-quant/.env 가 전부 빗나가 키움·DB 자격증명이
+# 빈 채로 감지기를 띄우다 실패하고, 15:20 까지 재시도만 돌며 그날 수집·매매를
+# 통째로 날린다(틱은 소급 수집 불가). cd 만은 명시적으로 죽게 만든다.
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 export $(grep -E '^KIWOOM_APP_(KEY|SECRET|KEY_2|SECRET_2)=' ../quant-airflow/.env | xargs)
 export $(grep -v '^#' ../kr-quant/.env | xargs)
 pkill -f "scalp-tick-collect" 2>/dev/null; sleep 2

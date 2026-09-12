@@ -228,7 +228,11 @@ def quintile_means(
 def _load_env(path: str | None) -> None:
     if os.environ.get("KR_QUANT_DB"):
         return
-    for cand in (path, "../kr-quant/.env", "/home/young/Documents/git/kr-quant/.env"):
+    # 세 번째는 cwd 와 무관하게 듣는 절대경로 폴백이다 — 2026-09-11 레포가
+    # ~/Documents/git 에서 ~/git 으로 옮겨지며 옛 경로가 죽었으므로, 하드코딩
+    # 대신 이 파일 위치에서 유도한다(scripts/ → scalp-it → 형제 kr-quant).
+    _sibling_env = pathlib.Path(__file__).resolve().parents[2] / "kr-quant" / ".env"
+    for cand in (path, "../kr-quant/.env", str(_sibling_env)):
         if cand and pathlib.Path(cand).exists():
             for line in pathlib.Path(cand).read_text().splitlines():
                 line = line.strip()
