@@ -2,6 +2,13 @@
 
 읽기 전용이다. scalp-it 은 어떤 테이블에도 쓰지 않는다.
 가격은 반드시 ``daily_bars_adjusted`` 에서 읽는다. ``daily_bars`` 는 분할 미반영이다.
+
+kr-quant(``storage.py``)·krx-signal-engine(``quant_airflow_db_client.py``)도
+같은 TimescaleDB 를 읽는 자기 클라이언트를 따로 갖고 있다 — 이건 사고가
+아니라 kr-quant 쪽이 이미 문서화해둔 의도적 결정이다: "수집·적재(쓰기)
+쪽만 quant-airflow 로 합치고, 읽기 클라이언트는 독립된 사본으로 둔다"
+(kr-quant/src/kr_quant/storage.py 상단 참고, 2026-09-12 조사로 확인). 그래서
+여기를 공유 패키지로 뽑는 리팩터는 하지 않는다.
 """
 
 from __future__ import annotations
