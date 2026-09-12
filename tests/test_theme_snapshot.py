@@ -5,6 +5,7 @@
 
 import json
 import sqlite3
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -60,6 +61,25 @@ def _members_resp(rows, *, cont_yn="N", next_key=""):
     body = {"flu_rt": "-3.74", "dt_prft_rt": "+26.32", THEME_MEMBER_ROWS_KEY: rows,
             "return_code": 0, "return_msg": "정상"}
     return httpx.Response(200, json=body, headers={"cont-yn": cont_yn, "next-key": next_key})
+
+
+def _groups_page(rows, *, cont_yn="N", next_key=""):
+    """``kiwoom_client`` 경계 목(mock)용 — ka90001 한 페이지."""
+    return {THEME_GROUP_ROWS_KEY: rows, "cont-yn": cont_yn, "next-key": next_key}
+
+
+def _members_page(rows, *, cont_yn="N", next_key=""):
+    """``kiwoom_client`` 경계 목(mock)용 — ka90002 한 페이지."""
+    return {THEME_MEMBER_ROWS_KEY: rows, "cont-yn": cont_yn, "next-key": next_key}
+
+
+def _fake_kiwoom_api(*, group_pages=None, member_pages=None):
+    api = MagicMock()
+    if group_pages is not None:
+        api.theme.theme_group_list.side_effect = group_pages
+    if member_pages is not None:
+        api.theme.theme_component_stocks.side_effect = member_pages
+    return api
 
 
 def _router(theme_handler):
@@ -125,39 +145,38 @@ def test_normalize_theme_group_without_code_raises():
 
 
 def test_theme_groups_sends_ka90001_body_and_follows_next_key():
-    seen: list[dict] = []
+    fake_api = _fake_kiwoom_api(group_pages=[
+        _groups_page([_GROUP_ROW], cont_yn="Y", next_key="00100"),
+        _groups_page([_GROUP_ROW2, _GROUP_ROW], cont_yn="N"),  # 경계 중복 포함
+    ])
+    client = KiwoomClient("key", "secret", kiwoom_api=fake_api)
+    groups = client.theme_groups()
 
-    def theme(request: httpx.Request) -> httpx.Response:
-        seen.append({"api": request.headers["api-id"], "nk": request.headers.get("next-key"),
-                     "body": json.loads(request.content)})
-        if len(seen) == 1:
-            return _groups_resp([_GROUP_ROW], cont_yn="Y", next_key="00100")
-        return _groups_resp([_GROUP_ROW2, _GROUP_ROW], cont_yn="N")  # 경계 중복 포함
-
-    groups = _make(_router(theme)).theme_groups()
-    assert [s["api"] for s in seen] == ["ka90001", "ka90001"]
-    assert [s["nk"] for s in seen] == [None, "00100"]
-    assert seen[0]["body"] == {"qry_tp": "0", "stk_cd": "", "date_tp": "1", "thema_nm": "",
-                               "flu_pl_amt_tp": "1", "stex_tp": "1"}
+    calls = fake_api.theme.theme_group_list.call_args_list
+    assert [c.kwargs["next_key"] for c in calls] == ["", "00100"]
+    assert calls[0].kwargs == {
+        "cont_yn": "N", "next_key": "", "qry_tp": "0", "stk_cd": "", "date_tp": "1",
+        "thema_nm": "", "flu_pl_amt_tp": "1", "stex_tp": "1",
+    }
     assert [g["theme_code"] for g in groups] == ["141", "420"]
 
 
 def test_theme_members_sends_ka90002_body():
-    seen: list[dict] = []
+    fake_api = _fake_kiwoom_api(member_pages=[_members_page([_MEMBER_ROW, _MEMBER_ROW2])])
+    client = KiwoomClient("key", "secret", kiwoom_api=fake_api)
+    members = client.theme_members("141")
 
-    def theme(request: httpx.Request) -> httpx.Response:
-        seen.append({"api": request.headers["api-id"], "body": json.loads(request.content)})
-        return _members_resp([_MEMBER_ROW, _MEMBER_ROW2])
-
-    members = _make(_router(theme)).theme_members("141")
-    assert seen[0]["api"] == "ka90002"
-    assert seen[0]["body"] == {"thema_grp_cd": "141", "date_tp": "2", "stex_tp": "1"}
+    fake_api.theme.theme_component_stocks.assert_called_once_with(
+        cont_yn="N", next_key="", thema_grp_cd="141", date_tp="2", stex_tp="1",
+    )
     assert [m["code"] for m in members] == ["000020", "131100"]
     assert all(m["theme_code"] == "141" for m in members)
 
 
 def test_theme_members_empty_is_not_an_error():
-    assert _make(_router(lambda r: _members_resp([]))).theme_members("999") == []
+    fake_api = _fake_kiwoom_api(member_pages=[_members_page([])])
+    client = KiwoomClient("key", "secret", kiwoom_api=fake_api)
+    assert client.theme_members("999") == []
 
 
 # ------------------------------------------------------------------ 저장소
@@ -230,32 +249,33 @@ def test_upsert_empty_is_zero(conn):
 # ------------------------------------------------------------------ CLI
 
 
-def _cli_handler():
+def _cli_kiwoom_api():
+    """``cli_theme.main`` 이 통으로 거치는 kiwoom_api 목 — ka90001 한 번, 테마마다 ka90002."""
     calls: list[str] = []
+    fake_api = MagicMock()
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/oauth2/token":
-            return httpx.Response(200, json=_TOKEN_BODY)
-        api = request.headers["api-id"]
-        calls.append(api)
-        if api == "ka90001":
-            return _groups_resp([_GROUP_ROW, _GROUP_ROW2])
-        body = json.loads(request.content)
-        if body["thema_grp_cd"] == "141":
-            return _members_resp([_MEMBER_ROW, _MEMBER_ROW2])
-        return _members_resp([_MEMBER_ROW])
+    def group_list(**_kwargs):
+        calls.append("ka90001")
+        return _groups_page([_GROUP_ROW, _GROUP_ROW2])
 
-    return handler, calls
+    def member_stocks(*, thema_grp_cd, **_kwargs):
+        calls.append("ka90002")
+        if thema_grp_cd == "141":
+            return _members_page([_MEMBER_ROW, _MEMBER_ROW2])
+        return _members_page([_MEMBER_ROW])
+
+    fake_api.theme.theme_group_list.side_effect = group_list
+    fake_api.theme.theme_component_stocks.side_effect = member_stocks
+    return fake_api, calls
 
 
 def test_cli_saves_groups_and_members_for_the_date(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("KIWOOM_APP_KEY", "k")
     monkeypatch.setenv("KIWOOM_APP_SECRET", "s")
-    handler, calls = _cli_handler()
+    fake_api, calls = _cli_kiwoom_api()
     db = str(tmp_path / "theme.db")
-    client = httpx.Client(transport=httpx.MockTransport(handler))
 
-    rc = cli_theme.main(["--dsn", db, "--date", "20260823", "--sleep", "0"], client=client)
+    rc = cli_theme.main(["--dsn", db, "--date", "20260823", "--sleep", "0"], kiwoom_api=fake_api)
     assert rc == 0
     assert calls == ["ka90001", "ka90002", "ka90002"]
     out = capsys.readouterr()
@@ -271,8 +291,8 @@ def test_cli_saves_groups_and_members_for_the_date(tmp_path, monkeypatch, capsys
     conn.close()
 
     # 같은 날 다시 돌려도 행이 늘지 않는다.
-    rc = cli_theme.main(["--dsn", db, "--date", "20260823", "--sleep", "0"],
-                        client=httpx.Client(transport=httpx.MockTransport(handler)))
+    fake_api2, _ = _cli_kiwoom_api()
+    rc = cli_theme.main(["--dsn", db, "--date", "20260823", "--sleep", "0"], kiwoom_api=fake_api2)
     assert rc == 0
     conn = sqlite3.connect(db)
     assert count_members(conn) == 3
@@ -282,10 +302,9 @@ def test_cli_saves_groups_and_members_for_the_date(tmp_path, monkeypatch, capsys
 def test_cli_dry_run_lists_themes_without_members_or_db(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("KIWOOM_APP_KEY", "k")
     monkeypatch.setenv("KIWOOM_APP_SECRET", "s")
-    handler, calls = _cli_handler()
+    fake_api, calls = _cli_kiwoom_api()
     db = tmp_path / "theme.db"
-    rc = cli_theme.main(["--dsn", str(db), "--dry-run", "--sleep", "0"],
-                        client=httpx.Client(transport=httpx.MockTransport(handler)))
+    rc = cli_theme.main(["--dsn", str(db), "--dry-run", "--sleep", "0"], kiwoom_api=fake_api)
     assert rc == 0
     assert calls == ["ka90001"]
     assert not db.exists()

@@ -44,6 +44,7 @@ from typing import Any
 
 import httpx
 import pandas as pd
+from kiwoom_client import KiwoomAPI, KiwoomAPIError
 
 KIWOOM_BASE = "https://api.kiwoom.com"
 TOKEN_PATH = "/oauth2/token"
@@ -229,7 +230,17 @@ def _raise_on_return_code(payload: Any, what: str) -> None:
 
 
 class KiwoomClient:
-    """토큰 발급·갱신과 ``ka10080`` · ``ka90001`` · ``ka90002`` 페이지네이션을 담당한다."""
+    """토큰 발급·갱신과 ``ka10080`` · ``ka90001`` · ``ka90002`` · ``ka10027`` ·
+    ``ka90005`` 페이지네이션을 담당한다.
+
+    ``ka10080``(분봉)·``ka90001``/``ka90002``(테마)는 배치 전용(장 마감 후
+    크론)이라 2026-09-12에 ``kiwoom_client.KiwoomAPI``로 옮겼다 — 실시간
+    루프가 안 쓰는 걸 확인하고서다. ``ka10027``(등락률상위)·``ka90005``
+    (프로그램매매, ``cli_pair_detect.py`` 라이브 루프가 장중 10초마다
+    호출)는 그대로 아래 ``_fetch_rows``/``_post``를 쓴다 — 장이 열려 있어야
+    실제 페이지네이션·에러 경로를 실측으로 검증할 수 있어서, 검증 전엔
+    안 건드린다.
+    """
 
     def __init__(
         self,
@@ -241,6 +252,7 @@ class KiwoomClient:
         max_retries: int = 3,
         sleeper: Callable[[float], None] | None = None,
         base_url: str = KIWOOM_BASE,
+        kiwoom_api: Any = None,
     ) -> None:
         if not appkey or not secretkey:
             raise KiwoomError("인증 정보가 비어 있다.")
@@ -252,6 +264,9 @@ class KiwoomClient:
         self._sleeper = sleeper or time.sleep
         self._base = base_url.rstrip("/")
         self._token: str | None = None
+        # 배치 전용 엔드포인트(분봉·테마)만 여기로 간다 — 주입 가능하게 해서
+        # 테스트가 진짜 HTTP를 안 타고 kiwoom_client 경계에서 바로 목을 건다.
+        self._kiwoom_api = kiwoom_api or KiwoomAPI(appkey, secretkey, base_url=base_url)
 
     # ------------------------------------------------------------------ 토큰
 
@@ -351,6 +366,22 @@ class KiwoomClient:
             )
         raise KiwoomError(f"{what} 재시도 소진: {last_error}")
 
+    def _via_kiwoom_api(self, what: str, fn: Callable[[], dict], rows_key: str) -> tuple[list[dict], str | None, str | None]:
+        """``kiwoom_client`` 경계를 거치는 배치 호출 공통 처리.
+
+        ``KiwoomAPIError``를 이 레포의 ``KiwoomError``로 바꿔 던진다 — 호출부는
+        전송 계층이 바뀐 걸 몰라도 된다. cont-yn/next-key는 kiwoom-client의
+        ``request()``가 응답 헤더에서 바디로 옮겨준다(2026-09-12 kiwoom-client
+        자체 버그로 발견·수정 — 안 그러면 페이지가 있어도 1페이지 만에 조용히
+        멈춘다).
+        """
+        try:
+            payload = fn()
+        except KiwoomAPIError as exc:
+            raise KiwoomError(f"{what} 실패: {exc}") from exc
+        rows = payload.get(rows_key) or []
+        return list(rows), payload.get("cont-yn"), payload.get("next-key")
+
     def fetch_page(
         self,
         code: str,
@@ -360,12 +391,14 @@ class KiwoomClient:
         next_key: str | None = None,
     ) -> tuple[list[dict], str | None, str | None]:
         """분봉 한 페이지. ``(행, cont-yn, next-key)`` 를 돌려준다."""
-        body = {"stk_cd": code, "tic_scope": str(tic_scope), "upd_stkpc_tp": "1"}
-        rows, cont, key, _ = self._fetch_rows(
-            CHART_PATH, MINUTE_API_ID, body, CHART_ROWS_KEY, f"{code} 분봉",
-            cont_yn=cont_yn, next_key=next_key,
+        return self._via_kiwoom_api(
+            f"{code} 분봉",
+            lambda: self._kiwoom_api.chart.stock_minute_chart(
+                cont_yn=cont_yn or "N", next_key=next_key or "",
+                stk_cd=code, tic_scope=str(tic_scope), upd_stkpc_tp="1",
+            ),
+            CHART_ROWS_KEY,
         )
-        return rows, cont, key
 
     def fetch_rank_rows(self, *, market: str = "101") -> list[dict]:
         """``ka10027`` 전일대비등락률상위 — **시장 전체**를 한 번에 훑는다.
@@ -458,19 +491,34 @@ class KiwoomClient:
         ``flu_pl_amt_tp`` 는 정렬 기준(1=기간수익률 상위), ``stex_tp`` 는 거래소
         (1=KRX) 다. 행 자체는 원문 그대로다 — 정규화는 ``normalize_theme_group``.
         """
-        body = {
-            "qry_tp": "0",
-            "stk_cd": "",
-            "date_tp": str(date_tp),
-            "thema_nm": "",
-            "flu_pl_amt_tp": str(flu_pl_amt_tp),
-            "stex_tp": str(stex_tp),
-        }
-        rows, cont, key, _ = self._fetch_rows(
-            THEME_PATH, THEME_GROUP_API_ID, body, THEME_GROUP_ROWS_KEY, "테마 목록",
-            cont_yn=cont_yn, next_key=next_key,
+        return self._via_kiwoom_api(
+            "테마 목록",
+            lambda: self._kiwoom_api.theme.theme_group_list(
+                cont_yn=cont_yn or "N", next_key=next_key or "",
+                qry_tp="0", stk_cd="", date_tp=str(date_tp), thema_nm="",
+                flu_pl_amt_tp=str(flu_pl_amt_tp), stex_tp=str(stex_tp),
+            ),
+            THEME_GROUP_ROWS_KEY,
         )
-        return rows, cont, key
+
+    def fetch_theme_members_page(
+        self,
+        theme_code: str,
+        *,
+        date_tp: str = "2",
+        stex_tp: str = "1",
+        cont_yn: str | None = None,
+        next_key: str | None = None,
+    ) -> tuple[list[dict], str | None, str | None]:
+        """``ka90002`` 한 페이지. ``(행, cont-yn, next-key)`` 를 돌려준다."""
+        return self._via_kiwoom_api(
+            f"테마 {theme_code} 구성종목",
+            lambda: self._kiwoom_api.theme.theme_component_stocks(
+                cont_yn=cont_yn or "N", next_key=next_key or "",
+                thema_grp_cd=str(theme_code), date_tp=str(date_tp), stex_tp=str(stex_tp),
+            ),
+            THEME_MEMBER_ROWS_KEY,
+        )
 
     def theme_groups(
         self,
@@ -518,19 +566,14 @@ class KiwoomClient:
 
         실측으로는 한 페이지에 다 오지만(``cont-yn: N``), 혹시 이어지면 따라간다.
         """
-        body = {
-            "thema_grp_cd": str(theme_code),
-            "date_tp": str(date_tp),
-            "stex_tp": str(stex_tp),
-        }
         collected: list[dict[str, Any]] = []
         seen: set[str] = set()
         cont_yn: str | None = None
         next_key: str | None = None
         for _ in range(max(0, int(pages))):
-            rows, cont_yn, next_key, _payload = self._fetch_rows(
-                THEME_PATH, THEME_MEMBER_API_ID, body, THEME_MEMBER_ROWS_KEY,
-                f"테마 {theme_code} 구성종목", cont_yn=cont_yn, next_key=next_key,
+            rows, cont_yn, next_key = self.fetch_theme_members_page(
+                theme_code, date_tp=date_tp, stex_tp=stex_tp,
+                cont_yn=cont_yn, next_key=next_key,
             )
             if not rows:
                 break

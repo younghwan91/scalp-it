@@ -16,6 +16,7 @@ import argparse
 import sys
 import time
 from datetime import datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -50,7 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None, *, client: httpx.Client | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    client: httpx.Client | None = None,
+    kiwoom_api: Any = None,
+) -> int:
     args = build_parser().parse_args(argv)
 
     try:
@@ -64,7 +70,7 @@ def main(argv: list[str] | None = None, *, client: httpx.Client | None = None) -
     except KiwoomError as exc:
         print(f"\n{exc}\n", file=sys.stderr)
         return 1
-    kiwoom = KiwoomClient(appkey, secret, client=client, sleep=args.sleep)
+    kiwoom = KiwoomClient(appkey, secret, client=client, sleep=args.sleep, kiwoom_api=kiwoom_api)
 
     started = time.monotonic()
     try:
