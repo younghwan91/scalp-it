@@ -52,9 +52,16 @@
 상한가로 치고 들어가는 자리에서 같은 테마 2·3등주를 그때 짝으로 삼는다(동적 모드).
 여기에 쌍을 넣으면 만쥬가 안 보는 종목을 하루 종일 들여다보게 된다.
 
-## 수동 실행 (디버깅용)
+## 수동 실행 (디버깅용 · 장중 긴급 dry-run 전환)
 
-    cd /home/young/Documents/git/scalp-it
+`cd` 경로는 **레포 실제 위치**다. 2026-09-11 에 `~/Documents/git` → `~/git` 으로
+옮겼으니, 또 옮기면 여기도 같이 고쳐야 한다 — 이 블록은 장중에 `--confirm-real`
+을 급히 뺄 때 사람이 그대로 복붙하는 자리라, 경로가 틀리면 `cd` 가 실패한 채
+이어지는 `export` 들이 조용히 빈 값이 되고 **자격증명 없이 감지기가 뜬다.**
+(크론 런처 `scripts/pair_detect_daily.sh` 는 자기 위치에서 경로를 유도하므로
+그쪽은 안 깨진다. 사람이 손으로 치는 이 블록만 경로에 의존한다.)
+
+    cd ~/git/scalp-it
     export $(grep -E '^KIWOOM_APP_(KEY|SECRET)=' ../quant-airflow/.env | xargs)
     export $(grep -v '^#' ../kr-quant/.env | xargs)
 
