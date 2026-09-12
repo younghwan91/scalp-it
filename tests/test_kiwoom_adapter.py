@@ -107,30 +107,33 @@ def test_token_missing_key_raises():
 
 
 def test_token_is_reused_across_calls():
+    """``.token``은 ``OrderExecutor``·WS 로그인이 직접 가져다 쓰는 그 프로퍼티다
+    (2026-09-12 조회 5종을 kiwoom_client로 옮긴 뒤로도 이건 안 바뀜) — 두 번
+    불러도 토큰 발급은 한 번만 나가야 한다."""
     calls = {"token": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/oauth2/token":
-            calls["token"] += 1
-            return httpx.Response(200, json=_TOKEN_BODY)
-        return _rank([_RANK_ROW])
+        calls["token"] += 1
+        return httpx.Response(200, json=_TOKEN_BODY)
 
     client = _make(handler)
-    client.fetch_rank_rows()
-    client.fetch_rank_rows()
+    assert client.token == "tok-abc"
+    assert client.token == "tok-abc"
     assert calls["token"] == 1
 
 
-def test_bearer_token_and_api_id_go_in_headers():
-    seen = {}
+def test_refresh_token_discards_cache_and_reissues():
+    calls = {"token": 0}
 
-    def rank(request: httpx.Request) -> httpx.Response:
-        seen.update(request.headers)
-        return _rank([_RANK_ROW])
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["token"] += 1
+        return httpx.Response(200, json=dict(_TOKEN_BODY, token=f"tok-{calls['token']}"))
 
-    _make(_router(rank)).fetch_rank_rows()
-    assert seen["authorization"] == "Bearer tok-abc"
-    assert seen["api-id"] == "ka10027"
+    client = _make(handler)
+    assert client.token == "tok-1"
+    assert client.refresh_token() == "tok-2"
+    assert client.token == "tok-2"
+    assert calls["token"] == 2
 
 
 # ------------------------------------------------------------------ 파싱 (분봉 전용, 그대로 유효)
@@ -333,83 +336,56 @@ def test_fetch_theme_members_page_maps_response():
     )
 
 
-# ------------------------------------------------------------------ 오류·레이트리밋 (등락률상위 — 저수준 전송)
+# ------------------------------------------------------------------ 토큰 발급 오류
+#
+# 429/5xx 재시도·401 갱신재시도·레이트리밋 sleep 은 2026-09-12 이전엔
+# ``_fetch_rows``(조회 5종 공용)가 직접 구현했지만, 다섯 다 kiwoom_client로
+# 옮기면서 그 구현 자체를 지웠다 — 이제 그 재시도는 kiwoom-client 쪽 책임이고
+# (kiwoom-client 저장소 tests/test_base.py 에 이미 있다), 여기서 다시 재는 건
+# 남의 코드를 목(mock)으로 재검증하는 것뿐이라 값이 없다. 토큰 발급
+# (``issue_token``, ``OrderExecutor``·WS 로그인이 직접 쓰는 그 메서드) 자체의
+# 오류 처리만 여기 남긴다.
 
 
-def test_nonzero_return_code_raises_with_message():
-    def rank(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"return_code": 3, "return_msg": "종목코드 오류"})
-
-    with pytest.raises(KiwoomError, match="종목코드 오류"):
-        _make(_router(rank)).fetch_rank_rows()
-
-
-def test_429_is_retried_then_succeeds():
-    calls = []
-
-    def rank(request: httpx.Request) -> httpx.Response:
-        calls.append(1)
-        if len(calls) == 1:
-            return httpx.Response(429, text="too many")
-        return _rank([_RANK_ROW])
-
-    rows = _make(_router(rank), max_retries=3).fetch_rank_rows()
-    assert len(calls) == 2
-    assert len(rows) == 1
-
-
-def test_retries_exhausted_raises():
-    with pytest.raises(KiwoomError):
-        _make(
-            _router(lambda r: httpx.Response(503, text="down")), max_retries=2
-        ).fetch_rank_rows()
-
-
-def test_401_triggers_token_refresh_and_retry():
-    state = {"tokens": 0, "ranks": 0}
-
+def test_issue_token_nonzero_return_code_raises_with_message():
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/oauth2/token":
-            state["tokens"] += 1
-            return httpx.Response(200, json=_TOKEN_BODY)
-        state["ranks"] += 1
-        if state["ranks"] == 1:
-            return httpx.Response(401, text="expired")
-        return _rank([_RANK_ROW])
+        return httpx.Response(200, json={"return_code": 3, "return_msg": "인증키 오류"})
 
-    rows = _make(handler, max_retries=3).fetch_rank_rows()
-    assert state["tokens"] == 2
-    assert len(rows) == 1
+    with pytest.raises(KiwoomError, match="인증키 오류"):
+        _make(handler).issue_token()
 
 
-def test_rate_limit_sleep_happens_between_calls():
-    naps: list[float] = []
-    calls = []
+# ------------------------------------------------------------------ fetch_rank_rows/fetch_program_rows → kiwoom_client 위임
 
-    def rank(request: httpx.Request) -> httpx.Response:
-        calls.append(1)
-        return _rank([_RANK_ROW])
 
-    client = KiwoomClient(
-        "key", "secret",
-        client=httpx.Client(transport=httpx.MockTransport(_router(rank))),
-        sleep=0.12,
-        sleeper=naps.append,
+def test_fetch_rank_rows_maps_request_and_response():
+    fake_api = MagicMock()
+    fake_api.ranking.top_change_rate.return_value = {_RANK_ROWS_KEY: [_RANK_ROW]}
+    client = KiwoomClient("key", "secret", kiwoom_api=fake_api)
+    rows = client.fetch_rank_rows(market="001")
+    assert rows == [_RANK_ROW]
+    fake_api.ranking.top_change_rate.assert_called_once_with(
+        mrkt_tp="001", sort_tp="1", trde_qty_cnd="0000", stk_cnd="0",
+        crd_cnd="0", updown_incls="1", pric_cnd="0", trde_prica_cnd="0", stex_tp="3",
     )
-    client.fetch_rank_rows()
-    client.fetch_rank_rows()
-    client.fetch_rank_rows()
-    assert len(calls) == 3
-    assert naps == [0.12, 0.12, 0.12]
 
 
-def test_zero_sleep_skips_the_nap():
-    naps: list[float] = []
-    client = KiwoomClient(
-        "key", "secret",
-        client=httpx.Client(transport=httpx.MockTransport(_router(lambda r: _rank([_RANK_ROW])))),
-        sleep=0.0,
-        sleeper=naps.append,
+def test_fetch_rank_rows_wraps_kiwoom_api_error():
+    fake_api = MagicMock()
+    fake_api.ranking.top_change_rate.side_effect = KiwoomAPIError(10, "요청 실패")
+    client = KiwoomClient("key", "secret", kiwoom_api=fake_api)
+    with pytest.raises(KiwoomError, match="요청 실패"):
+        client.fetch_rank_rows()
+
+
+def test_fetch_program_rows_maps_request_and_response():
+    fake_api = MagicMock()
+    fake_api.market.program_trading_by_time.return_value = {
+        "prm_trde_trnsn": [{"stk_cd": "005930"}],
+    }
+    client = KiwoomClient("key", "secret", kiwoom_api=fake_api)
+    rows = client.fetch_program_rows(day="20260912", market="P001")
+    assert rows == [{"stk_cd": "005930"}]
+    fake_api.market.program_trading_by_time.assert_called_once_with(
+        date="20260912", amt_qty_tp="1", mrkt_tp="P001", min_tic_tp="1", stex_tp="3",
     )
-    client.fetch_rank_rows()
-    assert naps == []

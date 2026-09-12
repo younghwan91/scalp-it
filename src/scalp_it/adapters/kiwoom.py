@@ -48,11 +48,6 @@ from kiwoom_client import KiwoomAPI, KiwoomAPIError
 
 KIWOOM_BASE = "https://api.kiwoom.com"
 TOKEN_PATH = "/oauth2/token"
-CHART_PATH = "/api/dostk/chart"
-THEME_PATH = "/api/dostk/thme"
-MINUTE_API_ID = "ka10080"
-THEME_GROUP_API_ID = "ka90001"
-THEME_MEMBER_API_ID = "ka90002"
 
 #: 분봉 행이 담겨 오는 키.
 CHART_ROWS_KEY = "stk_min_pole_chart_qry"
@@ -63,7 +58,6 @@ THEME_MEMBER_ROWS_KEY = "thema_comp_stk"
 _JSON_CT = "application/json;charset=UTF-8"
 _KEY_ENV = "KIWOOM_APP_KEY"
 _SECRET_ENV = "KIWOOM_APP_SECRET"
-_RETRY_STATUS = (429, 500, 502, 503, 504)
 
 
 class KiwoomError(Exception):
@@ -230,16 +224,22 @@ def _raise_on_return_code(payload: Any, what: str) -> None:
 
 
 class KiwoomClient:
-    """토큰 발급·갱신과 ``ka10080`` · ``ka90001`` · ``ka90002`` · ``ka10027`` ·
-    ``ka90005`` 페이지네이션을 담당한다.
+    """토큰 발급·갱신, 그리고 ``ka10080``·``ka90001``·``ka90002``·``ka10027``·
+    ``ka90005`` 조회를 담당한다.
 
-    ``ka10080``(분봉)·``ka90001``/``ka90002``(테마)는 배치 전용(장 마감 후
-    크론)이라 2026-09-12에 ``kiwoom_client.KiwoomAPI``로 옮겼다 — 실시간
-    루프가 안 쓰는 걸 확인하고서다. ``ka10027``(등락률상위)·``ka90005``
-    (프로그램매매, ``cli_pair_detect.py`` 라이브 루프가 장중 10초마다
-    호출)는 그대로 아래 ``_fetch_rows``/``_post``를 쓴다 — 장이 열려 있어야
-    실제 페이지네이션·에러 경로를 실측으로 검증할 수 있어서, 검증 전엔
-    안 건드린다.
+    2026-09-12에 이 다섯 개(전부 단일 페이지, ``cont_yn``/``next_key`` 루프가
+    없다)를 ``kiwoom_client.KiwoomAPI``로 옮겼다 — ``ka10080``(분봉)·
+    ``ka90001``/``ka90002``(테마)는 배치 전용(장 마감 후 크론)이라 먼저,
+    ``ka10027``(등락률상위)·``ka90005``(프로그램매매, ``cli_pair_detect.py``
+    라이브 루프가 장중 10초마다 호출)는 실거래 API가 주말 점검으로 막혀 있어
+    실측 대조 없이 뒤이어 옮겼다 — 월요일 장중 첫 호출이 실질적 검증이다.
+
+    **``_post``/``issue_token``/``token``/``refresh_token``은 절대 안 건드린다
+    — 이 다섯 조회 전용이 아니다.** ``OrderExecutor``(``adapters/kiwoom_order.py``)
+    가 ``self._auth = KiwoomClient(...)``로 이 토큰/재발급 메커니즘과
+    ``self._client``(raw httpx.Client)를 그대로 가져다 실주문·잔고조회에
+    쓰고, ``cli_pair_detect.py``/``cli_tick.py``도 WS 로그인용 토큰을
+    ``.token``으로 직접 받는다. 여기 손대면 주문 실행이 깨진다.
     """
 
     def __init__(
@@ -302,69 +302,16 @@ class KiwoomClient:
         return self.issue_token()
 
     # ------------------------------------------------------------------ 조회
-
-    def _post(
-        self,
-        path: str,
-        api_id: str,
-        body: dict,
-        cont_yn: str | None,
-        next_key: str | None,
-    ) -> httpx.Response:
-        headers = {
-            "Content-Type": _JSON_CT,
-            "authorization": f"Bearer {self.token}",
-            "api-id": api_id,
-        }
-        if cont_yn:
-            headers["cont-yn"] = cont_yn
-        if next_key:
-            headers["next-key"] = next_key
-        return self._client.post(f"{self._base}{path}", headers=headers, json=body)
-
-    def _fetch_rows(
-        self,
-        path: str,
-        api_id: str,
-        body: dict,
-        rows_key: str,
-        what: str,
-        *,
-        cont_yn: str | None = None,
-        next_key: str | None = None,
-    ) -> tuple[list[dict], str | None, str | None, dict]:
-        """한 페이지를 받아 ``(행, cont-yn, next-key, 응답 전체)`` 를 돌려준다.
-
-        레이트리밋·401 토큰 갱신·5xx 재시도는 모든 API 가 같으므로 여기 한 곳에 있다.
-        """
-        last_error = ""
-        for attempt in range(self._max_retries):
-            # 레이트리밋. 호출 **직전**에 재우므로 재시도에도 간격이 보장된다.
-            if self._sleep:
-                self._sleeper(self._sleep)
-            response = self._post(path, api_id, body, cont_yn, next_key)
-            if response.status_code == 401 and attempt + 1 < self._max_retries:
-                # 토큰 만료. 한 번 다시 받고 재시도한다.
-                self.refresh_token()
-                last_error = "401 토큰 만료"
-                continue
-            if response.status_code in _RETRY_STATUS and attempt + 1 < self._max_retries:
-                last_error = f"HTTP {response.status_code}"
-                self._sleeper(self._sleep * (attempt + 1) + 1.0)
-                continue
-            if response.status_code >= 400:
-                raise KiwoomError(f"키움 HTTP {response.status_code}: {response.text[:200]}")
-            payload = response.json()
-            _raise_on_return_code(payload, what)
-            rows = payload.get(rows_key) or []
-            # 빈 응답은 오류가 아니다. 신규 상장·거래정지 종목이 실제로 그렇다.
-            return (
-                list(rows),
-                response.headers.get("cont-yn"),
-                response.headers.get("next-key"),
-                payload,
-            )
-        raise KiwoomError(f"{what} 재시도 소진: {last_error}")
+    #
+    # 2026-09-12 이전에는 여기 ``_post``/``_fetch_rows``가 조회 5종(분봉·테마
+    # 2종·등락률상위·프로그램매매) 전용 레이트리밋·401 갱신·5xx 재시도를
+    # 직접 구현하고 있었다. 다섯 다 kiwoom_client.KiwoomAPI로 옮기면서 그
+    # 재시도 로직의 유일한 호출부가 없어져 지웠다 — ``sleep``/``max_retries``/
+    # ``sleeper`` 생성자 인자는 이제 아무 데도 안 쓰이지만, ``OrderExecutor``·
+    # ``cli_intraday.py`` 등 기존 호출부가 여전히 넘기고 있어 시그니처는
+    # 그대로 둔다(전달은 되지만 조용히 무시됨). ``issue_token``/``token``/
+    # ``refresh_token``은 별개다 — 실주문(``OrderExecutor``)·WS 로그인이
+    # 그대로 쓰니 안 지운다.
 
     def _via_kiwoom_api(self, what: str, fn: Callable[[], dict], rows_key: str) -> tuple[list[dict], str | None, str | None]:
         """``kiwoom_client`` 경계를 거치는 배치 호출 공통 처리.
@@ -406,11 +353,18 @@ class KiwoomClient:
         만쥬가 HTS 등락률 상위·순간체결량 창으로 대장을 낙점하는 자리다. 응답에
         등락률·매도잔량(0 이면 상한가 잠김)·매수잔량·체결강도가 같이 온다.
         페이지네이션은 안 한다 — 첫 페이지(최대 200행)면 대장 후보는 다 들어온다.
-        """
-        from ..realtime.leader_scan import RANK_API_ID, RANK_PATH, RANK_ROWS_KEY, rank_body
 
-        rows, _cont, _key, _payload = self._fetch_rows(
-            RANK_PATH, RANK_API_ID, rank_body(market), RANK_ROWS_KEY, "등락률 상위",
+        2026-09-12: ``kiwoom_client.KiwoomAPI.ranking.top_change_rate``로 옮김
+        — 인증·재시도는 이제 그쪽이 하고, 여기는 요청 바디 구성과 행 추출만
+        한다. 토큰/주문 인증(``self.token``, ``OrderExecutor``)은 그대로
+        ``_post``/``issue_token``을 쓰니 안 건드림.
+        """
+        from ..realtime.leader_scan import RANK_ROWS_KEY, rank_body
+
+        rows, _cont, _key = self._via_kiwoom_api(
+            "등락률 상위",
+            lambda: self._kiwoom_api.ranking.top_change_rate(**rank_body(market)),
+            RANK_ROWS_KEY,
         )
         return rows
 
@@ -419,17 +373,16 @@ class KiwoomClient:
 
         만쥬가 "외인/기관 프로그램이 쏟아내는 장세면 진입을 거른다"고 한 자리다.
         장중에는 첫 행이 직전 분이라 첫 페이지만 받으면 된다.
-        """
-        from ..realtime.program_flow import (
-            PROGRAM_API_ID,
-            PROGRAM_PATH,
-            PROGRAM_ROWS_KEY,
-            program_body,
-        )
 
-        rows, _cont, _key, _payload = self._fetch_rows(
-            PROGRAM_PATH, PROGRAM_API_ID, program_body(day, market),
-            PROGRAM_ROWS_KEY, "프로그램 매매추이",
+        2026-09-12: ``kiwoom_client.KiwoomAPI.market.program_trading_by_time``
+        으로 옮김 — ``fetch_rank_rows`` 와 같은 이유.
+        """
+        from ..realtime.program_flow import PROGRAM_ROWS_KEY, program_body
+
+        rows, _cont, _key = self._via_kiwoom_api(
+            "프로그램 매매추이",
+            lambda: self._kiwoom_api.market.program_trading_by_time(**program_body(day, market)),
+            PROGRAM_ROWS_KEY,
         )
         return rows
 
