@@ -71,6 +71,15 @@
 cron 플래그가 유일한 출처다. 손으로 옮겨 적지 말고 `scripts/pair_detect_daily.sh` 를 보라 —
 플래그마다 왜 그 값인지 만쥬 원문과 실측 근거가 주석으로 붙어 있다.
 
+**항상 `uv run` 으로 실행한다. `source .venv/bin/activate` 는 쓰지 마라** — trader 의
+`.venv` 는 2026-09-11 레포 이동 이후 혼재 상태다: 크론이 쓰는 `scalp-*` 콘솔 스크립트는
+신경로로 갱신됐지만, `activate` 의 `VIRTUAL_ENV` 와 `pytest`/`httpx` 같은 서드파티
+진입점은 옛 경로(`~/Documents/git/...`)를 그대로 가리킨다. activate 하면 환경은 켜진
+것처럼 보이는데 도구가 `bad interpreter` 로 죽는다. `uv run` 은 프로젝트 환경을 스스로
+해석하므로 영향이 없다(크론·아래 절차 전부 `uv run`). 고치려면 `uv sync --reinstall` 로
+전부 재생성해야 하는데, 장 직전에 패키지를 건드릴 이유가 없어 미뤄둔 상태다
+(2026-09-13 판단 — 이 실패는 조용하지 않고 즉시 시끄럽게 죽어서 안전하다).
+
 ## 복기
 
     uv run --extra pg python scripts/manju_week_review.py --start 2026-08-24 --end 2026-08-28
