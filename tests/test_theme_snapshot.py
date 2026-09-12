@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from kiwoom_client import KiwoomAPI
 
 from scalp_it import cli_theme
 from scalp_it.adapters.kiwoom import (
@@ -101,6 +102,28 @@ def _make(handler, **kwargs):
     )
 
 
+def _real_api_on_mock_wire(handler):
+    """**진짜** ``KiwoomAPI`` 를 가짜 전선 위에 올린다.
+
+    위 ``_fake_kiwoom_api`` 는 kiwoom_client 경계에서 목을 걸기 때문에 cont-yn 이
+    payload 에 있다고 가정한다. 그런데 키움 실제 응답은 cont-yn/next-key 를
+    **헤더로만** 주고, 그걸 바디로 옮겨 담는 건 kiwoom_client ``request()`` 의
+    책임이다. 즉 경계 목만 있으면 그 폴백이 사라져도(핀이 낡아도) 테스트는
+    초록불이고 연속조회는 조용히 1페이지에서 끝난다 — 2026-09-13 에 실제로
+    그랬다(핀 1debc40 이 폴백 커밋 492aa60 의 한 커밋 앞이었다).
+
+    그래서 여기서는 라이브러리를 목하지 않고 **HTTP 전선만** 갈아끼운다.
+    ``KiwoomAPI`` 와 ``KiwoomAuth`` 가 각자 httpx 클라이언트를 들고 있어 둘 다
+    바꿔야 한다(사설 속성 접근은 이 계약 테스트의 대가로 감수한다 —
+    kiwoom_client 는 transport 주입구를 아직 안 열어놨다).
+    """
+    api = KiwoomAPI("key", "secret", base_url="https://mockapi.kiwoom.com", rate_limit=None)
+    wire = httpx.MockTransport(handler)
+    for owner in (api._base_client, api._auth):
+        owner._client = httpx.Client(base_url=owner.base_url, transport=wire, timeout=30.0)
+    return api
+
+
 # ------------------------------------------------------------------ 어댑터 파싱
 
 
@@ -177,6 +200,34 @@ def test_theme_members_empty_is_not_an_error():
     fake_api = _fake_kiwoom_api(member_pages=[_members_page([])])
     client = KiwoomClient("key", "secret", kiwoom_api=fake_api)
     assert client.theme_members("999") == []
+
+
+# --------------------------------------------------- kiwoom-client 의존성 계약
+# 핀이 너무 낡으면 여기서 잡힌다. 위의 경계 목 테스트들은 못 잡는다.
+
+
+def test_theme_groups_follow_next_key_when_cont_yn_only_in_headers():
+    """헤더에만 cont-yn 이 온 실제 응답에서도 2페이지를 따라가야 한다.
+
+    ka90001 은 한 페이지 100행이고 `cont-yn: Y` 로 이어진다. 이걸 못 따라가면
+    테마 그룹이 첫 100개로 잘린 채 짝꿍 선정 입력이 된다 — 에러도 경고도 없다.
+    핀을 되돌려 보면(1debc40) 이 테스트만 빨간불이 된다.
+    """
+    pages = [
+        _groups_resp([_GROUP_ROW], cont_yn="Y", next_key="00100"),
+        _groups_resp([_GROUP_ROW2], cont_yn="N"),
+    ]
+    seen_next_keys = []
+
+    def theme_handler(request: httpx.Request) -> httpx.Response:
+        seen_next_keys.append(request.headers.get("next-key", ""))
+        return pages[len(seen_next_keys) - 1]
+
+    client = KiwoomClient("key", "secret", kiwoom_api=_real_api_on_mock_wire(_router(theme_handler)))
+    groups = client.theme_groups()
+
+    assert seen_next_keys == ["", "00100"], "2페이지를 안 따라갔다 — 핀이 폴백 이전이다"
+    assert [g["theme_code"] for g in groups] == ["141", "420"]
 
 
 # ------------------------------------------------------------------ 저장소
