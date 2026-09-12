@@ -17,7 +17,13 @@ dependencies = [
     "openpyxl>=3.1",
     "httpx>=0.27",
     "websockets>=12.0",
+    "kiwoom-client>=0.3.0",  # 실제 소스는 [tool.uv.sources] 참고 (git pin, tick_size 유틸 아직 PyPI 미배포)
 ]
+
+[tool.uv.sources]
+# tick_size 유틸(kiwoom_client.tick_size)이 아직 PyPI 0.3.0에 없어 커밋 pin.
+# 다음 PyPI 릴리스에 포함되면 이 override는 지우고 위 버전 하한만 올리면 된다.
+kiwoom-client = { git = "https://github.com/younghwan91/kiwoom-client.git", rev = "1debc40100d96ce808e14be1ca2e702b7c9983ac" }
 
 [project.optional-dependencies]
 pg = ["psycopg2-binary>=2.9"]
