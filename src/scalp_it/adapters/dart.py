@@ -41,6 +41,21 @@ def api_keys(env: dict | None = None) -> list[str]:
     return keys
 
 
+async def _run_then_close(scraper: DartScraper, coro: Any) -> Any:
+    """코루틴을 돌리고 스크레이퍼의 httpx 클라이언트를 **같은 루프 안에서** 닫는다.
+
+    호출마다 ``asyncio.run`` 이 새 이벤트 루프를 연다. ``DartScraper`` 는 첫 호출에서
+    만든 ``httpx.AsyncClient`` 를 계속 재사용하는데 그 연결은 첫 루프에 묶여 있어,
+    두 번째 호출(cli_dart 의 법인구분 Y 다음 K)이 ``RuntimeError: Event loop is
+    closed`` 로 죽었다 — 2026-09-14 새벽 발견, 코스닥 공시가 통째로 빠지는 버그.
+    dart.db 의 mtime 은 갱신되므로 daytrade-it 공시 게이트의 신선도 검사도 못 잡는다.
+    """
+    try:
+        return await coro
+    finally:
+        await scraper.close()
+
+
 class DartClient:
     """공시검색 페이지를 읽는다. 키 로테이션과 한도 초과 폴백은 ``DartScraper`` 위임."""
 
@@ -68,9 +83,12 @@ class DartClient:
             time.sleep(self._sleep)
         try:
             return asyncio.run(
-                self._scraper.search_disclosures(
-                    bgn_de=bgn_de, end_de=end_de, corp_cls=corp_cls,
-                    page_no=page_no, page_count=page_count,
+                _run_then_close(
+                    self._scraper,
+                    self._scraper.search_disclosures(
+                        bgn_de=bgn_de, end_de=end_de, corp_cls=corp_cls,
+                        page_no=page_no, page_count=page_count,
+                    ),
                 )
             )
         except DartQuotaExceededError as exc:
@@ -82,7 +100,12 @@ class DartClient:
         """구간의 모든 페이지를 모은다."""
         try:
             return asyncio.run(
-                self._scraper.search_disclosures_all(bgn_de=bgn_de, end_de=end_de, corp_cls=corp_cls)
+                _run_then_close(
+                    self._scraper,
+                    self._scraper.search_disclosures_all(
+                        bgn_de=bgn_de, end_de=end_de, corp_cls=corp_cls
+                    ),
+                )
             )
         except DartQuotaExceededError as exc:
             raise DartError(f"모든 인증키가 한도 초과다: {exc}") from exc

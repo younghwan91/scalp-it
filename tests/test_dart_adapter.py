@@ -98,3 +98,22 @@ def test_search_all_walks_every_page(httpx_mock):
     rows = client.search_all(bgn_de="20260810", end_de="20260814", corp_cls="K")
     assert len(rows) == 3
     assert [r["rcept_no"][-4:] for r in rows] == ["0001", "0002", "0003"]
+
+
+def test_consecutive_calls_on_one_client_do_not_reuse_a_dead_event_loop(httpx_mock):
+    """cli_dart 는 한 DartClient 로 법인구분 Y 다음 K 를 부른다.
+
+    호출마다 ``asyncio.run`` 이 새 루프를 여는데 스크레이퍼의 httpx.AsyncClient 가 첫
+    루프에 묶여 남아 있으면 두 번째 호출이 ``Event loop is closed`` 로 죽는다 —
+    2026-09-14 재현: 코스피(Y)만 적재되고 코스닥(K) 공시가 통째로 빠졌다.
+    """
+    httpx_mock.add_response(json=_page([_ITEM]))
+    httpx_mock.add_response(json=_page([_ITEM]))
+    httpx_mock.add_response(json=_page([_ITEM]))
+    client = DartClient(["k1"])
+    assert len(client.search_all(bgn_de="20260907", end_de="20260914", corp_cls="Y")) == 1
+    assert len(client.search_all(bgn_de="20260907", end_de="20260914", corp_cls="K")) == 1
+    assert client.search(bgn_de="20260907", end_de="20260914", corp_cls="K")["total_count"] == 1
+    # mock 전송은 루프에 안 묶여 위 호출만으로는 재현이 안 된다 — 원인 자체를 막는다:
+    # 호출이 끝나면 루프에 묶인 AsyncClient 가 남아 있으면 안 된다.
+    assert client._scraper._client is None
