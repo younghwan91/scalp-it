@@ -45,8 +45,9 @@ from typing import Any
 import httpx
 import pandas as pd
 from kiwoom_client import KiwoomAPI, KiwoomAPIError
+from krx_quant_core.execution.kiwoom_spec import KIWOOM_BASE  # 실계좌 REST 베이스(정본은 코어)
+from krx_quant_core.execution.kiwoom_spec import strip_sign as _core_strip_sign
 
-KIWOOM_BASE = "https://api.kiwoom.com"
 TOKEN_PATH = "/oauth2/token"
 
 #: 분봉 행이 담겨 오는 키.
@@ -82,17 +83,15 @@ def strip_sign(value: Any) -> int:
 
     부호는 전일 대비 방향 표시라 값의 음양이 아니다. 그래서 떼고 읽는다.
     빈 값은 0 이다 — 거래 없는 분봉이 실제로 온다.
+
+    구현은 krx-quant-core ``execution.strip_sign`` 에 있다. 코어는 키움 예외를 몰라
+    ``ValueError`` 를 던지므로, 여기서 같은 메시지의 :class:`KiwoomError` 로 바꿔 기존
+    계약(읽을 수 없는 값 → ``KiwoomError``)을 지킨다.
     """
-    text = str(value if value is not None else "").strip()
-    if not text:
-        return 0
-    text = text.lstrip("+-")
-    if not text:
-        return 0
     try:
-        return int(float(text))
+        return _core_strip_sign(value)
     except ValueError as exc:
-        raise KiwoomError(f"숫자로 읽을 수 없는 값이다: {value!r}") from exc
+        raise KiwoomError(str(exc)) from exc
 
 
 def parse_cntr_tm(value: Any) -> datetime:

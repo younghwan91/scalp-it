@@ -49,19 +49,53 @@
 
 주문 POST 는 **자동 재시도하지 않는다** — 통과했는지 모르는 주문을 다시 보내면 이중
 발주 위험. 조회(read) 만 401 갱신 1회 재시도한다.
+
+순수 부분은 krx-quant-core 에 있다
+==================================
+
+주문 값 객체(``OrderIntent``·``OrderResult``)·가드 판정(``OrderGuardConfig``·
+``OrderGuard``)·취소 바디·프로토콜 상수·``normalize_code`` 는 daytrade-it 과 함께 쓰는
+``krx_quant_core.execution``/``market.codes`` 로 옮겼다(판정 순서·사유 문자열까지 동일).
+이 파일에는 **계좌에 묶인 것**(보유 3종목 표)과 **HTTP 전송**만 남는다. 기존 이름은
+전부 여기서 그대로 import 된다.
 """
 
 from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
-from datetime import date, datetime
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
+from krx_quant_core.execution import OrderBlocked as _CoreOrderBlocked
+from krx_quant_core.execution import OrderGuard, OrderResult, cancel_body
+from krx_quant_core.execution import OrderGuardConfig as _CoreOrderGuardConfig
+from krx_quant_core.execution import OrderIntent as _CoreOrderIntent
+
+# 경로·api-id·바디 값은 kiwoom_spec 이 정본이다(실주문 확인 여부가 값 옆에 적혀 있다).
+# 여기서 안 쓰는 이름(BUY/SELL_API_ID·TRDE_TP_LIMIT·KIWOOM_MOCK_BASE)도 기존 import 경로를
+# 살리려고 재노출한다.
+from krx_quant_core.execution.kiwoom_spec import (  # noqa: F401
+    ACCOUNT_NO_API_ID,
+    ACCOUNT_PATH,
+    BALANCE_API_ID,
+    BALANCE_ROWS_KEY,
+    BUY_API_ID,
+    CANCEL_API_ID,
+    DEFAULT_EXCHANGE,
+    KIWOOM_MOCK_BASE,
+    ORDER_PATH,
+    PRICE_API_ID,
+    SELL_API_ID,
+    STKINFO_PATH,
+    TRDE_TP_LIMIT,
+    UNFILLED_API_ID,
+    UNFILLED_ROWS_KEY,
+)
+from krx_quant_core.market.codes import normalize_code
 
 from .kiwoom import (
     KIWOOM_BASE,
@@ -81,30 +115,6 @@ __all__ = [
     "normalize_code",
 ]
 
-# 모의투자 REST 베이스 — ``--mock`` 일 때 주문도 이 엔드포인트로 강제.
-KIWOOM_MOCK_BASE = "https://mockapi.kiwoom.com"
-
-# 경로·api-id
-ORDER_PATH = "/api/dostk/ordr"
-ACCOUNT_PATH = "/api/dostk/acnt"
-STKINFO_PATH = "/api/dostk/stkinfo"
-
-BUY_API_ID = "kt10000"
-SELL_API_ID = "kt10001"
-CANCEL_API_ID = "kt10003"
-ACCOUNT_NO_API_ID = "ka00001"
-BALANCE_API_ID = "kt00018"
-PRICE_API_ID = "ka10001"
-UNFILLED_API_ID = "ka10075"
-
-BALANCE_ROWS_KEY = "acnt_evlt_remn_indv_tot"
-UNFILLED_ROWS_KEY = "oso"
-
-#: 매매구분 — 보통(지정가). 시장가("3")는 이 모듈에서 절대 안 쓴다.
-TRDE_TP_LIMIT = "0"
-#: 거래소구분 기본.
-DEFAULT_EXCHANGE = "KRX"
-
 _JSON_CT = "application/json;charset=UTF-8"
 
 #: **하드 차단** — 사용자 실보유 3종목. 계좌 조회(2026-08-25)로 확인:
@@ -117,152 +127,39 @@ HELD_STOCK_NAMES: dict[str, str] = {
 }
 
 
-class OrderBlocked(KiwoomError):
-    """안전 가드가 주문을 막았다. 실계좌 사고 방지의 마지막 벽."""
+class OrderBlocked(_CoreOrderBlocked, KiwoomError):
+    """안전 가드가 주문을 막았다. 실계좌 사고 방지의 마지막 벽.
 
-
-def normalize_code(code: Any) -> str:
-    """종목코드를 6자리로 정규화한다.
-
-    kt00018 응답은 ``"A000010"`` 처럼 알파벳 **접두**가 붙는다. 그것만 떼고 6자리를
-    그대로 둔다. 우리 블록/화이트리스트·주문은 전부 이 6자리 기준이다.
-
-    **알파벳을 무조건 지우면 안 된다.** KRX 코드에는 가운데에 알파벳이 들어가는
-    것이 실재한다(2026-08-27 기준 55종목). 숫자만 남기는 옛 구현은
-    ``0155E0``(해치텍) → ``001550``(조비) 로 **완전히 다른 회사 코드**를 만들었다.
-    그 코드가 보유종목이면 진짜 보유분이 차단에서 빠지고 엉뚱한 종목이 대신 막힌다 —
-    실주문이 걸린 경로라 조용히 넘길 자리가 아니다.
+    코어 예외이면서 기존 ``except KiwoomError`` 에도 계속 잡힌다(다중상속).
     """
-    text = str(code if code is not None else "").strip().upper()
-    text = "".join(ch for ch in text if ch.isalnum())
-    if not text:
-        return ""
-    # 7자리 + 알파벳 접두 = kt00018 형식("A000010"). 접두 한 글자만 뗀다.
-    if len(text) == 7 and text[0].isalpha():
-        text = text[1:]
-    if len(text) > 6:
-        text = text[-6:]
-    # 숫자만인 코드는 6자리로 채운다("10" → "000010"). 알파벳이 섞인 코드는
-    # 이미 6자리 규격이라 그대로 둔다.
-    return text.zfill(6) if text.isdigit() else text
 
 
 # --------------------------------------------------------------------- 설정
 
-@dataclass(frozen=True)
-class OrderGuardConfig:
-    """주문 안전 가드 파라미터. 보수적 기본값."""
+class OrderGuardConfig(_CoreOrderGuardConfig):
+    """주문 안전 가드 파라미터. 보수적 기본값(코어와 같음) + **보유 3종목 상시 차단**.
 
-    max_qty: int = 1                    # 주문당 수량 상한(기본 1주)
-    max_qty_hard_cap: int = 10          # 절대 하드캡 — 설정으로도 못 넘음
-    price_band_pct: float = 0.03        # 참조가 대비 ±3% 밖 지정가 거부. 0 = 끔
-    max_orders_per_code: int = 5        # 종목당 일일 주문 횟수 상한. 0 = 끔
-    max_orders_total: int = 20          # 일일 총 주문 횟수 상한. 0 = 끔
-    whitelist: frozenset[str] = frozenset()   # 허용 종목(후속주). 비면 화이트리스트 미적용
-    blocklist: frozenset[str] = HELD_STOCK_CODES  # 항상 차단(보유 3종목 + 병합분)
+    코어는 블록리스트 기본이 비어 있고 ``always_blocked`` 를 무조건 병합한다. 여기서
+    그걸 :data:`HELD_STOCK_CODES` 로 채우므로 기본 생성·``with_allowed``·``with_blocked``
+    결과가 코어 이전 구현과 정확히 같다(보유 3종목은 무슨 설정을 줘도 빠지지 않는다).
+    """
 
-    def __post_init__(self) -> None:
-        # 하드캡을 넘는 max_qty 는 하드캡으로 강제(불변).
-        cap = max(1, int(self.max_qty_hard_cap))
-        object.__setattr__(self, "max_qty_hard_cap", cap)
-        object.__setattr__(self, "max_qty", max(1, min(int(self.max_qty), cap)))
-        # 보유 3종목은 무슨 일이 있어도 블록리스트에 포함(정규화).
-        merged = {normalize_code(c) for c in self.blocklist} | set(HELD_STOCK_CODES)
-        object.__setattr__(self, "blocklist", frozenset(c for c in merged if c))
-        object.__setattr__(
-            self, "whitelist", frozenset(normalize_code(c) for c in self.whitelist if normalize_code(c))
-        )
-
-    def with_allowed(self, codes: set[str]) -> OrderGuardConfig:
-        """화이트리스트에 종목을 **더한** 사본.
-
-        장중에 대장 스캔·돌발재료로 붙은 종목은 장전 화이트리스트에 없다. 그대로
-        두면 감지기는 신호를 내는데 주문은 전부 차단된다 — 스캔을 붙여놓고 못 사는
-        상태다(2026-08-27 실측: 스캔 11종목 편입, 화이트리스트 11종목 그대로).
-        """
-        merged = set(self.whitelist) | {normalize_code(c) for c in codes}
-        return replace(self, whitelist=frozenset(c for c in merged if c))
-
-    def with_blocked(self, codes: set[str]) -> OrderGuardConfig:
-        """계좌 보유분을 블록리스트에 병합한 새 설정."""
-        merged = set(self.blocklist) | {normalize_code(c) for c in codes if normalize_code(c)}
-        return replace(self, blocklist=frozenset(merged))
+    always_blocked: ClassVar[frozenset[str]] = HELD_STOCK_CODES
 
 
 # --------------------------------------------------------------------- 주문
 
-@dataclass(frozen=True)
-class OrderIntent:
-    """낼(또는 낼 뻔한) 주문 하나. 종목·수량·가격·매수/매도."""
+class OrderIntent(_CoreOrderIntent):
+    """낼(또는 낼 뻔한) 주문 하나. 종목명 표시는 보유 3종목 표를 쓴다."""
 
-    side: str                           # "buy" | "sell"
-    code: str                           # 6자리
-    qty: int
-    price: int                          # 지정가(원)
-    exchange: str = DEFAULT_EXCHANGE
+    code_names: ClassVar[Mapping[str, str]] = HELD_STOCK_NAMES
 
     def api_id(self) -> str:
-        if self.side == "buy":
-            return BUY_API_ID
-        if self.side == "sell":
-            return SELL_API_ID
-        raise KiwoomError(f"알 수 없는 매매구분: {self.side!r}")
-
-    def body(self) -> dict[str, str]:
-        """키움 주문 바디. 수량·가격은 문자열."""
-        return {
-            "dmst_stex_tp": self.exchange,
-            "stk_cd": self.code,
-            "ord_qty": str(int(self.qty)),
-            "ord_uv": str(int(self.price)),
-            "trde_tp": TRDE_TP_LIMIT,
-        }
-
-    def describe(self) -> str:
-        kind = "매수" if self.side == "buy" else "매도"
-        name = HELD_STOCK_NAMES.get(self.code, "")
-        tag = f"{name}({self.code})" if name else self.code
-        return f"{kind} 지정가  {tag}  {self.qty}주 @ {self.price:,}원 [{self.exchange}]"
-
-
-@dataclass
-class OrderResult:
-    """:meth:`submit` 결과. dry-run 이면 ``submitted=False`` 이고 POST 안 함."""
-
-    intent: OrderIntent
-    dry_run: bool
-    submitted: bool                     # 실제 POST 했는가
-    blocked: bool = False
-    blocked_reason: str = ""
-    ord_no: str | None = None
-    return_code: int | None = None
-    return_msg: str = ""
-
-    @property
-    def ok(self) -> bool:
-        """실주문이 성공했거나(dry 아님·rc0) dry-run 으로 통과했는가."""
-        if self.blocked:
-            return False
-        if self.dry_run:
-            return True
-        return self.submitted and self.return_code == 0
-
-    def to_record(self, ts: datetime | None = None) -> dict[str, Any]:
-        return {
-            "ts": (ts or datetime.now()).isoformat(sep=" ", timespec="seconds"),  # noqa: DTZ005
-            "side": self.intent.side,
-            "code": self.intent.code,
-            "name": HELD_STOCK_NAMES.get(self.intent.code, ""),
-            "qty": self.intent.qty,
-            "price": self.intent.price,
-            "exchange": self.intent.exchange,
-            "dry_run": self.dry_run,
-            "submitted": self.submitted,
-            "blocked": self.blocked,
-            "blocked_reason": self.blocked_reason,
-            "ord_no": self.ord_no,
-            "return_code": self.return_code,
-        }
+        # 코어는 키움 예외를 몰라 ValueError 를 던진다 — 기존 호출부 계약대로 KiwoomError 로.
+        try:
+            return super().api_id()
+        except ValueError as exc:
+            raise KiwoomError(str(exc)) from None
 
 
 # --------------------------------------------------------------------- 클라이언트
@@ -289,7 +186,6 @@ class KiwoomOrderClient:
         verify_holdings_before_order: bool = True,
         holdings_ttl: float = 5.0,
     ) -> None:
-        self.guard = guard or OrderGuardConfig()
         self._auth = KiwoomClient(
             appkey, secretkey, client=client, base_url=base_url, sleep=0.0, sleeper=sleeper
         )
@@ -299,21 +195,31 @@ class KiwoomOrderClient:
         self._sleeper = sleeper or time.sleep
         self._on_order = on_order
         self._clock = clock or (lambda: datetime.now())  # noqa: DTZ005 — KST naive
+        # 가드 판정 상태(설정 + 매수 전용 동적 차단 + 일일 횟수 카운터)는 코어 OrderGuard 가
+        # 들고 있다. 시계는 이 클라이언트의 naive KST 시계를 그대로 넘긴다.
+        #
+        # N-1: 실시간 보유 동적 병합은 **매수(buy)에만** 적용하는 별도 집합
+        # (OrderGuard.dynamic_buy_block). guard.blocklist(하드 3종목+설정)는 양방향 차단이지만,
+        # 우리가 방금 매수해 보유가 된 후속주까지 거기에 넣으면 그 종목의 **청산 매도**까지
+        # 막혀 실포지션이 무감시로 방치된다.
+        self._order_guard = OrderGuard(
+            guard or OrderGuardConfig(), clock=self._clock, code_names=HELD_STOCK_NAMES
+        )
         self._account_no: str | None = None
         # 주문 직전 실시간 잔고조회로 보유종목 매수를 이중차단(fail-closed).
         self._verify_holdings = bool(verify_holdings_before_order)
         self._holdings_ttl = float(holdings_ttl)
         self._holdings_cache: list[dict[str, Any]] | None = None
         self._holdings_at: float = 0.0
-        # N-1: 실시간 보유 동적 병합은 **매수(buy)에만** 적용하는 별도 집합.
-        # guard.blocklist(하드 3종목+설정)는 양방향 차단이지만, 우리가 방금 매수해
-        # 보유가 된 후속주까지 여기에 넣으면 그 종목의 **청산 매도**까지 막혀 실포지션이
-        # 무감시로 방치된다. 그래서 동적 보유분은 이 집합에 담아 매수만 차단한다.
-        self._dynamic_buy_block: frozenset[str] = frozenset()
-        # 일일 주문 횟수 카운터(메모리). 날짜 바뀌면 리셋.
-        self._count_day: date | None = None
-        self._count_total = 0
-        self._count_by_code: dict[str, int] = {}
+
+    @property
+    def guard(self) -> OrderGuardConfig:
+        """현재 가드 설정(장중 화이트리스트 병합분 포함)."""
+        return self._order_guard.config
+
+    @guard.setter
+    def guard(self, config: OrderGuardConfig) -> None:
+        self._order_guard.config = config
 
     # ----- 인증/HTTP ---------------------------------------------------------
 
@@ -403,14 +309,7 @@ class KiwoomOrderClient:
         except (KiwoomError, httpx.HTTPError, ValueError, KeyError) as exc:
             return f"주문 직전 잔고조회 실패 → fail-closed 로 주문 거부: {exc}"
         # N-1: 동적 보유분은 **매수 전용** 집합에 병합(guard.blocklist 를 건드리지 않는다).
-        if held:
-            self._dynamic_buy_block = self._dynamic_buy_block | {
-                normalize_code(c) for c in held if normalize_code(c)
-            }
-        if intent.code in self.guard.blocklist or intent.code in self._dynamic_buy_block:
-            name = HELD_STOCK_NAMES.get(intent.code, "")
-            return f"실시간 보유종목 차단{': ' + name if name else ''} — {intent.code}"
-        return None
+        return self._order_guard.holdings_reason(intent, held)
 
     def allow_codes(self, codes: Sequence[str]) -> None:
         """장중에 붙은 종목을 주문 화이트리스트에 더한다.
@@ -418,20 +317,17 @@ class KiwoomOrderClient:
         대장 스캔·돌발재료로 감시에 들어온 종목은 장전 화이트리스트에 없다. 이걸
         안 하면 신호는 나는데 주문이 전부 차단된다.
         """
-        if codes:
-            self.guard = self.guard.with_allowed(set(codes))
+        self._order_guard.allow_codes(codes)
 
     def refresh_blocklist_from_account(self) -> set[str]:
         """계좌 보유 전체를 **매수 차단** 집합에 동적 병합. 보유 종목 매수 사고를 이중 차단.
 
         N-1: 청산 매도까지 막지 않도록 guard.blocklist(양방향) 가 아니라 매수 전용
-        집합(:attr:`_dynamic_buy_block`)에 병합한다. 하드코딩 3종목만 양방향 차단.
+        집합(``OrderGuard.dynamic_buy_block``)에 병합한다. 하드코딩 3종목만 양방향 차단.
 
         반환: 새로 추가된 보유 코드 집합.
         """
-        held = {normalize_code(h["code"]) for h in self.holdings() if normalize_code(h["code"])}
-        self._dynamic_buy_block = self._dynamic_buy_block | held
-        return held
+        return self._order_guard.block_buys([h["code"] for h in self.holdings()])
 
     def current_price(self, code: str) -> int:
         """``ka10001`` 현재가(부호 제거). 가격 범위 가드·참조가로 쓴다."""
@@ -484,66 +380,15 @@ class KiwoomOrderClient:
             return False       # 잔고에 없음 → 아직 미체결(취소·거부 오판 방지)
         return not any(o["ord_no"] == str(ord_no) for o in self.unfilled_orders(code))
 
-    # ----- 카운터 ------------------------------------------------------------
-
-    def _observe_day(self) -> None:
-        d = self._clock().date()
-        if self._count_day != d:
-            self._count_day = d
-            self._count_total = 0
-            self._count_by_code = {}
-
-    def _count_ok(self, code: str) -> str | None:
-        """횟수 상한 위반이면 사유 문자열, 아니면 None."""
-        self._observe_day()
-        g = self.guard
-        if g.max_orders_total and self._count_total >= g.max_orders_total:
-            return f"일일 주문 횟수 상한({g.max_orders_total}) 초과"
-        if g.max_orders_per_code and self._count_by_code.get(code, 0) >= g.max_orders_per_code:
-            return f"종목당 주문 횟수 상한({g.max_orders_per_code}) 초과 — {code}"
-        return None
-
-    def _bump_count(self, code: str) -> None:
-        self._observe_day()
-        self._count_total += 1
-        self._count_by_code[code] = self._count_by_code.get(code, 0) + 1
-
     # ----- 가드 판정 ---------------------------------------------------------
 
     def guard_reason(self, intent: OrderIntent, ref_price: float | None) -> str | None:
-        """주문을 막을 사유. None 이면 통과. **dry-run 에서도 항상 돈다.**"""
-        g = self.guard
-        code = intent.code
-        if not code or len(code) != 6:
-            return f"잘못된 종목코드: {code!r}"
-        # (1) 보유 3종목 하드 차단 — 최우선. **매수·매도 양방향**(우리가 안 파는 종목).
-        if code in g.blocklist:
-            name = HELD_STOCK_NAMES.get(code, "")
-            return f"블록리스트 차단(보유/금지 종목{': ' + name if name else ''}) — {code}"
-        # (1b) 동적 보유 병합 — **매수에만** 적용(N-1). 청산 매도는 막지 않는다.
-        if intent.side == "buy" and code in self._dynamic_buy_block:
-            name = HELD_STOCK_NAMES.get(code, "")
-            return f"실시간 보유종목 차단(매수){': ' + name if name else ''} — {code}"
-        # (2) 화이트리스트 — 비어있지 않으면 그 외 전부 차단.
-        if g.whitelist and code not in g.whitelist:
-            return f"화이트리스트 외 종목 — {code} (등록 쌍 후속주만 허용)"
-        # (3) 수량 상한.
-        if intent.qty < 1:
-            return f"수량이 1주 미만: {intent.qty}"
-        if intent.qty > g.max_qty_hard_cap:
-            return f"수량 하드캡({g.max_qty_hard_cap}) 초과: {intent.qty}"
-        if intent.qty > g.max_qty:
-            return f"수량 상한({g.max_qty}) 초과: {intent.qty}"
-        # (4) 가격 범위.
-        if intent.price <= 0:
-            return f"지정가가 0 이하: {intent.price}"
-        if g.price_band_pct and ref_price and ref_price > 0:
-            dev = abs(intent.price / float(ref_price) - 1.0)
-            if dev > g.price_band_pct + 1e-9:
-                return (f"지정가 {intent.price:,} 가 참조가 {ref_price:,.0f} 대비 "
-                        f"{dev:.2%} (±{g.price_band_pct:.1%} 밖)")
-        # (5) 횟수 상한.
-        return self._count_ok(code)
+        """주문을 막을 사유. None 이면 통과. **dry-run 에서도 항상 돈다.**
+
+        판정 순서(코드 형식 → 블록리스트 → 동적 매수차단 → 화이트리스트 → 수량 → 가격 →
+        횟수)와 사유 문자열은 코어 :class:`~krx_quant_core.execution.OrderGuard` 에 있다.
+        """
+        return self._order_guard.reason(intent, ref_price)
 
     # ----- 발주 --------------------------------------------------------------
 
@@ -570,7 +415,7 @@ class KiwoomOrderClient:
             return result
 
         # 가드 통과 → 횟수 소진(dry-run 도 리허설로 카운트).
-        self._bump_count(intent.code)
+        self._order_guard.record_order(intent.code)
 
         if not live:
             # dry-run: POST 안 함. 낼 주문만 만들어 반환·로깅.
@@ -615,8 +460,7 @@ class KiwoomOrderClient:
             result = OrderResult(intent=intent, dry_run=True, submitted=False)
             self._notify(result)
             return result
-        body = {"dmst_stex_tp": exchange, "stk_cd": code,
-                "org_ord_no": str(ord_no), "ord_qty": str(int(qty))}
+        body = cancel_body(ord_no, code, qty, exchange)
         if self._sleep:
             self._sleeper(self._sleep)
         resp = self._client.post(self._base + ORDER_PATH, headers=self._headers(CANCEL_API_ID), json=body)
