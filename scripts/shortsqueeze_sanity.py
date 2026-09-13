@@ -13,6 +13,7 @@ import pandas as pd
 from scalp_it.adapters.db import connect, load_ohlcv, load_supply_demand
 
 TV_FLOOR = 5000.0          # 50억, daily_bars_adjusted.trade_value 는 백만원
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 COST = 0.0034
 COST_HI = 0.0055
 LOOKBACK = 250             # 52주 신고가

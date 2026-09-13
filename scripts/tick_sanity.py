@@ -35,6 +35,7 @@ STRENGTH_PCTL = 80.0           # (종목·당일) 트레일링 강도 분위 기
 BUY_RATIO_THR = 0.60           # 매수체결 비율 하한
 MIN_COUNT = 5                  # 활동 게이트: 윈도 내 체결 건수 하한
 COOLDOWN = max(HORIZONS)       # 트리거 후 같은 종목 억제(초) — 라벨 겹침 방지
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 COST_BP = (40.0, 50.0, 60.0)  # 왕복 비용 시나리오(bp)
 SESSION_START = "09:00:00"     # 트리거 후보 시간 창
 SESSION_END = "15:20:00"

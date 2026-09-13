@@ -21,6 +21,7 @@ import sys
 import numpy as np
 import pandas as pd
 
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 COST = 0.0064
 LOOKBACK_DAYS = 3
 N_FOLDS = 4

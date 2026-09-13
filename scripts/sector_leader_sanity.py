@@ -18,6 +18,7 @@ BREADTH_MIN = 3
 NEWHIGH_WINDOW = 250
 HOLD_DAYS = 10
 TV_FLOOR = 5000.0   # 50억, 백만원 단위 (daily_bars_adjusted 관행)
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 COST = 0.0034
 COST_HI = 0.0055
 

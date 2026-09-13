@@ -19,47 +19,17 @@ from __future__ import annotations
 
 from itertools import pairwise
 
-import numpy as np
 import pandas as pd
+
+# 날짜로 짝지은 a - b 평균 차이 부트스트랩은 krx-quant-core 로 옮겼다(같은 식·같은 시드 규약).
+# 이름 ``paired_bootstrap`` 은 기존 호출부·테스트를 위해 유지한다.
+from krx_quant_core.stats import paired_date_bootstrap as paired_bootstrap
 
 from ..layers import LAYER_LABELS
 from ..model.baseline import portfolio_returns
 from ..model.layered import fold_dates, walk_forward_predict_features
 from .layer_verdict import layer_verdict
 from .pead import benchmark_all_layers
-
-
-def paired_bootstrap(
-    a: pd.DataFrame,
-    b: pd.DataFrame,
-    *,
-    n_boot: int = 2000,
-    seed: int = 0,
-) -> dict:
-    """날짜로 짝지은 ``a - b`` 차이의 부트스트랩 분포.
-
-    Args:
-        a, b: ``portfolio_returns`` 결과 (``[date, n_positions, mean_excess]``).
-
-    Returns:
-        ``mean_diff`` (관측 평균 차이), ``ci_low``/``ci_high`` (95% 신뢰구간),
-        ``p_greater`` (부트스트랩 표본 중 차이가 0 초과인 비율), ``n_dates``.
-    """
-    merged = a.merge(b, on="date", suffixes=("_a", "_b"))
-    diff = (merged["mean_excess_a"] - merged["mean_excess_b"]).to_numpy()
-    n = len(diff)
-    if n == 0:
-        raise ValueError("두 층의 공통 날짜가 없다 — 폴드가 어긋났다")
-
-    rng = np.random.default_rng(seed)
-    means = diff[rng.integers(0, n, size=(n_boot, n))].mean(axis=1)
-    return {
-        "mean_diff": float(diff.mean()),
-        "ci_low": float(np.percentile(means, 2.5)),
-        "ci_high": float(np.percentile(means, 97.5)),
-        "p_greater": float((means > 0).mean()),
-        "n_dates": int(n),
-    }
 
 
 def _check_nested(spec: dict[str, list[str]]) -> None:

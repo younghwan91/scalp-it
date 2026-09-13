@@ -15,6 +15,7 @@ from scalp_it.adapters.db import connect, load_ohlcv, load_supply_demand
 
 TV_FLOOR = 50_000.0     # 500억 (daily_bars_adjusted.trade_value 백만원 단위)
 HOLD_DAYS = 10          # D+1 시가 진입 후 10거래일째 종가 청산
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 COST = 0.0034
 COST_HI = 0.0055
 START, END = "2024-01-01", "2026-08-28"

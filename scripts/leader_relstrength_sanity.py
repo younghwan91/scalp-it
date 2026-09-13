@@ -21,6 +21,7 @@ BOX_WINDOW = 20          # 박스 상단 = 직전 20거래일 최고종가(당�
 TV_FLOOR = 5000.0        # 50억, daily_bars_adjusted 백만원 단위
 HORIZON = 5              # 진입 후 5거래일 뒤 종가 청산 (판정용)
 HORIZON_REF = 10         # 참고 병기, 판정에 안 씀
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 COST = 0.0034
 COST_HI = 0.0055
 

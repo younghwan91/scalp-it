@@ -41,6 +41,7 @@ EPS = 1e-6
 OPEN_M, CLOSE_M = 9 * 60, 15 * 60 + 30
 LAST_TRIG = 15 * 60 + 10
 NEAR_TICKS = 3
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 COSTS = {"net34": 0.0034, "net64": 0.0064}
 
 

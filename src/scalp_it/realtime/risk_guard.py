@@ -65,6 +65,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from krx_quant_core.backtest.fills import limit_buy_filled
+
 from ..ticksize import tick_size
 
 if TYPE_CHECKING:
@@ -591,9 +593,10 @@ class RiskGuard:
             return False
         pos.last_price = price
         # 체결 판정(두 가정 병기) — 알림 시각 이후 첫 조건 충족
-        if pos.touch_fill_ts is None and price <= pos.entry + _EPS:
+        # (판정식은 krx-quant-core backtest.fills — 실행기 OrderExecutor 와 같은 함수)
+        if pos.touch_fill_ts is None and limit_buy_filled(pos.entry, price, "touch"):
             pos.touch_fill_ts = ts
-        if pos.through_fill_ts is None and price < pos.entry - _EPS:
+        if pos.through_fill_ts is None and limit_buy_filled(pos.entry, price, "through"):
             pos.through_fill_ts = ts
 
         filled = pos.is_filled(basis)

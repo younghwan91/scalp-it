@@ -45,6 +45,7 @@ HOLD_SECS = 180
 TRAIL_ARM = 0.03
 TRAIL = 0.015
 STOP_LOSS = -0.005
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 COST_BP = 64.0            # pair_daily_summary 의 net64 와 같은 기준
 BUCKETS = [(0, 20), (20, 30), (30, 40), (40, 60), (60, 100), (100, float("inf"))]
 

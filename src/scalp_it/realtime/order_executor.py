@@ -42,6 +42,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from krx_quant_core.backtest.fills import limit_buy_filled, limit_sell_filled
+
 from .risk_guard import LEADER_HOLDING, LEADER_LOST
 
 if TYPE_CHECKING:
@@ -485,8 +487,9 @@ class OrderExecutor:
         # dry-run 근사 — 회계 기준(RiskGuard.fill_basis)과 **같은 가정**을 써야 한다.
         # through(보수·기본): 지정가를 관통(미만)해야 큐가 비워져 내 주문이 채워진다.
         # touch(낙관): 지정가를 찍기만 하면 체결. 큐 맨 앞이라는 가정.
-        return (price < ref_price - _EPS if self._fill_basis == "through"
-                else price <= ref_price + _EPS)
+        # 판정식은 krx-quant-core backtest.fills 에 있다(회계 RiskGuard 와 같은 함수).
+        # _fill_basis 는 __init__ 에서 through/touch 로 정규화돼 코어의 ValueError 에 닿지 않는다.
+        return limit_buy_filled(ref_price, price, self._fill_basis)
 
     def _check_fill(self, pos: LivePosition, ts: datetime, price: float) -> bool:
         """대기 매수가 체결됐는지."""
@@ -532,8 +535,7 @@ class OrderExecutor:
                     return False          # 응답이 이상하면 체결 단정 안 함
             return True                   # 잔여 수량까지 줄었다 → 매도 체결
         # dry-run 근사 — 매수와 대칭. 매도 지정가는 가격이 그 **위로** 가야 붙는다.
-        return (price > pos.sell_price + _EPS if self._fill_basis == "through"
-                else price >= pos.sell_price - _EPS)
+        return limit_sell_filled(pos.sell_price, price, self._fill_basis)
 
     def _sell(self, pos: LivePosition, ts: datetime, price: int, reason: str,
               *, qty: int | None = None) -> bool:

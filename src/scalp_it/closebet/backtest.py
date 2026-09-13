@@ -18,6 +18,7 @@ import pandas as pd
 #: 다음날 시가가 이 수익률을 넘으면 사실상 상한가 갭이라 체결이 의심스럽다.
 LIMIT_UP_THRESHOLD = 0.29
 
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 #: 리포트 기본 비용 시나리오 (왕복).
 DEFAULT_COST_GRID = (0.0, 0.0015, 0.0023, 0.0035)
 

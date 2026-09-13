@@ -45,6 +45,7 @@ SURGE_RET = 0.02                 # 4분 +2%
 COOLDOWN_SEC = WINDOW_MIN * 60.0
 HORIZONS_MIN = (5, 10, 20)       # 분 단위 지평
 HORIZONS_SEC = tuple(int(n * 60) for n in HORIZONS_MIN)
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 COST_BP = (40.0, 50.0, 60.0)
 REF_THRESHOLDS = (1.0,)
 MIN_GROUP_N = 100

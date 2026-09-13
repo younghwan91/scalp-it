@@ -45,6 +45,7 @@ ADV_FLOOR = 5000.0  # 당일 거래대금 하한 (백만원 = 50억)
 TV_RATIO_MIN = 3.0
 CLOSE_POS_MIN = 0.8
 TOP_N = 2
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 COST_ROUND_TRIP = 0.0034
 ADV_WINDOW = 20
 

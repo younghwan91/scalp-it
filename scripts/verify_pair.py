@@ -53,6 +53,7 @@ from scalp_it.intraday.store import connect
 
 # ── 사전 고정 (문서 12번 5·7절) ────────────────────────────────────────────
 HOLD_MIN = 5                 # 보유 분: 진입 T+1 시가 → T+6 시가
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 COST_BASE = 0.0064           # 왕복 34bp + 슬리피지 왕복 30bp
 COST_LO = 0.0034             # 슬리피지 0 (낙관)
 COST_HI = 0.0094             # 보수

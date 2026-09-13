@@ -34,6 +34,7 @@ POS_LOG = Path("data/pair_positions.log")
 TXT_LOG = Path("data/pair_daily_summary.log")
 JSONL = Path("data/pair_daily_summary.jsonl")
 
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 # 왕복 비용 시나리오 — scripts/verify_pair.py 의 COST_LO/BASE/HI 와 동일한 상수.
 COSTS = {"net34": 0.0034, "net64": 0.0064, "net94": 0.0094}
 DEFAULT_NOTIONAL = 100_000.0

@@ -38,6 +38,7 @@ NEAR_TICKS = 3
 DISASTER = 0.02
 HOLD_MIN = 3                 # 타임스탑 3분(180초 근사)
 LAST_TRIGGER_MINUTE = 15 * 60 + 13
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 COST = 0.0064
 COST_LO, COST_HI = 0.0034, 0.0094
 N_FOLDS = 4

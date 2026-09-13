@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import socket
 import sys
 from typing import Any
+
+from krx_quant_core.runtime import BACKTEST_HOST, require_host
 
 from .adapters.db import connect, load_ohlcv
 from .closebet.backtest import DEFAULT_COST_GRID, run_close_bet
@@ -25,16 +26,10 @@ _EXIT_MAP = {"open": "ret_open", "high": "ret_high", "close": "ret_close"}
 
 #: 백테스트는 simnode(DB primary + Airflow 호스트)에서만 돈다 — trader 는 매매·수집
 #: 전용이라 CPU/자원이 빠듯하고, 10년 일봉 스캔을 trader 에서 돌리면 장중 수집기와
-#: 자원을 다툰다. daytrade-it 의 백테스트 핸들러에도 같은 취지의 가드가 따로 있다
-#: (레포마다 독립 사본 — kr_quant/scalp_it 의 DB 읽기 클라이언트와 같은 기존 방침,
-#: adapters/db.py 상단 참고). 2026-09-13 사용자 지시로 추가.
+#: 자원을 다툰다. 2026-09-13 사용자 지시로 추가. 가드 자체는 daytrade-it 과 같은
+#: krx-quant-core ``runtime.require_host`` 를 쓴다(레포별 사본을 두지 않는다).
 def _require_simnode_host() -> None:
-    host = socket.gethostname()
-    if host != "simnode":
-        raise RuntimeError(
-            f"scalp-closebet 은 simnode 에서만 돈다 (현재 호스트: {host!r}). "
-            "simnode-local 로 ssh 해서 실행하라."
-        )
+    require_host(BACKTEST_HOST, what="scalp-closebet", hint="simnode-local 로 ssh 해서 실행하라.")
 
 
 def parse_rule(spec: str) -> tuple[str, tuple[float | None, float | None]]:

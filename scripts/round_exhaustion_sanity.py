@@ -34,6 +34,7 @@ NEAR_PCT = 0.005
 COOLDOWN_SEC = 30.0
 EXHAUST_WINDOW_SEC = 30.0
 HORIZONS = (30, 60, 120)
+# 고정 가정값(값은 바꾸지 않는다). 일자별 거래세 스케줄은 krx_quant_core.costs 참고.
 COST_BP = (40.0, 50.0, 60.0)
 MIN_GROUP_N = 100
 RNG_SEED = 20260906
