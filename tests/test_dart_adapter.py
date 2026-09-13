@@ -1,11 +1,12 @@
-import httpx
 import pytest
 
 from scalp_it.adapters.dart import DartClient, DartError, api_keys
 
-
-def _resp(payload: dict) -> httpx.Response:
-    return httpx.Response(200, json=payload)
+_ITEM = {
+    "corp_cls": "K", "corp_name": "에프알텍", "corp_code": "00123456",
+    "stock_code": "073540", "report_nm": "단일판매ㆍ공급계약체결",
+    "rcept_no": "20260814000123", "flr_nm": "에프알텍", "rcept_dt": "20260814", "rm": "",
+}
 
 
 def _page(items, total_page=1, status="000"):
@@ -18,13 +19,6 @@ def _page(items, total_page=1, status="000"):
         "total_page": total_page,
         "list": items,
     }
-
-
-_ITEM = {
-    "corp_cls": "K", "corp_name": "에프알텍", "corp_code": "00123456",
-    "stock_code": "073540", "report_nm": "단일판매ㆍ공급계약체결",
-    "rcept_no": "20260814000123", "flr_nm": "에프알텍", "rcept_dt": "20260814", "rm": "",
-}
 
 
 def test_api_keys_reads_all_three_in_order():
@@ -42,23 +36,20 @@ def test_api_keys_raises_when_none_set():
         api_keys({})
 
 
-def test_search_returns_payload():
-    transport = httpx.MockTransport(lambda request: _resp(_page([_ITEM])))
-    client = DartClient(["k1"], client=httpx.Client(transport=transport))
+def test_search_returns_payload(httpx_mock):
+    httpx_mock.add_response(json=_page([_ITEM]))
+    client = DartClient(["k1"])
     got = client.search(bgn_de="20260810", end_de="20260814", corp_cls="K")
     assert got["total_count"] == 1
     assert got["list"][0]["stock_code"] == "073540"
 
 
-def test_search_sends_expected_params():
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.update(dict(request.url.params))
-        return _resp(_page([]))
-
-    client = DartClient(["k1"], client=httpx.Client(transport=httpx.MockTransport(handler)))
+def test_search_sends_expected_params(httpx_mock):
+    httpx_mock.add_response(json=_page([]))
+    client = DartClient(["k1"])
     client.search(bgn_de="20260101", end_de="20260331", corp_cls="Y", page_no=3)
+    request = httpx_mock.get_requests()[0]
+    seen = dict(request.url.params)
     assert seen["bgn_de"] == "20260101"
     assert seen["end_de"] == "20260331"
     assert seen["corp_cls"] == "Y"
@@ -67,53 +58,43 @@ def test_search_sends_expected_params():
     assert seen["crtfc_key"] == "k1"
 
 
-def test_status_013_is_empty_not_error():
+def test_status_013_is_empty_not_error(httpx_mock):
     """조회 데이터 없음은 오류가 아니다. 공시 없는 날이 실제로 있다."""
-    payload = {"status": "013", "message": "조회된 데이터가 없습니다."}
-    client = DartClient(["k1"], client=httpx.Client(
-        transport=httpx.MockTransport(lambda r: _resp(payload))))
+    httpx_mock.add_response(json={"status": "013", "message": "조회된 데이터가 없습니다."})
+    client = DartClient(["k1"])
     assert client.search(bgn_de="20260101", end_de="20260101", corp_cls="Y")["list"] == []
 
 
-def test_other_error_status_raises():
-    payload = {"status": "010", "message": "등록되지 않은 키입니다."}
-    client = DartClient(["k1"], client=httpx.Client(
-        transport=httpx.MockTransport(lambda r: _resp(payload))))
+def test_other_error_status_raises(httpx_mock):
+    httpx_mock.add_response(json={"status": "010", "message": "등록되지 않은 키입니다."})
+    client = DartClient(["k1"])
     with pytest.raises(DartError):
         client.search(bgn_de="20260101", end_de="20260101", corp_cls="Y")
 
 
-def test_rate_limited_key_falls_through_to_next():
-    used = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        key = request.url.params["crtfc_key"]
-        used.append(key)
-        if key == "k1":
-            return _resp({"status": "020", "message": "요청 제한을 초과하였습니다."})
-        return _resp(_page([_ITEM]))
-
-    client = DartClient(["k1", "k2"], client=httpx.Client(
-        transport=httpx.MockTransport(handler)))
+def test_rate_limited_key_falls_through_to_next(httpx_mock):
+    httpx_mock.add_response(json={"status": "020", "message": "요청 제한을 초과하였습니다."})
+    httpx_mock.add_response(json=_page([_ITEM]))
+    client = DartClient(["k1", "k2"])
     got = client.search(bgn_de="20260810", end_de="20260814", corp_cls="K")
     assert got["total_count"] == 1
+    used = [dict(r.url.params)["crtfc_key"] for r in httpx_mock.get_requests()]
     assert used == ["k1", "k2"]
 
 
-def test_all_keys_rate_limited_raises():
-    client = DartClient(["k1", "k2"], client=httpx.Client(
-        transport=httpx.MockTransport(lambda r: _resp({"status": "020", "message": "초과"}))))
+def test_all_keys_rate_limited_raises(httpx_mock):
+    httpx_mock.add_response(json={"status": "020", "message": "초과"})
+    httpx_mock.add_response(json={"status": "020", "message": "초과"})
+    client = DartClient(["k1", "k2"])
     with pytest.raises(DartError):
         client.search(bgn_de="20260810", end_de="20260814", corp_cls="K")
 
 
-def test_search_all_walks_every_page():
-    def handler(request: httpx.Request) -> httpx.Response:
-        page = int(request.url.params["page_no"])
+def test_search_all_walks_every_page(httpx_mock):
+    for page in (1, 2, 3):
         item = dict(_ITEM, rcept_no=f"2026081400{page:04d}")
-        return _resp(_page([item], total_page=3))
-
-    client = DartClient(["k1"], client=httpx.Client(transport=httpx.MockTransport(handler)))
+        httpx_mock.add_response(json=_page([item], total_page=3))
+    client = DartClient(["k1"])
     rows = client.search_all(bgn_de="20260810", end_de="20260814", corp_cls="K")
     assert len(rows) == 3
     assert [r["rcept_no"][-4:] for r in rows] == ["0001", "0002", "0003"]

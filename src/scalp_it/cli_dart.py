@@ -11,7 +11,6 @@ import argparse
 import sys
 from pathlib import Path
 
-import httpx
 import pandas as pd
 
 from .adapters.dart import DartClient, DartError, api_keys
@@ -37,7 +36,7 @@ def quarter_ranges(start: str, end: str) -> list[tuple[str, str]]:
     return ranges
 
 
-def main(argv: list[str] | None = None, *, client: httpx.Client | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="OpenDART 공시 수집")
     parser.add_argument("--start", default="20160901")
     parser.add_argument("--end", default=None, help="생략 시 오늘")
@@ -65,7 +64,7 @@ def main(argv: list[str] | None = None, *, client: httpx.Client | None = None) -
         print(f"\n{exc}\n", file=sys.stderr)
         return 1
 
-    dart = DartClient(keys, client=client, sleep=args.sleep)
+    dart = DartClient(keys, sleep=args.sleep)
     conn = init_dart_db(args.db)
     total = 0
     try:

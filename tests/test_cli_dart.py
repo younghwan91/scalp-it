@@ -1,7 +1,5 @@
 import itertools
 
-import httpx
-
 from scalp_it.cli_dart import main, quarter_ranges
 
 
@@ -33,7 +31,7 @@ def test_quarter_ranges_single_short_span():
     assert quarter_ranges("20260801", "20260814") == [("20260801", "20260814")]
 
 
-def test_cli_collects_and_persists(tmp_path, monkeypatch):
+def test_cli_collects_and_persists(tmp_path, monkeypatch, httpx_mock):
     monkeypatch.setenv("DART_API_KEY", "k1")
     item = {
         "corp_cls": "K", "corp_name": "에프알텍", "corp_code": "00123456",
@@ -41,18 +39,16 @@ def test_cli_collects_and_persists(tmp_path, monkeypatch):
         "rcept_no": "20260814000123", "flr_nm": "에프알텍",
         "rcept_dt": "20260814", "rm": "",
     }
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={
-            "status": "000", "message": "정상", "page_no": 1, "page_count": 100,
-            "total_count": 1, "total_page": 1, "list": [item],
-        })
+    httpx_mock.add_response(json={
+        "status": "000", "message": "정상", "page_no": 1, "page_count": 100,
+        "total_count": 1, "total_page": 1, "list": [item],
+    })
 
     db = tmp_path / "dart.db"
     rc = main([
         "--start", "20260801", "--end", "20260814", "--db", str(db),
         "--corp-cls", "K", "--sleep", "0",
-    ], client=httpx.Client(transport=httpx.MockTransport(handler)))
+    ])
     assert rc == 0
 
     from scalp_it.dart.store import init_dart_db, load_disclosures

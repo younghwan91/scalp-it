@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "한국 주식 2~8주 스윙 후보 리서치 툴 — 뉴스 재료 강도 + 수급 확증"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [{ name = "Younghwan Chae" }]
 dependencies = [
     "pandas>=2.0",
@@ -18,11 +18,12 @@ dependencies = [
     "httpx>=0.27",
     "websockets>=12.0",
     "kiwoom-client>=0.4.0",
+    "krx-news-client>=0.3.1",
 ]
 
 [project.optional-dependencies]
 pg = ["psycopg2-binary>=2.9"]
-dev = ["pytest>=8.0", "ruff==0.16.2", "psycopg2-binary>=2.9"]
+dev = ["pytest>=8.0", "ruff==0.16.2", "psycopg2-binary>=2.9", "pytest-httpx>=0.30"]
 
 [project.scripts]
 scalp-baseline = "scalp_it.cli:main"
