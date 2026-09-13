@@ -27,7 +27,7 @@
 
 ```bash
 uv sync --extra dev
-uv run pytest                       # 1189 tests
+uv run pytest                       # 1190 tests
 
 export $(grep -v '^#' ../quant-airflow/.env | xargs)                   # KR_QUANT_DB + KIWOOM_APP_*
 ```
