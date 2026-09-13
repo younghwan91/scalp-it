@@ -17,20 +17,8 @@ dependencies = [
     "openpyxl>=3.1",
     "httpx>=0.27",
     "websockets>=12.0",
-    "kiwoom-client>=0.3.0",  # 실제 소스는 [tool.uv.sources] 참고 (git pin, tick_size 유틸 아직 PyPI 미배포)
+    "kiwoom-client>=0.4.0",
 ]
-
-[tool.uv.sources]
-# tick_size 유틸(kiwoom_client.tick_size)이 아직 PyPI 0.3.0에 없어 커밋 pin.
-# 다음 PyPI 릴리스에 포함되면 이 override는 지우고 위 버전 하한만 올리면 된다.
-#
-# ⚠️ 핀을 올릴 때는 **adapters/kiwoom.py 가 의존하는 동작이 그 커밋에 있는지** 보라.
-# 직전 핀 1debc40 은 헤더→바디 폴백(492aa60)의 **한 커밋 앞**이었다. 그래서
-# `_via_kiwoom_api` 가 읽는 `payload["cont-yn"]` 이 항상 없고(None), 연속조회가
-# 첫 페이지에서 조용히 끝났다 — ka90001(테마 그룹, 100행/페이지 · cont-yn: Y)이
-# 첫 100개로 잘리고 그게 짝꿍 선정 입력으로 들어갔다. 테스트는 payload 에
-# cont-yn 이 있다고 가정한 가짜 응답을 쓰므로 이걸 못 잡는다(2026-09-13 발견).
-kiwoom-client = { git = "https://github.com/younghwan91/kiwoom-client.git", rev = "492aa607f79f8bed0049ff5d93348fbc0e5cd146" }
 
 [project.optional-dependencies]
 pg = ["psycopg2-binary>=2.9"]
