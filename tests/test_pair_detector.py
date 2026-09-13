@@ -291,17 +291,17 @@ def test_tick_size_boundaries():
 
 
 def test_tick_size_matches_limitup_timing():
-    """위임 후에도 반환값이 완전히 동일해야 한다(verify_* 재현성)."""
-    import importlib.util
+    """상한가 스크립트·감지기·코어 상한가 식이 **같은 호가단위 함수**를 본다(verify_* 재현성).
+
+    스크립트는 이제 틱 함수를 따로 들지 않고 코어 ``limit_up_price`` 를 쓰고, 그 식은
+    ``tick_size_int`` 를 쓴다. scalp-it ``ticksize.tick_size`` 가 바로 그 함수여야 한다.
+    """
+    from krx_quant_core.market import limits
+    from krx_quant_core.market.ticks import tick_size_int
 
     from scalp_it.ticksize import tick_size
-    spec = importlib.util.spec_from_file_location(
-        "_limitup_timing", "scripts/limitup_timing.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    for px in [1, 500, 539, 1_999, 2_000, 4_999, 5_000, 6_230, 15_760, 19_999,
-               20_000, 49_999, 50_000, 199_999, 200_000, 499_999, 500_000, 1_234_567]:
-        assert mod.tick_size(px) == tick_size(px), px
+    assert tick_size is tick_size_int
+    assert limits.tick_size_int is tick_size_int
 
 
 def _fires_with_price(px, **cfg_kw) -> bool:
@@ -483,17 +483,20 @@ def test_limit_up_price_matches_limitup_timing():
     """상한가 계산은 scripts/limitup_timing.py 와 **값이 한 치도** 달라선 안 된다.
 
     그 스크립트로 뽑은 상한가 검증 결과와 실시간 판정이 어긋나면 백테스트가 무의미하다.
+    둘 다 사본을 들지 않고 ``krx_quant_core.market.limits.limit_up_price`` 를 쓰므로,
+    같은 **함수 객체**인지로 고정한다(값 동일성은 코어 쪽 테스트가 경계값으로 고정).
     """
     import importlib.util
+
+    from krx_quant_core.market.limits import limit_up_price as core_limit_up_price
 
     from scalp_it.realtime.pair_detector import limit_up_price
     spec = importlib.util.spec_from_file_location(
         "_limitup_timing", "scripts/limitup_timing.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    for prev in [100, 539, 1_000, 1_538, 1_539, 2_000, 3_846, 6_230, 15_760, 19_999,
-                 20_000, 38_461, 49_999, 50_000, 153_846, 199_999, 384_615, 1_234_567]:
-        assert limit_up_price(prev) == mod.limit_up_price(prev), prev
+    assert limit_up_price is core_limit_up_price
+    assert mod.limit_up_price is core_limit_up_price
 
 
 def _limit_det(prev=10_000.0, **cfg_kw):

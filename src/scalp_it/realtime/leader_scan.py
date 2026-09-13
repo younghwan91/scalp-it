@@ -28,6 +28,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
+from krx_quant_core.market.session import in_window as in_adoption_window
+from krx_quant_core.market.session import past_cutoff
+
 __all__ = [
     "RANK_API_ID",
     "RANK_PATH",
@@ -36,6 +39,7 @@ __all__ = [
     "in_adoption_window",
     "leader_candidates",
     "parse_scan_rows",
+    "past_cutoff",
     "rank_body",
     "sector_followers",
 ]
@@ -60,43 +64,15 @@ def rank_body(market: str = "101") -> dict[str, str]:
     }
 
 
-def past_cutoff(now_hhmm: str, cutoff: str) -> bool:
-    """지금이 **신규 진입 차단 시각**을 지났나. ``cutoff`` 는 ``"1000"``.
-
-    만쥬 통합 매뉴얼(49 §1-5): "오전 핵심 구간 매매 후 **오후 추격 매매는 철저히
-    배제**", "정규장 오전(09:00~10:00)에 후발주 시차가 가장 집중적으로 발생".
-
-    막는 건 **신규 진입뿐**이다 — 이미 열린 포지션의 청산은 계속 돌아야 한다.
-    빈 값이나 형식 오류면 막지 않는다(오타로 하루를 날리지 않는다).
-    """
-    cut = cutoff.strip().replace(":", "")
-    if not cut or not cut.isdigit():
-        return False
-    return now_hhmm.replace(":", "") > cut
-
-
-def in_adoption_window(now_hhmm: str, window: str) -> bool:
-    """지금이 **새 대장을 받아들이는 창** 안인가. ``window`` 는 ``"0900-0930"``.
-
-    만쥬: "오전 09:00~09:30 사이, HTS 순간체결량 창과 당일 거래대금 상위 창을 본다.
-    ... (비공개 회신 — 공개본에서 뺐다)
-
-    창을 벗어나도 **이미 받아들인 대장은 종일 그대로 돈다.** 여기서 막는 건 '새 대장
-    낙점'뿐이고, 오후 신규 **진입**은 `past_cutoff` 와 `--no-entry-after` 가 막는다.
-
-    ⚠️ 종전 주석은 "만쥬가 오후에 매매를 안 한다고 말한 적은 없다"였다. 통합 매뉴얼
-    (49 §1-5)이 "오전 핵심 구간 매매 후 **오후 추격 매매는 철저히 배제**"로 확정지어
-    그 근거가 사라졌다. cron 은 이제 `0900-1000` 을 건다.
-
-    빈 문자열이면 항상 열려 있다(창 없음).
-    """
-    if not window.strip():
-        return True
-    try:
-        start, end = (p.strip().replace(":", "") for p in window.split("-", 1))
-        return start <= now_hhmm.replace(":", "") <= end
-    except ValueError:
-        return True     # 형식이 틀리면 막지 않는다 — 오타로 하루를 날리지 않는다
+# ----- 시각 게이트 -----------------------------------------------------------
+# ``past_cutoff``(신규 진입 차단 시각)과 ``in_adoption_window``(새 대장 낙점 창)는
+# krx-quant-core ``market.session`` 의 ``past_cutoff``·``in_window`` 로 옮겼다. 규약은
+# 그대로다 — 빈 값·형식 오류는 막지 않는다(오타로 하루를 날리지 않는다).
+#
+# 근거(만쥬 통합 매뉴얼 49 §1-5): "오전 핵심 구간 매매 후 **오후 추격 매매는 철저히
+# 배제**". 컷오프가 막는 건 **신규 진입뿐**이고 열린 포지션의 청산은 계속 돈다. 창을
+# 벗어나도 **이미 받아들인 대장은 종일 그대로 돈다** — 막는 건 '새 대장 낙점'뿐이다.
+# cron 은 ``0900-1000`` 창을 건다.
 
 
 def _num(value: object) -> float:

@@ -32,7 +32,6 @@ DB 는 읽기만 한다. 실행:
 from __future__ import annotations
 
 import argparse
-import math
 import os
 import pathlib
 import sys
@@ -40,6 +39,9 @@ from datetime import timedelta
 
 import numpy as np
 import pandas as pd
+
+# 상한가 식은 krx-quant-core 한 곳에만 둔다 — 실시간 감지기(pair_detector)와 같은 함수다.
+from krx_quant_core.market.limits import limit_up_price
 
 from scalp_it.adapters.db import load_ohlcv
 from scalp_it.cli_cbet_watch import (
@@ -53,7 +55,6 @@ from scalp_it.cli_cbet_watch import (
 from scalp_it.closebet import close_bet_features, close_bet_labels, select_close_bet
 from scalp_it.intraday.loader import available_codes, load_minute_bars
 from scalp_it.intraday.store import connect
-from scalp_it.ticksize import tick_size  # 정의는 한 곳에만 — 값은 그대로다
 
 #: 일봉 근사 상한가 판정 문턱 (수정주가라 정확한 호가단위 내림이 불가능).
 DAILY_LIMIT_RATIO = 1.295
@@ -83,17 +84,6 @@ def _load_env() -> None:
     except Exception as exc:                                   # noqa: BLE001
         print(f"[경고] .env 자동 로드 실패({exc}) — KR_QUANT_DB 를 직접 export 하라.",
               file=sys.stderr)
-
-
-def limit_up_price(prev_close: float) -> float:
-    """전일종가 × 1.3 을 **그 가격대의** 호가단위로 내림한다.
-
-    호가단위는 내림 전 값(prev×1.3)의 가격대로 정한다. 경계 근처에서 내림 후
-    한 단계 아래 가격대로 떨어지는 일은 없다 — 내림은 그 단위의 배수로만 움직인다.
-    """
-    raw = prev_close * 1.3
-    tick = tick_size(raw)
-    return math.floor(raw / tick + 1e-9) * tick
 
 
 def bucket_of(minute: int | None) -> str | None:

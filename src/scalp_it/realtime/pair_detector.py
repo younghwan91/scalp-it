@@ -91,6 +91,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Self
 
+from krx_quant_core.backtest.orderbook import liquidity_size_multiplier, roundtrip_bp
+from krx_quant_core.market.limits import limit_up_price
+
 from scalp_it.ticksize import tick_size, ticks_in
 
 __all__ = [
@@ -167,79 +170,10 @@ class LeaderEvent(tuple):
         self.reason = reason
 
 
-def limit_up_price(prev_close: float) -> float:
-    """전일종가 × 1.3 을 그 가격대 호가단위로 **내림** = 상한가.
-
-    ``scripts/limitup_timing.py::limit_up_price`` 와 값이 한 치도 달라지면 안 된다 —
-    그 스크립트로 뽑은 상한가 검증 결과와 실시간 판정이 어긋나면 백테스트가 무의미해진다.
-    스크립트는 pandas·DB 어댑터를 끌고 들어와 실시간 감지기에서 import 할 수 없으므로
-    식만 여기 옮겼고, **동일성은 테스트가 스크립트를 직접 로드해 고정한다**.
-    """
-    raw = float(prev_close) * 1.3
-    tick = tick_size(raw)
-    return math.floor(raw / tick + 1e-9) * tick
-
-
-def _sweep_vwap(levels: Sequence[Level], krw: float) -> float | None:
-    """``krw`` 원을 호가 단계별로 순서대로 소진했을 때의 체결 VWAP.
-
-    잔량을 다 긁어도 금액을 못 채우면 None — 그 종목은 시장가로 치면 호가가 튄다
-    (만쥬 §4-1: "상하 10호가를 합쳐도 소화 못 하면 재료가 좋아도 즉시 제외").
-    """
-    if krw <= 0:
-        return None
-    remain, shares = krw, 0.0
-    for px, qty in levels:
-        px, qty = float(px), float(qty)
-        if px <= 0 or qty <= 0:
-            continue
-        take = min(px * qty, remain)
-        shares += take / px
-        remain -= take
-        if remain <= 0:
-            break
-    if remain > 0 or shares <= 0:
-        return None
-    return krw / shares
-
-
-def liquidity_size_multiplier(bp: float | None, *, thin_bp: float,
-                              thin_multiplier: float) -> float:
-    """호가 두께로 비중 배수를 정한다 — 만쥬 A-2 Thin Orderbook Restriction.
-
-    > Thick Orderbook: Normal allocation.
-    > Thin Orderbook: Cap size to prevent slippage (**Max 10-20% of normal size**).
-
-    ``bp`` 는 :func:`roundtrip_bp` 가 잰 왕복 충격이다. 종전 구현은 이 값이 상한을
-    넘으면 알림 자체를 **배제**했는데, 만쥬는 배제가 아니라 **축소**하라고 한다 —
-    얇아도 기회면 소액으로 잡는다. 호가를 못 봤으면(``None``) 얇은 쪽으로 본다.
-    ``thin_bp`` 가 0 이면 끈다.
-    """
-    if thin_bp <= 0:
-        return 1.0
-    if bp is None:
-        return thin_multiplier
-    return thin_multiplier if bp > thin_bp else 1.0
-
-
-def roundtrip_bp(bids: Sequence[Level], asks: Sequence[Level], krw: float) -> float | None:
-    """``krw`` 원 시장가 **왕복** 충격(bp). 10호가로 못 채우면 ``inf``, 호가가 없으면 None.
-
-    매수는 ask1→ask10, 매도는 bid1→bid10 을 순서대로 소진한 VWAP 을 쓰고
-    ``(VWAP_buy − VWAP_sell) / mid × 10⁴`` 로 잰다. 실측(2026-08-24, 80종목)에서
-    1000만원 기준 중앙 왕복충격이 5.1bp(LG전자)~195.9bp(인디에프)로 39배 벌어졌고,
-    두께 5분위 충격후 손익이 Q1 −22bp vs Q5 −219bp 였다 — 두께가 곧 손익이다.
-    """
-    if not bids or not asks:
-        return None
-    mid = (float(bids[0][0]) + float(asks[0][0])) / 2.0
-    if mid <= 0:
-        return None
-    buy = _sweep_vwap(asks, krw)
-    sell = _sweep_vwap(bids, krw)
-    if buy is None or sell is None:
-        return math.inf                   # 10호가로도 못 채움 = 호가 튐 → 즉시 배제
-    return (buy - sell) / mid * 1e4
+# 상한가(limit_up_price)와 호가 두께(roundtrip_bp·liquidity_size_multiplier)는
+# krx-quant-core 로 옮겼다(식·``1e-9`` 보정까지 그대로). 백테스트 체결 시뮬레이션과
+# ``scripts/limitup_timing.py`` 가 같은 함수를 보게 하려는 것 — 이름은 여기서도 import
+# 되도록 재노출한다.
 
 
 # --------------------------------------------------------------------- 데이터
