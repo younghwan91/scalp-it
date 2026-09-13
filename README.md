@@ -167,6 +167,30 @@ LAN 순단에도 안 죽는다"는 제약 때문에 반대(trader=PRIMARY)였는
 그날 데이터는 영구 손실이다 — trader 의 로컬 리플리카가 죽는 것과는 다르다(리플리카는 그냥
 읽기 전용 사본이라 죽어도 수집엔 영향 없음, PRIMARY 에서 다시 시딩하면 됨).
 
+## 공통 코어 의존성 (krx-quant-core)
+
+시장 규칙·주문 가드처럼 **시장에만 묶인 로직은 이 레포에 사본을 두지 않고**
+[krx-quant-core](https://github.com/younghwan91/krx-quant-core) (v0.1.0, `pyproject.toml` 에 git 태그 핀)에서
+가져온다. daytrade-it·swing-it 과 같은 함수를 봐야 백테스트·실시간·다른 레포의 판정이 어긋나지 않는다.
+
+| scalp-it 이름 (그대로 import 가능) | 코어 정본 |
+|---|---|
+| `ticksize.tick_size` / `ticks_in` | `market.ticks.tick_size_int` / `ticks_in_float` (표 자체는 kiwoom-client) |
+| `realtime.pair_detector.limit_up_price` · `scripts/limitup_timing.py` | `market.limits.limit_up_price` |
+| `pair_detector.roundtrip_bp` / `liquidity_size_multiplier` | `backtest.orderbook` |
+| `realtime.leader_scan.past_cutoff` / `in_adoption_window` | `market.session.past_cutoff` / `in_window` |
+| `news.calendar.align_to_trading_days` | `market.calendar.align_to_trading_days` |
+| `adapters.kiwoom_order` 의 `OrderIntent`·`OrderResult`·`OrderGuardConfig`·`OrderBlocked`·`normalize_code`·프로토콜 상수, 가드 판정 | `execution` (`OrderGuard`·`kiwoom_spec`) · `market.codes` |
+| `adapters.kiwoom.strip_sign` | `execution.strip_sign` (오류는 여기서 `KiwoomError` 로 감쌈) |
+| order_executor·risk_guard 의 touch/through 체결 판정 | `backtest.fills` |
+| `validate.compare.paired_bootstrap` | `stats.paired_date_bootstrap` |
+| `cli_closebet` simnode 가드 | `runtime.require_host` |
+
+**계좌에 묶인 것(보유 3종목 `HELD_STOCK_CODES`)과 주문 HTTP 전송(`KiwoomOrderClient`)은 여기 남는다** —
+`OrderGuardConfig`/`OrderIntent` 는 코어 클래스를 서브클래스해 보유 종목 차단·종목명을 채운다.
+코어를 올릴 때는 태그를 바꾸고 `uv lock` 후 전체 테스트(`tests/test_kiwoom_order.py` 포함)를 돌린다.
+비용 상수(`COST_*`)는 각 스크립트의 고정 가정값이고, 일자별 거래세 스케줄은 `krx_quant_core.costs` 에 있다.
+
 ## 문서
 
 | | |
@@ -181,6 +205,7 @@ LAN 순단에도 안 죽는다"는 제약 때문에 반대(trader=PRIMARY)였는
 | 레포 | 역할 |
 |---|---|
 | [kiwoom-client](https://github.com/younghwan91/kiwoom-client) | 시세·수급·분봉·테마·주문 (182 REST + WebSocket) |
+| [krx-quant-core](https://github.com/younghwan91/krx-quant-core) | 국장 공통 코어 — 호가단위·상한가·세션·주문 가드·체결 판정·검증 통계 (위 "공통 코어 의존성") |
 | [swing-it](https://github.com/younghwan91/swing-it) (구 kr-quant) | 검증 프레임워크 (walk-forward·음성대조) + 이관된 저빈도 팩터(PEAD·저변동성) |
 | quant-airflow | 일일 데이터 적재 + TimescaleDB PRIMARY/리플리카 구성 (**DB 공유** — 위 "DB 의존성" 참고) |
 
