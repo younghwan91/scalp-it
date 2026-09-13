@@ -169,8 +169,8 @@ wheels = [
 
 [[package]]
 name = "krx-quant-core"
-version = "0.1.0"
-source = { git = "https://github.com/younghwan91/krx-quant-core?rev=v0.1.0#69a9287166006f3e6e7ce88bba63ba6fdd8f6ec3" }
+version = "0.1.1"
+source = { git = "https://github.com/younghwan91/krx-quant-core?rev=v0.1.1#b2abece44883e55e1c1c318df4d74e77c2b23ba3" }
 dependencies = [
     { name = "kiwoom-client" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -846,7 +846,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "kiwoom-client", specifier = ">=0.4.0" },
     { name = "krx-news-client", specifier = ">=0.3.1" },
-    { name = "krx-quant-core", git = "https://github.com/younghwan91/krx-quant-core?rev=v0.1.0" },
+    { name = "krx-quant-core", git = "https://github.com/younghwan91/krx-quant-core?rev=v0.1.1" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pandas", specifier = ">=2.0" },
