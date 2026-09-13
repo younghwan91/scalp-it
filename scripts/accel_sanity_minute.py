@@ -6,7 +6,7 @@
 해상도라 56번의 30초 신호를 근사할 뿐이다(사전등록 §0·§2).
 
 사용:
-  export $(grep -v '^#' ../kr-quant/.env | xargs)
+  export $(grep -v '^#' ../quant-airflow/.env | xargs)
   uv run --extra pg python scripts/accel_sanity_minute.py
 """
 from __future__ import annotations

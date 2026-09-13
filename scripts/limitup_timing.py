@@ -75,7 +75,7 @@ BUCKETS = [
 
 
 def _load_env() -> None:
-    """``KR_QUANT_DB`` 가 없으면 관례대로 ../kr-quant/.env 를 시도한다(있으면 유지)."""
+    """``KR_QUANT_DB`` 가 없으면 관례대로 ../quant-airflow/.env 를 시도한다(있으면 유지)."""
     if os.environ.get("KR_QUANT_DB"):
         return
     try:

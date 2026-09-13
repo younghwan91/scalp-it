@@ -14,7 +14,7 @@
 진입가는 **다음 분 시가**다. 방아쇠 분 종가에 산다고 하면 그 분 안에서 이미 오른 걸
 공짜로 먹는 낙관이 된다(문서 42 §5).
 
-    export $(grep -v '^#' ../kr-quant/.env | xargs)
+    export $(grep -v '^#' ../quant-airflow/.env | xargs)
     uv run --extra pg python scripts/manju_week_review.py --start 2026-08-24
 """
 

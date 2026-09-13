@@ -23,7 +23,7 @@
 
 **미래를 안 본다.** 테마는 이벤트 당일을 **뺀** 직전 W 거래일로만 만든다.
 
-    export $(grep -v '^#' ../kr-quant/.env | xargs)
+    export $(grep -v '^#' ../quant-airflow/.env | xargs)
     uv run --extra pg python scripts/manju_events.py --out data/manju_events.pkl
 """
 

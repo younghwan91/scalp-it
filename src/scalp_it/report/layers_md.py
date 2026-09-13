@@ -184,7 +184,7 @@ def render_layer_report(
         "",
         "## PEAD 대비 (스펙 §7)",
         "",
-        (f"기준: kr-quant 검증 PEAD — 연율 Sharpe {pead_rows[0]['pead_sharpe']:.2f}, "
+        (f"기준: swing-it(구 kr-quant) 검증 PEAD — 연율 Sharpe {pead_rows[0]['pead_sharpe']:.2f}, "
         f"t {pead_rows[0]['pead_t']:.2f}"),
         "",
         "| 층 | 연율 Sharpe | t (겹침 보정) | 유효 표본 | 판정 |",

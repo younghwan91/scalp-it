@@ -4,7 +4,7 @@
 만쥬는 일지를 실력 유지의 필수 요건이라 못박았다. 우리는 로그가 다 있었지만 그건
 기계가 읽는 형식이라 복기가 안 됐다.
 
-    export $(grep -v '^#' ../kr-quant/.env | xargs)
+    export $(grep -v '^#' ../quant-airflow/.env | xargs)
     uv run --extra pg python scripts/pair_journal.py            # 오늘
     uv run --extra pg python scripts/pair_journal.py --date 2026-08-25
     uv run --extra pg python scripts/pair_journal.py --out data/journal/2026-08-26.md

@@ -7,7 +7,7 @@
 결과는 `data/tick_sanity_YYYYMMDD.md` + stdout 로만 낸다.
 
 사용:
-  export $(grep -v '^#' ../kr-quant/.env | xargs)
+  export $(grep -v '^#' ../quant-airflow/.env | xargs)
   uv run --extra pg python scripts/tick_sanity.py --date today
   uv run --extra pg python scripts/tick_sanity.py --date 2026-08-25
 
@@ -230,9 +230,11 @@ def _load_env(path: str | None) -> None:
         return
     # 세 번째는 cwd 와 무관하게 듣는 절대경로 폴백이다 — 2026-09-11 레포가
     # ~/Documents/git 에서 ~/git 으로 옮겨지며 옛 경로가 죽었으므로, 하드코딩
-    # 대신 이 파일 위치에서 유도한다(scripts/ → scalp-it → 형제 kr-quant).
-    _sibling_env = pathlib.Path(__file__).resolve().parents[2] / "kr-quant" / ".env"
-    for cand in (path, "../kr-quant/.env", str(_sibling_env)):
+    # 대신 이 파일 위치에서 유도한다(scripts/ → scalp-it → 형제 quant-airflow).
+    # 2026-09-13: KR_QUANT_DB는 kr-quant(현 swing-it) sparse clone 제거에 맞춰
+    # quant-airflow/.env로 이관됐다.
+    _sibling_env = pathlib.Path(__file__).resolve().parents[2] / "quant-airflow" / ".env"
+    for cand in (path, "../quant-airflow/.env", str(_sibling_env)):
         if cand and pathlib.Path(cand).exists():
             for line in pathlib.Path(cand).read_text().splitlines():
                 line = line.strip()

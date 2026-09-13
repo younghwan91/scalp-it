@@ -5,7 +5,7 @@
 판정선은 28번에서 고정된 그대로, 날짜만 여러 개 돈다. 파라미터를 바꾸지 않는다.
 
 사용:
-  export $(grep -v '^#' ../kr-quant/.env | xargs)
+  export $(grep -v '^#' ../quant-airflow/.env | xargs)
   uv run --extra pg python scripts/tick_sanity_confirm.py --dates data/tick_sanity_2026*.md
   uv run --extra pg python scripts/tick_sanity_confirm.py --from 2026-08-24 --to 2026-09-04
 

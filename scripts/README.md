@@ -78,4 +78,4 @@
 
 ## F. 헬퍼
 
-`_envload.py` — `../kr-quant/.env` 환경변수 주입(`pair_sweep.py`가 import).
+`_envload.py` — `../quant-airflow/.env` 환경변수 주입(`pair_sweep.py`가 import).

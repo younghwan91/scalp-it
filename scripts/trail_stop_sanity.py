@@ -16,7 +16,7 @@
 다시 확정 검증 필요"로 읽어야 한다.
 
 사용:
-  export $(grep -v '^#' ../kr-quant/.env | xargs)
+  export $(grep -v '^#' ../quant-airflow/.env | xargs)
   uv run --extra pg python scripts/trail_stop_sanity.py --from 2026-08-24 --to 2026-09-04
 """
 from __future__ import annotations

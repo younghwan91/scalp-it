@@ -15,7 +15,7 @@
 늦게 퍼질 수 있어서).
 
 사용:
-  export $(grep -v '^#' ../kr-quant/.env | xargs)
+  export $(grep -v '^#' ../quant-airflow/.env | xargs)
   uv run --extra pg python scripts/news_judge_shadow.py --from 2026-09-06 --to 2026-09-06
 """
 from __future__ import annotations

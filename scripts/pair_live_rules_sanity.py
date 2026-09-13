@@ -9,7 +9,7 @@
 읽기 전용, DB만 읽는다, 실주문 없음.
 
 사용:
-  export $(grep -v '^#' ../kr-quant/.env | xargs)
+  export $(grep -v '^#' ../quant-airflow/.env | xargs)
   uv run --extra pg python scripts/pair_live_rules_sanity.py --start 2025-08-04 --end 2026-08-21
 """
 from __future__ import annotations

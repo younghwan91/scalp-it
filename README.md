@@ -15,9 +15,10 @@
 
 - **키움증권 계좌 + REST/WebSocket API 키**(App key/secret) — 형제 레포
   [kiwoom-client](https://github.com/younghwan91/kiwoom-client) 로 접근한다.
-- **형제 레포 클론**: 이 레포와 같은 부모 디렉터리에 `kr-quant`, `quant-airflow` 가
-  있어야 한다. 각각의 `.env` 에서 DB 접속정보(`KR_QUANT_DB`)와 키움 App key/secret
-  을 읽어온다.
+- **형제 레포 클론**: 이 레포와 같은 부모 디렉터리에 `quant-airflow` 가 있어야 한다.
+  DB 접속정보(`KR_QUANT_DB`)와 키움 App key/secret 을 그 `.env` 에서 읽어온다.
+  ([swing-it](https://github.com/younghwan91/swing-it), 구 kr-quant는 스윙 리서치
+  전용이라 trader에는 더 이상 클론하지 않는다 — 2026-09-13.)
 - **TimescaleDB 컨테이너**: `quant-airflow` 가 띄우는
   `quant-airflow-timescaledb-1` 컨테이너를 공유해서 쓴다(localhost:5432/kr_quant).
   자세한 주의사항은 아래 [DB 의존성](#db-의존성-주의) 참고.
@@ -28,8 +29,7 @@
 uv sync --extra dev
 uv run pytest                       # 1189 tests
 
-export $(grep -v '^#' ../kr-quant/.env | xargs)                        # KR_QUANT_DB
-export $(grep -E '^KIWOOM_APP_(KEY|SECRET)=' ../quant-airflow/.env | xargs)
+export $(grep -v '^#' ../quant-airflow/.env | xargs)                   # KR_QUANT_DB + KIWOOM_APP_*
 ```
 
 **장중 실시간** — 아래 둘은 실 API 를 때리고 라이브 DB 에 쓴다. cron 이 이미 돌리므로
@@ -153,7 +153,7 @@ PRIMARY 를 맡게 되면 되살릴 근거), 재활성화 전에 파일 헤더 �
 
 ## DB 의존성 (주의)
 
-`KR_QUANT_DB`(`kr-quant/.env`)는 **고정 호스트가 아니라 지금 PRIMARY 인 쪽**을 가리킨다 — 어느
+`KR_QUANT_DB`(`quant-airflow/.env`)는 **고정 호스트가 아니라 지금 PRIMARY 인 쪽**을 가리킨다 — 어느
 쪽이 PRIMARY 인지는 `pg_is_in_recovery()` 로 확인한다(false = PRIMARY). 자세한 배경·전환 절차는
 형제 레포 quant-airflow 의 README 상단 안내 상자 참고.
 
@@ -181,7 +181,7 @@ LAN 순단에도 안 죽는다"는 제약 때문에 반대(trader=PRIMARY)였는
 | 레포 | 역할 |
 |---|---|
 | [kiwoom-client](https://github.com/younghwan91/kiwoom-client) | 시세·수급·분봉·테마·주문 (182 REST + WebSocket) |
-| [kr-quant](https://github.com/younghwan91/kr-quant) | 검증 프레임워크 (walk-forward·음성대조) + 이관된 저빈도 팩터(PEAD·저변동성) |
+| [swing-it](https://github.com/younghwan91/swing-it) (구 kr-quant) | 검증 프레임워크 (walk-forward·음성대조) + 이관된 저빈도 팩터(PEAD·저변동성) |
 | quant-airflow | 일일 데이터 적재 + TimescaleDB PRIMARY/리플리카 구성 (**DB 공유** — 위 "DB 의존성" 참고) |
 
 ## 원칙

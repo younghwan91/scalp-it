@@ -35,7 +35,7 @@ def extract_events(
 
     Args:
         adv_floor: 직전 평균 거래대금 하한. 단위 백만원. 기본 5000 = 50억원
-            (kr-quant PEAD 검증에서 필수였던 point-in-time 유동성 하한과 같은 값).
+            (swing-it(구 kr-quant) PEAD 검증에서 필수였던 point-in-time 유동성 하한과 같은 값).
         tv_multiple: 평균 대비 당일 거래대금 배수 하한.
         window: 평균 계산 구간(거래일).
     """

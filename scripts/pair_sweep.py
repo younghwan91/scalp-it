@@ -35,7 +35,7 @@
 사용법
 ======
 
-    export $(grep -v '^#' ../kr-quant/.env | xargs)
+    export $(grep -v '^#' ../quant-airflow/.env | xargs)
     uv run --extra pg python scripts/pair_sweep.py --replay 2026-08-24 \\
         --grid 'surge_window=10,15,30' --grid 'cosurge_min=0.005,0.002,0.001,0' \\
         --out data/pair_sweep.jsonl
@@ -343,7 +343,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _load_env() -> None:
-    """``KR_QUANT_DB`` 가 없으면 관례대로 ../kr-quant/.env 를 시도한다(있으면 유지)."""
+    """``KR_QUANT_DB`` 가 없으면 관례대로 ../quant-airflow/.env 를 시도한다(있으면 유지)."""
     if os.environ.get("KR_QUANT_DB"):
         return
     try:

@@ -13,7 +13,7 @@
 `data/quote_sanity_<from>_<to>.md` + stdout.
 
 사용:
-  export $(grep -v '^#' ../kr-quant/.env | xargs)
+  export $(grep -v '^#' ../quant-airflow/.env | xargs)
   uv run --extra pg python scripts/quote_sanity.py --from 2026-08-24 --to 2026-09-04
 """
 from __future__ import annotations

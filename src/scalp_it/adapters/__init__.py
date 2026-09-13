@@ -1,5 +1,5 @@
 """외부 시스템 접근을 격리하는 계층.
 
-kr-quant / kiwoom / krx-news / DB 에 손을 뻗는 코드는 전부 여기에만 둔다.
+swing-it(구 kr-quant) / kiwoom / krx-news / DB 에 손을 뻗는 코드는 전부 여기에만 둔다.
 나머지 모듈은 이 레포들이 존재하는지도 모른다 (스펙 §8).
 """

@@ -10,7 +10,7 @@
 쓰지 않는다(사전등록 §0·§6).
 
 사용:
-  export $(grep -v '^#' ../kr-quant/.env | xargs)
+  export $(grep -v '^#' ../quant-airflow/.env | xargs)
   uv run --extra pg python scripts/accel_sanity.py --from 2026-08-24 --to 2026-09-04
 """
 from __future__ import annotations

@@ -33,7 +33,10 @@ sec "1) 경로와 자격증명"
 ok "레포 경로 유도: $REPO"
 
 KW_ENV="$REPO/../quant-airflow/.env"
-KQ_ENV="$REPO/../kr-quant/.env"
+# 2026-09-13: kr-quant(현 swing-it)는 스윙 리서치 전용이라 trader에서 관리할
+# 필요가 없어져 sparse clone을 없앴다. trader가 쓰던 유일한 값(KR_QUANT_DB)은
+# quant-airflow/.env로 이관됐다 — 이제 KW_ENV 하나만 본다.
+KQ_ENV="$KW_ENV"
 
 if [ -r "$KW_ENV" ]; then
   # 값은 절대 찍지 않는다. 개수와 길이만 본다.
@@ -44,15 +47,10 @@ if [ -r "$KW_ENV" ]; then
   # 2세트는 필수가 아니다. 없으면 감지기와 tick-collect 가 같은 키를 물고 충돌한다.
   [ "$n_key2" -eq 2 ] && ok "키움 2세트 키(KEY_2/SECRET_2) 있음 — 수집·감지 분리 가능" \
                       || warn "KIWOOM_APP_KEY_2/SECRET_2 없음 — 감지기와 tick-collect 가 같은 키로 충돌할 수 있다"
+  grep -q '^KR_QUANT_DB=' "$KW_ENV" && ok "KR_QUANT_DB 선언됨" \
+                                    || bad "KR_QUANT_DB 가 $KW_ENV 에 없다"
 else
   bad "읽을 수 없음: $KW_ENV — 런처의 export 가 조용히 빈 값이 된다"
-fi
-
-if [ -r "$KQ_ENV" ]; then
-  grep -q '^KR_QUANT_DB=' "$KQ_ENV" && ok "KR_QUANT_DB 선언됨" \
-                                    || bad "KR_QUANT_DB 가 $KQ_ENV 에 없다"
-else
-  bad "읽을 수 없음: $KQ_ENV"
 fi
 
 # 런처가 **절대경로로 박아 쓰는** uv. PATH 와 무관하게 이 파일이 있어야 한다.

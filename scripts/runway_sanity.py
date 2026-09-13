@@ -5,7 +5,7 @@
 피겨 갭·전고점 갭)만 새 신호로 바꿔 잰다. 2차 VI 는 범위 밖(사전등록 §0).
 
 사용:
-  export $(grep -v '^#' ../kr-quant/.env | xargs)
+  export $(grep -v '^#' ../quant-airflow/.env | xargs)
   uv run --extra pg python scripts/runway_sanity.py
 """
 from __future__ import annotations

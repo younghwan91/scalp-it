@@ -5,7 +5,7 @@
 수익을 라벨로 쓴다. 10일치뿐이라 확정 배선 판단에는 못 쓴다(사전등록 §6).
 
 사용:
-  export $(grep -v '^#' ../kr-quant/.env | xargs)
+  export $(grep -v '^#' ../quant-airflow/.env | xargs)
   uv run --extra pg python scripts/round_exhaustion_sanity.py
 """
 from __future__ import annotations
