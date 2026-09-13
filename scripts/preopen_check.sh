@@ -87,6 +87,33 @@ else
   bad "kiwoom-client 핀이 낡았거나 호가단위가 틀렸다 — 'uv sync --extra pg' 후 재확인 (테마 조회가 조용히 잘린다)"
 fi
 
+# 런처가 실제로 넘기는 롱플래그 전부가 파서에 정의돼 있는지 대조한다. 위
+# `--help` 는 콘솔 스크립트·import 사슬이 사는 것만 보증하지, 런처 실행줄의
+# 플래그 철자가 하나 틀려도 그건 못 잡는다 — argparse 는 그러면 exit 2 로
+# 죽는데 런처는 set -e 가 없어 15:20 까지 재시작만 돌며 그날 수집·매매를
+# 통째로 날린다(틱은 소급 불가) — 09-11 의 `cd` 실패와 같은 실패 모양이다.
+# 시작 줄에서 'scalp-pair-detect' 뒤쪽만 취한다 — 그 앞의 '--extra pg' 는
+# uv 자체 플래그라 감지기 파서에는 없다(그대로 두면 오탐).
+FLAGS="$(awk '/uv run .*scalp-pair-detect/{f=1; sub(/^.*scalp-pair-detect/,"")} f{print} f&&/>>/{exit}' \
+           "$REPO/scripts/pair_detect_daily.sh" | grep -oE '[-][-][a-z0-9-]+' | sort -u)"
+NFLAG="$(printf '%s\n' "$FLAGS" | grep -c .)"
+if [ "$NFLAG" -lt 30 ]; then
+  # 런처 실행줄 형태가 바뀌면 awk 패턴이 조용히 0개를 세고, 대조 루프는 빈
+  # 집합이라 항상 통과한다("전부 정의됨" 오판) — 그래서 하한을 못박는다.
+  # 실측(2026-09-13)은 56개다.
+  bad "런처 실행줄을 못 찾았다(플래그 ${NFLAG}개) — 이 점검이 헛돈다"
+else
+  MISS=""
+  for f in $FLAGS; do
+    grep -q -- "\"$f\"" "$REPO/src/scalp_it/cli_pair_detect.py" || MISS="$MISS $f"
+  done
+  if [ -n "$MISS" ]; then
+    bad "파서에 없는 런처 플래그:$MISS — argparse exit 2 로 하루를 날린다"
+  else
+    ok "런처 롱플래그 ${NFLAG}개 전부 파서에 정의됨"
+  fi
+fi
+
 # ─────────────────────────────────────────────────────────── 3. DB
 sec "3) DB(틱이 실제로 들어갈 곳)"
 
@@ -132,6 +159,32 @@ if [ -n "$LEFT" ]; then
 else
   ok "잔류 감지기 없음"
 fi
+
+# 로그(data/pair_orders.log)로는 못 잡는다 — 감지기가 죽으면 close 이벤트를
+# 아예 못 남기므로 "로그에 open 이 없다"가 "포지션이 없다"를 뜻하지 않는다.
+# 계좌가 정본이다. 실행기가 이미 쓰는 생산 경로(KiwoomOrderClient.holdings(),
+# kt00018 응답의 "A000010" 접두 정규화까지 포함)를 그대로 불러서 손수 구현을
+# 피한다 — 별도 urllib 구현은 그 정규화를 놓치기 쉽다. 보유가 있으면 감지기가
+# 그 종목 매수를 '실시간 보유종목 차단'으로 이미 막으므로, 의도한 보유인지는
+# 사람이 판단할 몫이라 FAIL 이 아니라 WARN 이다.
+HOLD_OUT="ENV_MISSING"
+if [ -r "$KW_ENV" ]; then
+  HOLD_OUT="$(set -a; . "$KW_ENV"; set +a; "$UV" run --extra pg python -c '
+from scalp_it.adapters.kiwoom import api_credentials
+from scalp_it.adapters.kiwoom_order import KiwoomOrderClient
+try:
+    appkey, secret = api_credentials()
+    held = KiwoomOrderClient(appkey, secret).holdings(force=True)
+    codes = ",".join(h["code"] for h in held[:5])
+    print(f"HOLD={len(held)}|{codes}")
+except Exception as exc:
+    print(f"ERR={type(exc).__name__}: {exc}")' 2>&1 | tail -1)"
+fi
+case "$HOLD_OUT" in
+  HOLD=0*) ok "계좌 보유 0건 — 무감시 방치 포지션 없음" ;;
+  HOLD=*)  warn "계좌 보유 ${HOLD_OUT#HOLD=} — 감지기가 해당 종목 매수를 차단한다. 의도한 보유인지 확인" ;;
+  *)       warn "계좌 조회 실패(${HOLD_OUT}) — 보유 여부를 HTS 로 직접 확인할 것" ;;
+esac
 
 # ─────────────────────────────────────────────────────────── 5. 데이터 신선도
 sec "5) 입력 데이터 신선도"
