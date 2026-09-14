@@ -170,12 +170,16 @@ wheels = [
 [[package]]
 name = "krx-quant-core"
 version = "0.1.1"
-source = { git = "https://github.com/younghwan91/krx-quant-core?rev=v0.1.1#b2abece44883e55e1c1c318df4d74e77c2b23ba3" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "kiwoom-client" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pandas" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/59/ed/15eee7039ed4eb918b7fbc322d19972b69b02a4ebe660828e18e9ef73890/krx_quant_core-0.1.1.tar.gz", hash = "sha256:1ba6373e24b26ad372234f9d30044f92809a6efcc10e274998397d6264251634", size = 143277, upload-time = "2026-09-14T15:08:53.967Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ee/3f/5bb7b23af88582599a675b6c43640db5b2fd9039b53e099d4351ea271451/krx_quant_core-0.1.1-py3-none-any.whl", hash = "sha256:06e61ca500a706e61035e469eea298716c96652eb810f44069a67a6fd2aa81ea", size = 85241, upload-time = "2026-09-14T15:08:52.49Z" },
 ]
 
 [[package]]
@@ -846,7 +850,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "kiwoom-client", specifier = ">=0.4.0" },
     { name = "krx-news-client", specifier = ">=0.3.1" },
-    { name = "krx-quant-core", git = "https://github.com/younghwan91/krx-quant-core?rev=v0.1.1" },
+    { name = "krx-quant-core", specifier = "==0.1.1" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pandas", specifier = ">=2.0" },
@@ -917,7 +921,7 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -996,7 +1000,7 @@ resolution-markers = [
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a7/25/c2700dfaf6442b4effaa91af24ebce5dc9d31bb4a69706313aae70d72cd0/scipy-1.18.0.tar.gz", hash = "sha256:67b2ad2ad54c72ca6d04975a9b2df8c3638c34ddd5b28738e94fc2b57929d378", size = 30774447, upload-time = "2026-06-19T15:01:43.456Z" }
 wheels = [
