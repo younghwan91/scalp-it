@@ -1,0 +1,37 @@
+# 이 파일은 dotfiles 의 cron-install 이 trader 의 사용자 crontab 에 설치한다.
+# 매일 07:50 동기화(pull-all --ci-gate → cron-install)가 origin/main 기준으로 반영한다.
+# 크론을 바꾸려면 crontab -e 가 아니라 이 파일을 고쳐 커밋·푸시할 것 — 손으로 고친 건 다음 설치에 덮인다.
+
+# 틱 수집 헬스체크 — 평일 09:10(조기 경보) + 10:00(안정화 후). 최근 20분 검사, 리포트는 data/tick_health.log (CLI 자체 기록)
+10 9 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run scalp-tick-health --minutes 20 >> data/tick_health.cron.log 2>&1
+0 10 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run scalp-tick-health --minutes 20 >> data/tick_health.cron.log 2>&1
+10 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -E "^(KR_QUANT_DB|KIWOOM_APP_(KEY|SECRET))=" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run scalp-theme-snapshot --sleep 0.3 >> data/theme_snapshot.log 2>&1
+
+# 틱 스캘핑 1차 sanity — 평일 16:00(수집 15:40 종료 후). 그날 ticks 로 트리거 vs 비트리거 forward 수익. 결과 data/tick_sanity_YYYYMMDD.md (사전등록 docs/research/manju/28)
+0 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run --extra pg python scripts/tick_sanity.py --date today >> data/tick_sanity.log 2>&1
+
+# db_guard.sh 크론 비활성화(2026-09-11) — DB 원본이 simnode 로 이전되면서
+# trader 의 quant-airflow-timescaledb-1 은 의도적으로 stop 됐다. 이 가드를
+# 그대로 두면 "내려간 컨테이너"로 오인해 docker start 로 그 죽은 옛 DB 를
+# 되살려 split-brain 위험을 만든다. scripts/db_guard.sh 파일 자체는 남겨둔다
+# (trader 가 다시 primary 를 호스팅하게 되면 그때 되살릴 수 있게).
+# 개장 전 점검(읽기 전용) — 아래 08:55 런처가 요구하는 전제를 미리 확인한다.
+#   09-11 레포 이동 이후 9건이 조용히 깨졌고 장이 열린 뒤에야 드러났다. 그 창을
+#   개장 전으로 옮기는 자리다. FAIL 이면 종료코드 1 — 로그 끝줄만 봐도 된다.
+45 8 * * 1-5 /home/young/git/scalp-it/scripts/preopen_check.sh >> /home/young/git/scalp-it/data/preopen_check.log 2>&1
+
+55 8 * * 1-5 /home/young/git/scalp-it/scripts/pair_detect_daily.sh >> /home/young/git/scalp-it/data/pair_detect_cron.log 2>&1
+40 15 * * 1-5 pkill -f 'scalp-tick-collect'; pkill -f 'scalp-pair-detect'; pkill -f pair_detect_daily
+
+# 만쥬 §2-1 재료 — DART 공시를 매일 최신화한다(유니버스 선정의 세 번째 요건).
+# 뉴스 크롤러는 정책상 금지(ToS·저작권, docs/research/manju/17) — 공시가 현실 경로다.
+40 8 * * 1-5 cd /home/young/git/scalp-it && export $(grep -E "^DART_API_KEY" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run scalp-dart --start $(date -d "7 days ago" +\%Y\%m\%d) --db data/dart.db >> data/dart_daily.log 2>&1
+# 만쥬 §6 돌발 재료 — 장중 DART 를 10분마다 갱신한다. 감지기가 이걸 읽어
+# 새 재료 종목을 구독에 추가한다(뉴스 크롤러는 정책상 금지, 공시가 현실 경로).
+*/10 9-15 * * 1-5 cd /home/young/git/scalp-it && export $(grep -E "^DART_API_KEY" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run scalp-dart --start $(date +\%Y\%m\%d) --db data/dart.db >> data/dart_intraday.log 2>&1
+
+# 아침 리포트 — 만쥬 체인이 도는지 한 장으로. 로그 다섯 군데를 아침마다 여는 걸 대신한다.
+# 지표는 하나다: 방아쇠 구간(상한가 3호가 이내·미잠김)에 틱이 들어온 종목 수.
+# 장 마감 뒤 그날치를 쓰고, 다음 날 08:30 에 전 거래일치를 latest.md 로 다시 쓴다.
+45 15 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run scalp-morning --date today --out data/morning/$(date +\%Y-\%m-\%d).md >> data/morning_report.log 2>&1
+30 8 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run scalp-morning --date yesterday --out data/morning/latest.md >> data/morning_report.log 2>&1

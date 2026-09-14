@@ -1,0 +1,22 @@
+# 이 파일은 dotfiles 의 cron-install 이 simnode 의 사용자 crontab 에 설치한다.
+# 매일 07:50 동기화(pull-all --ci-gate → cron-install)가 origin/main 기준으로 반영한다.
+# 크론을 바꾸려면 crontab -e 가 아니라 이 파일을 고쳐 커밋·푸시할 것 — 손으로 고친 건 다음 설치에 덮인다.
+
+# --- scalp-it 분석 배치 (원래 trader crontab 30/32/53/63/64행) ---
+# 15:25~15:27 배치 셋(pair_daily_summary·pair_journal·filter_counterfactual)은
+# data/pair_*.log 를 읽는데, 이 로그는 trader 의 감지기가 쓴다. 09-11 호스트 분리 뒤로 아무도
+# 옮겨주지 않아 여기 사본이 09-10 에 멈춰 있었고, 09-11 일지는 trader 에 섀도 포지션 3건·
+# 알림 82건이 있는데도 "진입 0건"으로 나왔다(2026-09-13 확인). 감지기가 15:20 에 스스로
+# 끝나므로 15:24 에 trader 정본을 당겨온다. 여기 사본은 trader 파일의 바이트 접두사였음을
+# 확인했다 — 덮어써도 잃는 게 없다. --delete 없음(파일 단위 동기화만).
+24 15 * * 1-5 rsync -t -e "ssh -o BatchMode=yes -o ConnectTimeout=20" trader-local:git/scalp-it/data/pair_alerts.log trader-local:git/scalp-it/data/pair_positions.log trader-local:git/scalp-it/data/pair_detect.log trader-local:git/scalp-it/data/pair_orders.log /home/young/git/scalp-it/data/ >> /home/young/git/scalp-it/data/pull_trader_logs.cron.log 2>&1 || echo "[$(date '+\%F \%T')] rsync 실패 — 15:25 배치가 낡은 로그를 읽는다" >> /home/young/git/scalp-it/data/pull_trader_logs.cron.log
+25 15 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v '^#' ../quant-airflow/.env | xargs) && python3 scripts/pair_daily_summary.py >> /home/young/git/scalp-it/data/pair_daily_summary.cron.log 2>&1
+# 만쥬식 매매일지(문서 44 §10-2) — 로그를 사람이 복기할 글로 바꾼다. 집계 직후.
+26 15 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run --extra pg python scripts/pair_journal.py --out data/journal/$(date +\%Y-\%m-\%d).md >> data/pair_journal.cron.log 2>&1
+30 18 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run --extra pg scalp-coverage --min-rate 0.295 0.12 --jsonl data/coverage.jsonl >> data/coverage.log 2>&1
+
+# 뉴스 판단(news_judge) 반응매매 그림자 — 평일 16:05(틱 sanity 16:00 다음, 수집 종료 후).
+# 사전등록 docs/research/manju/55. 실주문 없음 — 그림자 리포트만 갱신.
+# --from 은 news_judgments 스키마 시작일(2026-09-06) 고정, --to 는 오늘 — 표본을 누적해서 본다(하루치는 100건 판정선에 못 미친다).
+5 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run --extra pg python scripts/news_judge_shadow.py --from 2026-09-06 --to $(date +\%Y-\%m-\%d) >> data/news_judge_shadow.cron.log 2>&1
+27 15 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run --extra pg python scripts/filter_counterfactual.py --from 2026-08-25 --to $(date +\%Y-\%m-\%d) --out data/filter_counterfactual_latest.md >> data/filter_counterfactual.cron.log 2>&1
