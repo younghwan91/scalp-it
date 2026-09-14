@@ -366,6 +366,9 @@ class RiskGuard:
         # 낙폭 방어 — 실현손익의 그날 정점. 시드가 아니라 **정점**이 기준이라
         # 벌었다가 토해내는 중인지가 판정 대상이 된다(만쥬 원문 그대로).
         self.peak_realized_krw: float = 0.0
+        # 지금 상한가를 말고 있는 대장. 굳힘 통보는 전이 순간 한 번만 오므로, 그 뒤에 연
+        # 포지션도 손절 잠금을 받으려면 상태를 기억해야 한다(79번 측정에서 발견).
+        self._holding_leaders: set[str] = set()
         # 프로그램이 쏟아내는 장세인가(만쥬). 외부에서 주입받는다 — 가드는 시장
         # 수급을 조회할 방법이 없다(DB·네트워크를 모르는 게 이 모듈의 계약이다).
         self.program_dumping: bool = False
@@ -457,6 +460,7 @@ class RiskGuard:
             self._banner_shown = False
             self.open_positions.clear()
             self.shadow_positions.clear()
+            self._holding_leaders.clear()
 
     # ----- 킬스위치 판정 ------------------------------------------------------
 
@@ -554,6 +558,7 @@ class RiskGuard:
                       notional: float | None = None,
                       blocked: bool = False) -> Position:
         return Position(
+            leader_holding=alert.leader in self._holding_leaders,
             follower=alert.follower,
             leader=alert.leader,
             alert_ts=alert.ts,
@@ -766,13 +771,17 @@ class RiskGuard:
         if state == LEADER_HOLDING:
             # 굳힘 통보 — 손절을 잠그는 근거가 된다(만쥬: 2등주 가격으로 손절 금지).
             self._observe_date(ts)
+            self._holding_leaders.add(leader_code)
             for pos in (*self.open_positions, *self.shadow_positions):
                 if pos.leader == leader_code:
                     pos.leader_holding = True
             return
-        if state != LEADER_LOST or not self.config.leader_exit:
+        if state != LEADER_LOST:
             return
         self._observe_date(ts)
+        self._holding_leaders.discard(leader_code)
+        if not self.config.leader_exit:
+            return
         if not self.open_positions and not self.shadow_positions:
             return
         # 그림자(반대 체결가정)에도 똑같이 적용한다 — 한쪽만 대장 규칙으로 나가면

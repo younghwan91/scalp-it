@@ -318,6 +318,60 @@ def test_leader_losing_the_limit_reopens_the_stop_and_exits():
     assert g.closed_positions[-1].exit_reason == "대장이탈"
 
 
+def test_stop_is_locked_for_a_position_opened_after_the_leader_already_locked():
+    """굳힘 통보는 상태가 바뀌는 순간 **한 번만** 온다(감지기 전이 이벤트).
+
+    그 뒤에 연 포지션에는 통보가 다시 안 와서 잠금이 안 걸렸다 — 대장이 이미 상한가를
+    말고 있는데 2등주 가격 손절이 살아 있는, 만쥬가 금지한 상태다(79번 측정에서 발견:
+    잠김 확인 후 진입 24건 중 14건이 −0.5% 손절, 보유 중앙 5.5초).
+    """
+    from scalp_it.realtime.risk_guard import LEADER_HOLDING
+
+    base = {"daily_loss_limit": 0.0, "max_consecutive_losses": 0, "max_positions": 99,
+            "stop_file": None, "position_notional": 10_000_000.0,
+            "stop_needs_leader_weak": True}
+    g = RiskGuard(RiskGuardConfig(**base))
+    g.on_leader_state("000001", BASE - timedelta(seconds=30), LEADER_HOLDING)   # 먼저 굳힘
+    a = _alert()
+    g.on_alert(type(a)(**{**a.__dict__, "stop_loss": 9_950.0, "disaster_line": 9_700.0}))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 9_999)
+    _tick(g, 10, 9_940)
+    assert len(g.open_positions) == 1, "이미 굳힌 대장의 2등주는 가격 손절로 안 나간다"
+    _tick(g, 12, 9_600)
+    assert g.closed_positions[-1].exit_reason == "재난선"
+
+
+def test_leader_lost_clears_the_remembered_lock_for_later_positions():
+    from scalp_it.realtime.risk_guard import LEADER_HOLDING, LEADER_LOST
+
+    base = {"daily_loss_limit": 0.0, "max_consecutive_losses": 0, "max_positions": 99,
+            "stop_file": None, "position_notional": 10_000_000.0,
+            "stop_needs_leader_weak": True}
+    g = RiskGuard(RiskGuardConfig(**base))
+    g.on_leader_state("000001", BASE - timedelta(seconds=30), LEADER_HOLDING)
+    g.on_leader_state("000001", BASE - timedelta(seconds=10), LEADER_LOST)
+    a = _alert()
+    g.on_alert(type(a)(**{**a.__dict__, "stop_loss": 9_950.0, "disaster_line": 9_700.0}))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 9_999)
+    _tick(g, 10, 9_940)
+    assert g.closed_positions[-1].exit_reason == "손절"
+
+
+def test_remembered_lock_does_not_carry_over_to_the_next_day():
+    from scalp_it.realtime.risk_guard import LEADER_HOLDING
+
+    base = {"daily_loss_limit": 0.0, "max_consecutive_losses": 0, "max_positions": 99,
+            "stop_file": None, "position_notional": 10_000_000.0,
+            "stop_needs_leader_weak": True}
+    g = RiskGuard(RiskGuardConfig(**base))
+    g.on_leader_state("000001", BASE - timedelta(days=1), LEADER_HOLDING)      # 어제 굳힘
+    a = _alert()
+    g.on_alert(type(a)(**{**a.__dict__, "stop_loss": 9_950.0, "disaster_line": 9_700.0}))
+    g.on_tick(FOL, BASE + timedelta(seconds=1), 9_999)
+    _tick(g, 10, 9_940)
+    assert g.closed_positions[-1].exit_reason == "손절"
+
+
 def test_lock_is_off_by_default():
     g = _stop_guard()
     g.on_leader_state("000001", BASE + timedelta(seconds=5), "holding")
