@@ -30,6 +30,13 @@ def ffill(a):
     return out
 
 
+def _tick(p):
+    for lim, t in ((2000, 1), (5000, 5), (20000, 10), (50000, 50), (200000, 100), (500000, 500)):
+        if p < lim:
+            return t
+    return 1000
+
+
 def roll_sum(a, w):
     c = np.concatenate([[0.0], np.cumsum(a)])
     out = np.full(len(a), np.nan)
@@ -59,6 +66,8 @@ def build_code(tk, qt):
     cnt = np.bincount(sec_t, minlength=n)
     last = np.full(n, np.nan)
     last[sec_t] = tk.price.to_numpy(float)  # 마지막 값이 남는다(정렬됨)
+    stg = np.full(n, np.nan)
+    stg[sec_t] = tk.strength.to_numpy(float)
     bb = np.full(n, np.nan); ba = np.full(n, np.nan)
     bb[sec_t] = tk.best_bid.to_numpy(float); ba[sec_t] = tk.best_ask.to_numpy(float)
 
@@ -76,7 +85,7 @@ def build_code(tk, qt):
         aq1[sec_q[ok]] = qt.askqty1.to_numpy(float)[ok]
         bd3[sec_q[ok]] = (qt[["bidqty1", "bidqty2", "bidqty3"]].sum(axis=1).to_numpy(float) * b1)[ok]
         ad3[sec_q[ok]] = (qt[["askqty1", "askqty2", "askqty3"]].sum(axis=1).to_numpy(float) * a1)[ok]
-    bb = ffill(bb); ba = ffill(ba); last = ffill(last)
+    bb = ffill(bb); ba = ffill(ba); last = ffill(last); stg = ffill(stg)
     bq1 = ffill(bq1); aq1 = ffill(aq1); bd3 = ffill(bd3); ad3 = ffill(ad3)
     bb[bb <= 0] = np.nan; ba[ba <= 0] = np.nan
     mid = (bb + ba) / 2
@@ -107,6 +116,11 @@ def build_code(tk, qt):
         "ofi10": roll_sum(e, 10) / (pd.Series(depth1).rolling(60, min_periods=1).mean().to_numpy() + 1),
         "imb3": (bd3 - ad3) / (bd3 + ad3),
         "spread_bp": (ba - bb) / mid * 1e4,
+        "strength": stg,
+        "dstr10": stg - np.roll(stg, 10),
+        "dstr30": stg - np.roll(stg, 30),
+        "dstr60": stg - np.roll(stg, 60),
+        "spread_ticks": (ba - bb) / np.array([_tick(x) for x in np.nan_to_num(ba, nan=1.0)]),
         "bid": bb, "ask": ba,
     }
     ask_e = np.roll(ba, -1)  # 1초 지연 진입
@@ -126,7 +140,7 @@ def build_code(tk, qt):
             "lo": lo.astype(np.float32), "hi": hi.astype(np.float32),
             "bidval1": np.nan_to_num(bq1 * bb).astype(np.float32),
             "bidval3": np.nan_to_num(bd3).astype(np.float32),
-            "ofi": np.cumsum(e).astype(np.float32)}
+            "ofi": np.cumsum(e).astype(np.float32), "strength": stg.astype(np.float32)}
     df = pd.DataFrame(f)
     keep = (cnt > 0) & (df.sec >= 300) & (df.sec <= N - 600) & df.ask.notna() & df.bid.notna() \
         & (df.ask > df.bid) & df.acc.notna()
@@ -145,7 +159,7 @@ def run_day(args):
     conn = psycopg2.connect(os.environ["KR_QUANT_DB"])
     nxt = (pd.Timestamp(day) + pd.Timedelta(days=1)).date().isoformat()
     tk = pd.read_sql(
-        "select code, ts, seq, price, volume, side, best_bid, best_ask from ticks "
+        "select code, ts, seq, price, volume, side, strength, best_bid, best_ask from ticks "
         "where ts >= %s and ts < %s order by code, ts, seq", conn, params=(day, nxt))
     qt = pd.read_sql(
         "select code, ts, bid1, ask1, bidqty1, bidqty2, bidqty3, askqty1, askqty2, askqty3 "
