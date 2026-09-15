@@ -24,3 +24,7 @@
 # 81번 ETF 체결강도 스캘핑 — 평일 16:20(틱 수집 15:40 종료 후). 사전등록 docs/research/manju/81.
 # 매일 리포트만 갱신한다(data/etf81_report.md). 판정은 OOS 10거래일·30거래 이후에만 난다.
 20 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run --extra pg python scripts/etf_strength_81.py >> data/etf81.cron.log 2>&1
+
+# 83번 기관형 체결·전환점 전진 OOS — 평일 16:30. 사전등록 docs/research/manju/83. 판정은 전진 10거래일·30거래 뒤.
+# 전용 venv(~/of80/.rlvenv: lightgbm·numba)와 학습 산출물(~/of80/flow83_model)은 simnode 에만 있다.
+30 16 * * 1-5 cd /home/young/git/scalp-it/scripts/flow_83 && export $(grep -v "^#" ../../../quant-airflow/.env | xargs) && FLOW83_FORWARD=1 /home/young/of80/.rlvenv/bin/python -W ignore forward.py >> /home/young/git/scalp-it/data/flow83.cron.log 2>&1
