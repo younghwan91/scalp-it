@@ -194,6 +194,10 @@ class KiwoomOrderClient:
         self._sleep = sleep
         self._sleeper = sleeper or time.sleep
         self._on_order = on_order
+        #: 마지막 실발주·취소 POST 의 시각 — ``{"sent_at": µs, "post_ms": 왕복}``. 대기열 체결
+        #: 모델의 주문 지연(hftbacktest ``IntpOrderLatency`` 식)을 실측 분포로 넣기 위해 남긴다.
+        #: dry-run·차단이면 None(POST 가 없었다).
+        self.last_timing: dict[str, Any] | None = None
         self._clock = clock or (lambda: datetime.now())  # noqa: DTZ005 — KST naive
         # 가드 판정 상태(설정 + 매수 전용 동적 차단 + 일일 횟수 카운터)는 코어 OrderGuard 가
         # 들고 있다. 시계는 이 클라이언트의 naive KST 시계를 그대로 넘긴다.
@@ -407,6 +411,7 @@ class KiwoomOrderClient:
         매수는 **주문 직전 실시간 잔고조회(fail-closed)** 로 보유종목을 한 번 더
         차단한다 — 하드코딩 3종목 + 현재 보유 전종목. dry-run 도 동일 경로.
         """
+        self.last_timing = None
         reason = self._preorder_holdings_guard(intent) or self.guard_reason(intent, ref_price)
         if reason is not None:
             result = OrderResult(intent=intent, dry_run=not live, submitted=False,
@@ -426,9 +431,7 @@ class KiwoomOrderClient:
         # ---- 실발주 (live=True) : 재시도 없이 한 번만 POST ----
         if self._sleep:
             self._sleeper(self._sleep)
-        resp = self._client.post(
-            self._base + ORDER_PATH, headers=self._headers(intent.api_id()), json=intent.body()
-        )
+        resp = self._post_timed(intent.api_id(), intent.body())
         if resp.status_code >= 400:
             raise KiwoomError(f"주문 HTTP {resp.status_code}: {resp.text[:200]}")
         payload = resp.json()
@@ -456,6 +459,7 @@ class KiwoomOrderClient:
         """미체결 주문 취소(``kt10003``). dry-run 기본."""
         code = normalize_code(code)
         intent = OrderIntent(side="cancel", code=code, qty=int(qty), price=0, exchange=exchange)
+        self.last_timing = None
         if not live:
             result = OrderResult(intent=intent, dry_run=True, submitted=False)
             self._notify(result)
@@ -463,7 +467,7 @@ class KiwoomOrderClient:
         body = cancel_body(ord_no, code, qty, exchange)
         if self._sleep:
             self._sleeper(self._sleep)
-        resp = self._client.post(self._base + ORDER_PATH, headers=self._headers(CANCEL_API_ID), json=body)
+        resp = self._post_timed(CANCEL_API_ID, body)
         if resp.status_code >= 400:
             raise KiwoomError(f"취소 HTTP {resp.status_code}: {resp.text[:200]}")
         payload = resp.json()
@@ -491,6 +495,18 @@ class KiwoomOrderClient:
                              price=int(price), exchange=exchange)
         return self.submit(intent, live=live, ref_price=ref_price)
 
+    def _post_timed(self, api_id: str, body: dict) -> Any:
+        """주문 POST 한 번 + 보낸 시각·왕복 ms 를 ``last_timing`` 에 남긴다(헤더 생성은 뺀다)."""
+        headers = self._headers(api_id)
+        sent_at = datetime.now()  # noqa: DTZ005 — KST naive, 프로젝트 표준
+        t0 = time.perf_counter()
+        resp = self._client.post(self._base + ORDER_PATH, headers=headers, json=body)
+        self.last_timing = {
+            "sent_at": sent_at.isoformat(sep=" ", timespec="microseconds"),
+            "post_ms": round((time.perf_counter() - t0) * 1000, 1),
+        }
+        return resp
+
     def _notify(self, result: OrderResult) -> None:
         if self._on_order is not None:
             self._on_order(result)
@@ -509,8 +525,10 @@ class OrderLogSink:
         self.echo = echo
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def emit(self, result: OrderResult) -> None:
+    def emit(self, result: OrderResult, timing: dict[str, Any] | None = None) -> None:
         rec = result.to_record()
+        if timing:
+            rec.update(timing)
         line = json.dumps(rec, ensure_ascii=False, separators=(",", ":"))
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")

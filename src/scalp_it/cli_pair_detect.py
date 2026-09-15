@@ -1174,7 +1174,10 @@ def _connect_order_client(args: argparse.Namespace, guard: Any) -> tuple[Any, An
         return None, ()
     base = KIWOOM_MOCK_BASE if args.mock else KIWOOM_BASE
     log = OrderLogSink(args.order_log)
-    client = KiwoomOrderClient(appkey, secret, guard=guard, base_url=base, on_order=log.emit)
+    client = KiwoomOrderClient(
+        appkey, secret, guard=guard, base_url=base,
+        on_order=lambda r: log.emit(r, timing=client.last_timing),
+    )
     # 계좌 자동조회 + 실시간 보유 병합(fail-closed): 실패하면 주문 실행기를 끈다.
     try:
         client.account_number()

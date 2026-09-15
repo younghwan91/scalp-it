@@ -320,3 +320,31 @@ def test_intent_api_id_and_body():
     assert intent.body()["ord_uv"] == "1928"
     with pytest.raises(KiwoomError):
         OrderIntent(side="weird", code="294570", qty=1, price=1).api_id()
+
+
+# ------------------------------------------------------------------ 주문 지연 실측
+
+
+def test_live_order_records_post_timing_in_log(tmp_path):
+    """실발주는 보낸 시각(µs)·왕복 ms 를 남긴다 — 대기열 모델 지연을 실측 분포로 넣는다."""
+    from scalp_it.adapters.kiwoom_order import OrderLogSink
+
+    rec = Recorder()
+    sink = OrderLogSink(tmp_path / "orders.log", echo=False)
+    holder: dict = {}
+    c = KiwoomOrderClient(
+        "key", "secret", guard=OrderGuardConfig(whitelist=frozenset({"294570"})),
+        client=httpx.Client(transport=httpx.MockTransport(rec)),
+        sleeper=lambda _s: None, verify_holdings_before_order=False,
+        on_order=lambda r: sink.emit(r, timing=holder["c"].last_timing),
+    )
+    holder["c"] = c
+    c.buy_limit("294570", 1, 10000, live=True, ref_price=10000)
+    line = json.loads((tmp_path / "orders.log").read_text().splitlines()[-1])
+    assert line["post_ms"] >= 0
+    assert "." in line["sent_at"]
+
+    c.buy_limit("294570", 1, 10000, live=False, ref_price=10000)  # dry-run: POST 없음
+    assert c.last_timing is None
+    line = json.loads((tmp_path / "orders.log").read_text().splitlines()[-1])
+    assert "post_ms" not in line
