@@ -29,3 +29,11 @@ data/bigkinds/
 
 # 에이전트 워크트리
 .claude/worktrees/
+
+# 이 PC 전용 Claude Code 설정·잠금
+.claude/
+# graphify 산출물 — graph.json·GRAPH_REPORT.md·manifest.json 만 추적(.gitattributes 병합 규칙). 나머지는 재생성물.
+graphify-out/cache/
+graphify-out/20*/
+graphify-out/graph.html
+graphify-out/cost.json
