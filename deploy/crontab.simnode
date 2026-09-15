@@ -37,3 +37,4 @@
 0 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/tiger_86/prevq.py >> data/tiger86_prevq.cron.log 2>&1 && rsync -t -e "ssh -o BatchMode=yes -o ConnectTimeout=20" data/tiger86_prevq.json trader-local:git/scalp-it/data/ >> data/tiger86_prevq.cron.log 2>&1
 # 88번 뉴럴 밴딧 전진(온라인 학습 계속) — 17:05(16:5x 캐시 뒤)
 5 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study bandit88 >> data/forward_bandit88.cron.log 2>&1
+10 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study bandit89 >> data/forward_bandit89.cron.log 2>&1

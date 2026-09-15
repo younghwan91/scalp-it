@@ -37,6 +37,8 @@ STUDIES = {
              "doc": "docs/research/manju/87-rl-limit-queue-preregistration.md"},
     "bandit88": {"model": HOME / "bandit88_run" / "state.pt", "n_trials": 1680,
                  "doc": "docs/research/manju/88-neural-bandit-preregistration.md"},
+    "bandit89": {"model": HOME / "bandit89_run" / "state.pt", "n_trials": 1681,
+                 "doc": "docs/research/manju/89-two-head-limit-bandit-preregistration.md"},
     "rl85": {"model": HOME / "rl85" / "selected.json", "n_trials": 1618,
              "doc": "docs/research/manju/85-rl-wave-riding-preregistration.md"},
 }
@@ -129,6 +131,22 @@ def trades_for(study: str, days: list[str]) -> pd.DataFrame:
             pick = g.sample(1, random_state=int(rng.integers(0, 2**31))).iloc[0]
             y = pick.y1 if r.arm == 1 else (pick.y2 if pick.filled2 else np.nan)
             ctrl.append(y / 1e4)
+        t["ret_ctrl"] = ctrl
+        return t
+    if study == "bandit89":
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("bandit89_mod", ROOT / "scripts" / "bandit_89" / "bandit.py")
+        B = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(B)
+        B.OUT = HOME / "bandit89_forward"
+        t = B.run(days, forward_ok=True, state_in=HOME / "bandit89_run" / "state.pt")
+        t = t[t.filled].rename(columns={"ret_bp": "ret"})
+        t["ret"] = t["ret"] / 1e4
+        ctrl = []
+        for r in t.itertuples():                  # §5: 같은 종목·날 무작위 결정 행, 같은 지정가 모형(체결된 것만)
+            df = pickle.loads((HOME / "bandit88" / f"{r.day}.pkl").read_bytes())
+            g = df[(df.code == r.code) & df.filled2]
+            ctrl.append(float(g.sample(1, random_state=int(rng.integers(0, 2**31))).y2.iloc[0]) / 1e4 if len(g) else np.nan)
         t["ret_ctrl"] = ctrl
         return t
     # rl85 · rl87
