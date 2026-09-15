@@ -35,6 +35,8 @@ STUDIES = {
                 "doc": "docs/research/manju/86-tiger-limit-queue-preregistration.md"},
     "rl87": {"model": HOME / "rl87" / "selected.json", "n_trials": 1679,
              "doc": "docs/research/manju/87-rl-limit-queue-preregistration.md"},
+    "bandit88": {"model": HOME / "bandit88_run" / "state.pt", "n_trials": 1680,
+                 "doc": "docs/research/manju/88-neural-bandit-preregistration.md"},
     "rl85": {"model": HOME / "rl85" / "selected.json", "n_trials": 1618,
              "doc": "docs/research/manju/85-rl-wave-riding-preregistration.md"},
 }
@@ -60,10 +62,15 @@ def build_caches(conn, days: list[str]) -> None:
     spec = importlib.util.spec_from_file_location("fills87", ROOT / "scripts" / "rl_87" / "fills.py")
     fills87 = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fills87)
+    os.environ["FLOW88_FORWARD"] = "1"
+    spec88 = importlib.util.spec_from_file_location("rewards88", ROOT / "scripts" / "bandit_88" / "rewards.py")
+    rewards88 = importlib.util.module_from_spec(spec88)
+    spec88.loader.exec_module(rewards88)
     for d in days:
         F83.build_day(conn, d, forward_ok=True)
         L84.build_day(d)
         fills87.build(d)
+        rewards88.build(d)
 
 
 def trades_for(study: str, days: list[str]) -> pd.DataFrame:
@@ -105,6 +112,24 @@ def trades_for(study: str, days: list[str]) -> pd.DataFrame:
         conn.close()
         t = pd.concat(out, ignore_index=True) if out else pd.DataFrame(columns=["day", "code", "row", "ret", "hold"])
         t["ret_ctrl"] = t.get("ctrl_day_code_mean", np.nan)   # 같은 종목·날 무작위 진입의 체결 거래 평균
+        return t
+    if study == "bandit88":
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("bandit88_mod", ROOT / "scripts" / "bandit_88" / "bandit.py")
+        B = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(B)
+        B.OUT = HOME / "bandit88_forward"          # 학습 상태(17일 선행 끝)에서 이어서 온라인 학습
+        t = B.run(days, forward_ok=True, state_in=HOME / "bandit88_run" / "state.pt")
+        t = t[t.filled].rename(columns={"ret_bp": "ret"})
+        t["ret"] = t["ret"] / 1e4
+        ctrl = []
+        for r in t.itertuples():                  # §5: 같은 종목·날, 같은 팔, 무작위 결정 행
+            df = pickle.loads((HOME / "bandit88" / f"{r.day}.pkl").read_bytes())
+            g = df[df.code == r.code]
+            pick = g.sample(1, random_state=int(rng.integers(0, 2**31))).iloc[0]
+            y = pick.y1 if r.arm == 1 else (pick.y2 if pick.filled2 else np.nan)
+            ctrl.append(y / 1e4)
+        t["ret_ctrl"] = ctrl
         return t
     # rl85 · rl87
     import importlib.util
