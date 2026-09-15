@@ -49,8 +49,11 @@ class Head:
         return rng.multivariate_normal(cov @ self.b, cov, method="cholesky")
 
 
-def run(days: list[str], *, forward_ok: bool = False, state_in: Path | None = None) -> pd.DataFrame:
-    feats = pickle.loads((HOME / "flow84_model" / "model.pkl").read_bytes())["features"]
+def run(days: list[str], *, forward_ok: bool = False, state_in: Path | None = None,
+        feats: list[str] | None = None) -> pd.DataFrame:
+    """feats 를 안 주면 84번 13피처(89번 사전등록). 91번은 30피처를 넘기고 DATA·OUT·SEED 모듈 값을 바꿔 호출한다."""
+    if feats is None:
+        feats = pickle.loads((HOME / "flow84_model" / "model.pkl").read_bytes())["features"]
     rng = np.random.default_rng(SEED)
     torch.manual_seed(SEED)
     torch.set_num_threads(4)
