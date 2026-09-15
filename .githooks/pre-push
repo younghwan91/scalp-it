@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# core.hooksPath 가 이 레포의 .githooks 라 전역 훅(~/.config/git/hooks)이 안 돈다.
+# 신원 검사·로컬 CI·다른 PC 동기화(pull-all)를 전역 pre-push 에 위임한다. 실패하면 푸시를 막는다.
+G="${HOME}/.config/git/hooks/pre-push"
+[ -x "$G" ] || exit 0
+exec "$G" "$@"

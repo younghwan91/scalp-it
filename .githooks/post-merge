@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# core.hooksPath 가 이 레포의 .githooks 라 전역 훅(~/.config/git/hooks)이 안 돈다.
+# pull 로 들어온 코드의 graphify 그래프 갱신을 전역 훅에 위임한다 (dotfiles/git/hooks/post-merge).
+G="${HOME}/.config/git/hooks/post-merge"
+[ -x "$G" ] && "$G" "$@"
+exit 0
