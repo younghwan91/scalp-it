@@ -20,3 +20,7 @@
 # --from 은 news_judgments 스키마 시작일(2026-09-06) 고정, --to 는 오늘 — 표본을 누적해서 본다(하루치는 100건 판정선에 못 미친다).
 5 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run --extra pg python scripts/news_judge_shadow.py --from 2026-09-06 --to $(date +\%Y-\%m-\%d) >> data/news_judge_shadow.cron.log 2>&1
 27 15 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run --extra pg python scripts/filter_counterfactual.py --from 2026-08-25 --to $(date +\%Y-\%m-\%d) --out data/filter_counterfactual_latest.md >> data/filter_counterfactual.cron.log 2>&1
+
+# 81번 ETF 체결강도 스캘핑 — 평일 16:20(틱 수집 15:40 종료 후). 사전등록 docs/research/manju/81.
+# 매일 리포트만 갱신한다(data/etf81_report.md). 판정은 OOS 10거래일·30거래 이후에만 난다.
+20 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run --extra pg python scripts/etf_strength_81.py >> data/etf81.cron.log 2>&1
