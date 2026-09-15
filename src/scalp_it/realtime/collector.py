@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime
@@ -156,6 +157,12 @@ class SeqAssigner:
             self._seq[code] += 1
         return self._seq[code]
 
+    def count(self, code: str, ts: datetime) -> int:
+        """이 종목의 ``ts`` 초에 지금까지 매긴 번호 수(= 그 초에 받은 건수). 없으면 0."""
+        if self._last.get(code) != ts:
+            return 0
+        return self._seq[code] + 1
+
 
 # --------------------------------------------------------------- 프레임 파싱
 
@@ -278,11 +285,16 @@ def parse_real_message(
     trade_date: date,
     seq_assigner: SeqAssigner,
     received_at: datetime | None = None,
+    quote_seq: SeqAssigner | None = None,
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """REAL 프레임(문자열 또는 dict)을 ``(ticks, quotes, vi_events)`` 로 파싱한다.
 
     REAL 이 아니거나 data 가 없으면 빈 세 리스트. 알 수 없는 type 은 무시한다.
     ``received_at`` 은 VI 발동시각 FID 결손 시 대체할 수신 시각이다.
+
+    ``quote_seq`` 를 주면 호가 행마다 ``qseq``(같은 초 0D 수신 순서)와 ``ticks_before``
+    (그 전에 받은 같은 초 틱 수)를 붙인다 — ``quote_events`` 가 초 안 선후를 복원하는
+    열쇠다. 프레임 안 item 순서대로 틱 ``seq`` 와 함께 매기므로 선후가 정확하다.
     """
     msg = json.loads(message) if isinstance(message, (str, bytes)) else message
     if not isinstance(msg, dict) or msg.get("trnm") != "REAL":
@@ -305,6 +317,9 @@ def parse_real_message(
         elif rtype == TYPE_QUOTE:
             row = parse_quote_values(code, values, trade_date)
             if row is not None:
+                if quote_seq is not None:
+                    row["qseq"] = quote_seq.next(code, row["ts"])
+                    row["ticks_before"] = seq_assigner.count(code, row["ts"])
                 quotes.append(row)
         elif rtype == TYPE_VI:
             row = parse_vi_values(code, values, trade_date, received_at)
@@ -443,6 +458,7 @@ class KiwoomRealtimeCollector:
         max_backoff: float = 30.0,
         log: Callable[[str], None] | None = None,
         spool_dir: str | Path | None = None,
+        quote_events: bool | None = None,
     ) -> None:
         self._token = token
         self._types = list(types)
@@ -465,6 +481,15 @@ class KiwoomRealtimeCollector:
         self._groups = chunk_codes(codes, per_conn) or [[]]
 
         self._seq = SeqAssigner()
+        # quote_events — 0D 수신 전부(초당 마지막만 남기는 quotes 와 별개). 부가 수집이라
+        # 실패가 틱·호가 경로에 번지지 않게 격리한다(_flush_quote_events). 끄려면
+        # SCALP_QUOTE_EVENTS=0 — 코드 되돌림 없이 다음 런처부터.
+        if quote_events is None:
+            quote_events = os.environ.get("SCALP_QUOTE_EVENTS", "1").strip() != "0"
+        self._quote_events_on = bool(quote_events)
+        self._qseq = SeqAssigner()
+        self._qevent_buf: list[dict] = []
+        self._qevent_failures = 0
         self._tick_buf: list[dict] = []
         self._quote_buf: list[dict] = []
         self._vi_buf: list[dict] = []
@@ -484,6 +509,7 @@ class KiwoomRealtimeCollector:
         self.frames_seen = 0
         self.ticks_stored = 0
         self.quotes_stored = 0
+        self.quote_events_stored = 0
         self.vi_stored = 0
         self.reconnects = 0
         # 장중 구독 추가(만쥬 §6)용 — grp_no → (소켓, 그 커넥션의 종목 목록).
@@ -526,7 +552,8 @@ class KiwoomRealtimeCollector:
             self._flush()  # graceful: 남은 버퍼를 마저 쓴다
             self._log(
                 f"종료 · 프레임 {self.frames_seen:,} · 틱 {self.ticks_stored:,} · "
-                f"호가 {self.quotes_stored:,} · VI {self.vi_stored:,} · "
+                f"호가 {self.quotes_stored:,} · 호가이벤트 {self.quote_events_stored:,} · "
+                f"VI {self.vi_stored:,} · "
                 f"재연결 {self.reconnects}"
             )
 
@@ -691,10 +718,15 @@ class KiwoomRealtimeCollector:
         # VI 발동시각 FID 결손 대비 수신 시각(naive KST) 을 넘긴다.
         now = datetime.now()  # noqa: DTZ005 — KST naive, 프로젝트 표준
         ticks, quotes, vis = parse_real_message(
-            msg, self._trade_date, self._seq, received_at=now
+            msg, self._trade_date, self._seq, received_at=now,
+            quote_seq=self._qseq if self._quote_events_on else None,
         )
         self._tick_buf.extend(ticks)
         self._quote_buf.extend(quotes)
+        if self._quote_events_on and quotes:
+            for q in quotes:
+                q["recv_ts"] = now
+            self._qevent_buf.extend(quotes)
         self._vi_buf.extend(vis)
 
     async def _flush_loop(self) -> None:
@@ -774,6 +806,7 @@ class KiwoomRealtimeCollector:
         if not self._store:
             self._tick_buf.clear()
             self._quote_buf.clear()
+            self._qevent_buf.clear()
             self._vi_buf.clear()
             return
         from .store import insert_quotes, insert_ticks, insert_vi_events
@@ -782,10 +815,10 @@ class KiwoomRealtimeCollector:
         # + spool_dir 가 있으면 디스크에도 미러링해 프로세스가 죽어도 살아남게
         # 하고, 커넥션을 재생성해 다음 flush 에서 재시도한다. flush 루프는
         # 죽지 않는다.
-        def _try(buf_attr: str, insert_fn: Any, counter: str) -> None:
+        def _try(buf_attr: str, insert_fn: Any, counter: str) -> bool:
             buf = getattr(self, buf_attr)
             if not buf:
-                return
+                return True
             if self._conn is None:
                 # 콜드 스타트(아직 한 번도 연결 못 함)나 재연결이 방금 또 실패한
                 # 경우 — insert 를 시도할 커넥션 자체가 없다. 그렇다고 그냥
@@ -795,23 +828,69 @@ class KiwoomRealtimeCollector:
                 # `self._conn` 에 죽은 커넥션 객체를 넣어 검증해서 이 None
                 # 경로를 못 잡았다). insert 실패와 동일하게 스풀에 미러링한다.
                 self._write_spool(buf_attr, list(buf))
-                return
+                return False
             batch = list(buf)
             try:
                 setattr(self, counter, getattr(self, counter) + insert_fn(self._conn, batch))
                 buf.clear()
                 self._clear_spool(buf_attr)
+                return True
             except Exception as exc:  # noqa: BLE001 — DB 순단: 배치 보존 후 재연결
                 if self._log:
                     self._log(f"insert 실패({buf_attr}), 배치 {len(batch)}건 보존·재연결 시도: {exc}")
                 self._write_spool(buf_attr, batch)
                 self._reconnect_db()  # 버퍼는 그대로 두어 다음 flush 에서 재시도(순서 유지)
+                return False
 
         if self._conn is None:
             self._reconnect_db()
-        _try("_tick_buf", insert_ticks, "ticks_stored")
-        _try("_quote_buf", insert_quotes, "quotes_stored")
+        ok_ticks = _try("_tick_buf", insert_ticks, "ticks_stored")
+        ok_quotes = _try("_quote_buf", insert_quotes, "quotes_stored")
         _try("_vi_buf", insert_vi_events, "vi_stored")
+        self._flush_quote_events(db_ok=ok_ticks and ok_quotes)
+
+    #: DB 순단 동안 들고 있을 quote_events 상한 — 스풀하지 않으므로 메모리만 지킨다.
+    #: 09-10 기준 키 하나 하루 ~170만 건(초당 ~70건)이라 20만 건 ≈ 45분.
+    _QEVENT_BUF_CAP = 200_000
+    #: DB 는 멀쩡한데(틱·호가 insert 성공) quote_events 만 연속 실패하면 끈다.
+    _QEVENT_MAX_FAILURES = 3
+
+    def _flush_quote_events(self, *, db_ok: bool) -> None:
+        """quote_events 배치 insert — **틱·호가 경로와 격리**한다.
+
+        실패해도 스풀·재연결을 하지 않는다(그건 틱 경로 몫이고, 여기서 재연결하면 틱
+        커넥션을 흔든다). 트랜잭션만 롤백하고 버퍼는 상한까지 들고 있다가 다음 flush 에
+        재시도한다. 틱·호가는 들어갔는데 이것만 연속 실패하면(테이블·권한 문제) 이 프로세스
+        에서는 끄고 크게 한 번 남긴다 — 틱 수집이 부가 수집 때문에 흔들리면 본말전도다.
+        """
+        buf = self._qevent_buf
+        if not self._quote_events_on or not buf:
+            return
+        if self._conn is None or not db_ok:
+            if len(buf) > self._QEVENT_BUF_CAP:
+                del buf[: len(buf) - self._QEVENT_BUF_CAP]
+            return
+        from .store import insert_quote_events
+
+        batch = list(buf)
+        try:
+            self.quote_events_stored += insert_quote_events(self._conn, batch)
+            buf.clear()
+            self._qevent_failures = 0
+        except Exception as exc:  # noqa: BLE001 — 부가 수집: 틱 경로로 번지지 않게
+            with contextlib.suppress(Exception):
+                self._conn.rollback()
+            self._qevent_failures += 1
+            if len(buf) > self._QEVENT_BUF_CAP:
+                del buf[: len(buf) - self._QEVENT_BUF_CAP]
+            if self._qevent_failures >= self._QEVENT_MAX_FAILURES:
+                self._quote_events_on = False
+                buf.clear()
+                if self._log:
+                    self._log(f"[경보] quote_events insert {self._qevent_failures}회 연속 실패 — "
+                              f"이 프로세스에서 끈다(틱·호가 수집은 계속): {exc}")
+            elif self._log:
+                self._log(f"quote_events insert 실패({self._qevent_failures}): {exc}")
 
     async def _sleep_or_stop(self, seconds: float) -> None:
         with contextlib.suppress(asyncio.TimeoutError):
@@ -852,6 +931,10 @@ class DualKeyCollector:
     @property
     def quotes_stored(self) -> int:
         return self._a.quotes_stored + self._b.quotes_stored
+
+    @property
+    def quote_events_stored(self) -> int:
+        return self._a.quote_events_stored + self._b.quote_events_stored
 
     @property
     def vi_stored(self) -> int:

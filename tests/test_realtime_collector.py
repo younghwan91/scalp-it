@@ -24,6 +24,7 @@ from scalp_it.realtime.collector import (
     parse_vi_values,
 )
 from scalp_it.realtime.store import (
+    count_quote_events,
     count_quotes,
     count_ticks,
     count_vi_events,
@@ -719,3 +720,97 @@ def test_add_codes_without_live_socket_says_so():
     assert added == [] and rejected == ["000001"]
     assert c.rejected_codes == ["000001"]
     assert any("소켓" in m for m in logs)
+
+
+# ----- quote_events — 0D 수신 전부 + 초 안 틱·호가 선후 ---------------------------
+
+
+def _frame(*items):
+    return {"trnm": "REAL", "data": [
+        {"type": t, "item": "005930", "values": v} for t, v in items]}
+
+
+def test_parse_real_message_orders_quotes_against_ticks_within_second():
+    """같은 초의 틱·호가가 섞여 와도 qseq·ticks_before 로 수신 선후를 복원한다."""
+    seq, qseq = SeqAssigner(), SeqAssigner()
+    _, q1, _ = parse_real_message(_frame(("0D", _quote_values())), TDAY, seq, quote_seq=qseq)
+    t, q2, _ = parse_real_message(
+        _frame(("0B", _tick_values()), ("0B", _tick_values()), ("0D", _quote_values())),
+        TDAY, seq, quote_seq=qseq)
+    assert [r["seq"] for r in t] == [0, 1]
+    assert (q1[0]["qseq"], q1[0]["ticks_before"]) == (0, 0)
+    assert (q2[0]["qseq"], q2[0]["ticks_before"]) == (1, 2)
+
+
+def test_parse_real_message_without_quote_seq_leaves_rows_unchanged():
+    _, quotes, _ = parse_real_message(_frame(("0D", _quote_values())), TDAY, SeqAssigner())
+    assert "qseq" not in quotes[0]
+    assert "ticks_before" not in quotes[0]
+
+
+def test_seq_assigner_count():
+    s = SeqAssigner()
+    ts = datetime(2026, 8, 24, 9, 30, 15)
+    assert s.count("005930", ts) == 0
+    s.next("005930", ts)
+    s.next("005930", ts)
+    assert s.count("005930", ts) == 2
+    assert s.count("005930", datetime(2026, 8, 24, 9, 30, 16)) == 0
+
+
+def test_collector_stores_every_quote_event_but_one_quote_per_second(conn):
+    collector = KiwoomRealtimeCollector(
+        "tok", ["005930"], conn=conn, store=True, trade_date=TDAY, log=lambda m: None,
+        quote_events=True,
+    )
+    for _ in range(3):
+        collector._handle_raw(None, json.dumps(_frame(("0D", _quote_values()))))
+    collector._flush()
+    assert count_quotes(conn) == 1          # 초당 마지막 스냅샷(기존 그대로)
+    assert count_quote_events(conn) == 3    # 수신 전부
+    assert collector.quote_events_stored == 3
+    rows = conn.execute("select qseq, recv_ts from quote_events order by qseq").fetchall()
+    assert [r[0] for r in rows] == [0, 1, 2]
+    assert all("." in r[1] for r in rows)  # 마이크로초 보존
+
+
+def test_quote_events_off_by_env(conn, monkeypatch):
+    monkeypatch.setenv("SCALP_QUOTE_EVENTS", "0")
+    collector = KiwoomRealtimeCollector(
+        "tok", ["005930"], conn=conn, store=True, trade_date=TDAY, log=lambda m: None,
+    )
+    collector._handle_raw(None, json.dumps(_frame(("0D", _quote_values()))))
+    collector._flush()
+    assert count_quotes(conn) == 1
+    assert count_quote_events(conn) == 0
+
+
+def test_quote_events_failure_never_blocks_ticks(conn):
+    """quote_events 테이블이 없어도 틱·호가는 저장되고, 연속 실패하면 스스로 꺼진다."""
+    conn.execute("drop table quote_events")
+    logs: list[str] = []
+    collector = KiwoomRealtimeCollector(
+        "tok", ["005930"], conn=conn, store=True, trade_date=TDAY, log=logs.append,
+        quote_events=True,
+    )
+    for _ in range(KiwoomRealtimeCollector._QEVENT_MAX_FAILURES):
+        collector._handle_raw(None, json.dumps(_frame(("0B", _tick_values()), ("0D", _quote_values()))))
+        collector._flush()
+    assert count_ticks(conn) >= 1
+    assert count_quotes(conn) == 1
+    assert collector._quote_events_on is False
+    assert collector._qevent_buf == []
+    assert any("quote_events" in m and "끈다" in m for m in logs)
+    assert collector._conn is conn  # 재연결로 틱 커넥션을 흔들지 않았다
+
+
+def test_quote_events_buffer_capped_during_db_outage(conn, monkeypatch):
+    collector = KiwoomRealtimeCollector(
+        "tok", ["005930"], conn=conn, store=True, trade_date=TDAY, log=lambda m: None,
+        quote_events=True,
+    )
+    monkeypatch.setattr(KiwoomRealtimeCollector, "_QEVENT_BUF_CAP", 2)
+    for _ in range(5):
+        collector._handle_raw(None, json.dumps(_frame(("0D", _quote_values()))))
+    collector._flush_quote_events(db_ok=False)
+    assert [r["qseq"] for r in collector._qevent_buf] == [3, 4]  # 최신만 남긴다

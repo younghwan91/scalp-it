@@ -23,14 +23,18 @@ from scalp_it.intraday.store import _bind_ts, _placeholder, connect, is_postgres
 
 __all__ = [
     "QUOTE_COLUMNS",
+    "QUOTE_EVENT_COLUMNS",
     "TICK_COLUMNS",
     "VI_COLUMNS",
     "connect",
+    "count_quote_events",
     "count_quotes",
     "count_ticks",
     "count_vi_events",
     "event_candidates",
+    "init_quote_events_table",
     "init_realtime_tables",
+    "insert_quote_events",
     "insert_quotes",
     "insert_ticks",
     "insert_vi_events",
@@ -87,6 +91,41 @@ _CREATE_QUOTES = (
     "    raw text,\n"
     "    PRIMARY KEY (code, ts)\n"
     ")"
+)
+
+#: 0D 수신 **전부**를 남기는 이벤트 테이블. ``quotes`` 는 초당 마지막 스냅샷만 남기는데
+#: (DO UPDATE), 2026-09-10 실측 수신 1,673,301건 중 615,226행(37%)만 남았다 — 대기열이
+#: 빨리 줄어드는 바쁜 초일수록 더 많이 버린다. hftbacktest 식 이벤트 단위 대기열 모델에는
+#: 초 안 순서가 필요해서 따로 쌓는다(``quotes`` 를 읽는 기존 연구 코드는 그대로 둔다).
+#:
+#: - ``qseq`` — 같은 ``(code, ts)`` 안 0D 수신 순서.
+#: - ``ticks_before`` — 이 호가를 받기 전에 받은, 같은 ``(code, ts)`` 틱 수. 틱 PK 의
+#:   ``seq`` 와 맞물려 **초 안 틱·호가 선후**를 복원한다(``ticks.seq < ticks_before`` 가 앞).
+#:   0B·0D 는 같은 커넥션·같은 프레임 순서로 오므로 수신 순서가 곧 그 선후다.
+#: - ``recv_ts`` — 로컬 수신 시각(마이크로초, KST naive). 거래소 ``ts`` 는 초 절삭이다.
+#:
+#: raw 는 두지 않는다(``quotes.raw`` 가 초 끝 원문을 이미 보존하고, 행 수가 3배라 무겁다).
+QUOTE_EVENT_COLUMNS: list[str] = (
+    ["code", "ts", "qseq", "ticks_before", "recv_ts"]
+    + _QUOTE_LEVEL_COLUMNS
+    + ["total_bid_qty", "total_ask_qty"]
+)
+
+_CREATE_QUOTE_EVENTS = (
+    "CREATE TABLE IF NOT EXISTS quote_events (\n"
+    "    code text NOT NULL,\n"
+    "    ts   timestamp NOT NULL,\n"
+    "    qseq integer NOT NULL,\n"
+    "    ticks_before integer,\n"
+    "    recv_ts timestamp,\n"
+    + "".join(f"    {c} integer,\n" for c in _QUOTE_LEVEL_COLUMNS)
+    + "    total_bid_qty bigint,\n"
+    "    total_ask_qty bigint,\n"
+    "    PRIMARY KEY (code, ts, qseq)\n"
+    ")"
+)
+_CREATE_QUOTE_EVENTS_TS_IDX = (
+    "CREATE INDEX IF NOT EXISTS idx_quote_events_ts ON quote_events(ts)"
 )
 
 #: VI(변동성완화장치) 발동·해제는 초당 흐르는 체결·호가와 성격이 다른 **이벤트**라
@@ -201,7 +240,29 @@ def init_realtime_tables(conn: Any) -> Any:
     _try_hypertable(conn, "vi_events")
     _try_compression(conn, "ticks", "code")
     _try_compression(conn, "quotes", "code")
+    init_quote_events_table(conn)
     return conn
+
+
+def init_quote_events_table(conn: Any) -> bool:
+    """``quote_events`` 를 만든다. 실패해도 예외를 삼키고 False — 틱·호가 수집을 막지 않는다.
+
+    ⚠️ 압축 대상 테이블이 하나 늘었다 — quant-airflow ``scripts/backup_to_gdrive.sh`` 의
+    ``HEAVY_TABLES`` 에도 넣어야 core 백업이 부풀지 않는다(위 ``_COMPRESS_AFTER`` 주석).
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(_CREATE_QUOTE_EVENTS)
+        cur.execute(_CREATE_QUOTE_EVENTS_TS_IDX)
+        conn.commit()
+    except Exception:  # noqa: BLE001 — 부가 테이블: 없어도 기존 수집은 돈다
+        conn.rollback()
+        return False
+    finally:
+        cur.close()
+    _try_hypertable(conn, "quote_events")
+    _try_compression(conn, "quote_events", "code")
+    return True
 
 
 # --------------------------------------------------------------------- 쓰기
@@ -286,6 +347,46 @@ def insert_quotes(conn: Any, rows: Iterable[dict]) -> int:
     return len(payload)
 
 
+def _bind_recv_ts(conn: Any, value: Any) -> Any:
+    """수신 시각은 마이크로초까지 보존한다(``_bind_ts`` 는 sqlite 에서 초로 자른다)."""
+    if value is None or isinstance(value, str) or is_postgres(conn):
+        return value
+    return value.isoformat(sep=" ", timespec="microseconds")
+
+
+def insert_quote_events(conn: Any, rows: Iterable[dict]) -> int:
+    """0D 수신 전부를 insert 한다. ``(code, ts, qseq)`` 중복은 건너뛴다(불변 이벤트)."""
+    payload: list[Sequence[Any]] = []
+    for row in rows:
+        recv = row.get("recv_ts")
+        values: list[Any] = [
+            str(row["code"]), _bind_ts(conn, row["ts"]), int(row["qseq"]),
+            _opt_int(row.get("ticks_before")),
+            _bind_recv_ts(conn, recv),
+        ]
+        values += [_opt_int(row.get(c)) for c in _QUOTE_LEVEL_COLUMNS]
+        values += [_opt_int(row.get("total_bid_qty")), _opt_int(row.get("total_ask_qty"))]
+        payload.append(tuple(values))
+    if not payload:
+        return 0
+    head = f"INSERT INTO quote_events ({', '.join(QUOTE_EVENT_COLUMNS)}) VALUES "
+    tail = " ON CONFLICT (code, ts, qseq) DO NOTHING"
+    cur = conn.cursor()
+    if is_postgres(conn):
+        # executemany 는 행마다 왕복한다. flush 는 이벤트 루프 안 동기 호출이라, 초당 수십~
+        # 수백 행을 LAN 너머로 한 줄씩 보내면 장 시작 폭주 때 감지기 프레임 처리가 밀린다.
+        # 부가 수집이 라이브 경로를 늦추지 않게 한 문장으로 보낸다.
+        from psycopg2.extras import execute_values
+
+        execute_values(cur, head + "%s" + tail, payload, page_size=2000)
+    else:
+        ph = _placeholder(conn)
+        cur.executemany(head + f"({','.join([ph] * len(QUOTE_EVENT_COLUMNS))})" + tail, payload)
+    cur.close()
+    conn.commit()
+    return len(payload)
+
+
 def insert_vi_events(conn: Any, rows: Iterable[dict]) -> int:
     """VI 발동·해제(1h) 행을 배치 insert 한다. ``(code, ts, vi_type)`` 중복은 덮는다.
 
@@ -352,6 +453,10 @@ def count_ticks(conn: Any, code: str | None = None) -> int:
 
 def count_quotes(conn: Any, code: str | None = None) -> int:
     return _count(conn, "quotes", code)
+
+
+def count_quote_events(conn: Any, code: str | None = None) -> int:
+    return _count(conn, "quote_events", code)
 
 
 def count_vi_events(conn: Any, code: str | None = None) -> int:
