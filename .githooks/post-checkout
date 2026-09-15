@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# core.hooksPath 가 이 레포의 .githooks 라 전역 훅(~/.config/git/hooks)이 안 돈다.
+# graphify 코드 그래프 자동 갱신만 전역 훅에 위임한다 (dotfiles/git/hooks/post-checkout).
+G="${HOME}/.config/git/hooks/post-checkout"
+[ -x "$G" ] && "$G" "$@"
+exit 0
