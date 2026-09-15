@@ -33,6 +33,8 @@ STUDIES = {
                "doc": "docs/research/manju/84-feature-optimization-preregistration.md"},
     "tiger86": {"model": ROOT / "scripts" / "tiger_86" / "engine.py", "n_trials": 1619,
                 "doc": "docs/research/manju/86-tiger-limit-queue-preregistration.md"},
+    "rl87": {"model": HOME / "rl87" / "selected.json", "n_trials": 1679,
+             "doc": "docs/research/manju/87-rl-limit-queue-preregistration.md"},
     "rl85": {"model": HOME / "rl85" / "selected.json", "n_trials": 1618,
              "doc": "docs/research/manju/85-rl-wave-riding-preregistration.md"},
 }
@@ -53,9 +55,15 @@ def build_caches(conn, days: list[str]) -> None:
     import library as L84
 
     os.environ["FLOW84_FORWARD"] = "1"
+    os.environ["FLOW87_FORWARD"] = "1"
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fills87", ROOT / "scripts" / "rl_87" / "fills.py")
+    fills87 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fills87)
     for d in days:
         F83.build_day(conn, d, forward_ok=True)
         L84.build_day(d)
+        fills87.build(d)
 
 
 def trades_for(study: str, days: list[str]) -> pd.DataFrame:
@@ -98,12 +106,19 @@ def trades_for(study: str, days: list[str]) -> pd.DataFrame:
         t = pd.concat(out, ignore_index=True) if out else pd.DataFrame(columns=["day", "code", "row", "ret", "hold"])
         t["ret_ctrl"] = t.get("ctrl_day_code_mean", np.nan)   # 같은 종목·날 무작위 진입의 체결 거래 평균
         return t
-    # rl85
-    import torch
-    sys.path.insert(0, str(ROOT / "scripts" / "rl_85"))
-    import dqn as R
+    # rl85 · rl87
+    import importlib.util
 
-    sel = json.loads(STUDIES["rl85"]["model"].read_text())
+    import torch
+    name = "rl_87" if study == "rl87" else "rl_85"
+    spec = importlib.util.spec_from_file_location(f"{name}_mod", ROOT / "scripts" / name / "dqn.py")
+    R = importlib.util.module_from_spec(spec)
+    sys.modules[f"{name}_mod"] = R
+    spec.loader.exec_module(R)
+    if study == "rl87":
+        R.COST, R.Q = R.R85.COST, R.R85.Q
+
+    sel = json.loads(STUDIES[study]["model"].read_text())
     prep = pickle.loads((R.OUT / f"seed{sel['seed']}" / "prep.pkl").read_bytes())
     parts = R.load_days(days, prep["features"], forward_ok=True)
     bk = R.make_book(parts, prep["scaler"])
@@ -122,6 +137,15 @@ def trades_for(study: str, days: list[str]) -> pd.DataFrame:
             continue
         a = int(rng.choice(cand))
         b = min(int(np.searchsorted(secs, secs[a] + r.hold)), len(secs) - 1)
+        if study == "rl87":   # §4: 무작위 초에 같은 대기열 체결 모형
+            fs = bk.fill_sec[s + a]
+            if fs < 0:
+                ctrl.append(np.nan)
+                continue
+            a2 = int(np.searchsorted(secs, fs))
+            b = min(int(np.searchsorted(secs, fs + r.hold)), len(secs) - 1)
+            ctrl.append(float(bk.sell[s + b] / bk.P[s + a] - 1 - R.COST) if a2 < len(secs) else np.nan)
+            continue
         ctrl.append(float(bk.sell[s + b] / bk.buy[s + a] - 1 - R.COST))
     t["ret_ctrl"] = ctrl
     return t
