@@ -12,28 +12,16 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+from krx_news_client import quarter_ranges
 
 from .adapters.dart import DartClient, DartError, api_keys
 from .dart.store import collected_range, init_dart_db, rows_to_frame, upsert_disclosures
 
-#: DART 는 **달력 3개월**로 센다. 90일 고정으로 쪼개면 짧은 달(2월)을 낀 구간에서
-#: 한계를 넘어 `100 corp_code가 없는 경우 검색기간은 3개월만 가능합니다` 로 죽는다.
-#: 10년 수집이 21/80 구간에서 이 오류로 중단된 적이 있다.
-_MAX_SPAN_MONTHS = 3
-
-
-def quarter_ranges(start: str, end: str) -> list[tuple[str, str]]:
-    """3개월 제한에 맞춰 [start, end] 를 **달력 3개월 이하** 구간으로 쪼갠다."""
-    begin = pd.Timestamp(start)
-    finish = pd.Timestamp(end)
-    ranges: list[tuple[str, str]] = []
-    cursor = begin
-    while cursor <= finish:
-        limit = cursor + pd.DateOffset(months=_MAX_SPAN_MONTHS) - pd.Timedelta(days=1)
-        stop = min(limit, finish)
-        ranges.append((cursor.strftime("%Y%m%d"), stop.strftime("%Y%m%d")))
-        cursor = stop + pd.Timedelta(days=1)
-    return ranges
+# DART 는 ``corp_code`` 없는 검색을 **달력 3개월**로 센다. 90일 고정으로 쪼개면 짧은
+# 달(2월)을 낀 구간에서 `100 corp_code가 없는 경우 검색기간은 3개월만 가능합니다` 로
+# 죽는다(10년 수집이 21/80 구간에서 중단된 적이 있다). 쪼개기는
+# ``krx_news_client.quarter_ranges`` 가 한다(말일 넘침 클램프 포함, 이 파일의 pandas
+# 구현을 옮긴 것). ``scalp_it.cli_dart.quarter_ranges`` 로도 계속 import 할 수 있다.
 
 
 def main(argv: list[str] | None = None) -> int:

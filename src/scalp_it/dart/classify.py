@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import pandas as pd
+from krx_news_client import is_correction as _lib_is_correction
 
 MATERIAL_TYPES: list[str] = [
     "악재", "내부자", "공급계약", "시설투자", "주주환원", "자본조달",
@@ -64,9 +65,13 @@ def classify_report(report_nm: str) -> str:
 
 
 def is_correction(report_nm: str) -> bool:
-    """정정·첨부 공시인가. 원 공시의 재탕이라 신선도가 낮다."""
-    text = str(report_nm or "").strip()
-    return any(text.startswith(marker) for marker in _CORRECTION_MARKERS)
+    """정정·첨부 공시인가. 원 공시의 재탕이라 신선도가 낮다.
+
+    판정은 ``krx_news_client.is_correction`` 에 맡긴다(같은 표식·같은 strip — 이 함수를
+    그리로 옮긴 것). 표식이 라이브러리에서 바뀌면 ``tests/test_dart_classify.py`` 의
+    표식 동일성 테스트가 깨진다 — 사전등록 피처라 조용히 바뀌면 안 된다.
+    """
+    return _lib_is_correction(report_nm)
 
 
 def classify_frame(frame: pd.DataFrame) -> pd.DataFrame:
