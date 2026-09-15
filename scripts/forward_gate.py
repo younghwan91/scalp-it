@@ -31,6 +31,8 @@ STUDIES = {
                "doc": "docs/research/manju/83-institutional-flow-turning-point-preregistration.md"},
     "flow84": {"model": HOME / "flow84_model" / "model.pkl", "n_trials": 1558,
                "doc": "docs/research/manju/84-feature-optimization-preregistration.md"},
+    "tiger86": {"model": ROOT / "scripts" / "tiger_86" / "engine.py", "n_trials": 1619,
+                "doc": "docs/research/manju/86-tiger-limit-queue-preregistration.md"},
     "rl85": {"model": HOME / "rl85" / "selected.json", "n_trials": 1618,
              "doc": "docs/research/manju/85-rl-wave-riding-preregistration.md"},
 }
@@ -76,6 +78,25 @@ def trades_for(study: str, days: list[str]) -> pd.DataFrame:
         by = {k: g[f"y_{m['struct']}"].dropna().to_numpy() for k, g in rows.groupby(["day", "code"])}
         t["ret_ctrl"] = [float(rng.choice(by[(r.day, r.code)])) if len(by.get((r.day, r.code), [])) else np.nan
                          for r in t.itertuples()]
+        return t
+    if study == "tiger86":
+        import psycopg2
+        sys.path.insert(0, str(ROOT / "scripts" / "tiger_86"))
+        import engine as T
+
+        conn = psycopg2.connect(os.environ["KR_QUANT_DB"])
+        cur = conn.cursor()
+        cur.execute("select max(ts::date) from ticks where ts < %s", (FORWARD_START,))
+        warm_day = cur.fetchone()[0].isoformat()
+        _, prev_q = T.simulate_day(conn, warm_day, None)          # 첫 전진일 09:35 전 문턱용 전일 분위
+        out = []
+        for d in days:
+            t, prev_q = T.simulate_day(conn, d, prev_q, forward_ok=True, control_seed=SEED)
+            if len(t):
+                out.append(t[t.filled])
+        conn.close()
+        t = pd.concat(out, ignore_index=True) if out else pd.DataFrame(columns=["day", "code", "row", "ret", "hold"])
+        t["ret_ctrl"] = t.get("ctrl_day_code_mean", np.nan)   # 같은 종목·날 무작위 진입의 체결 거래 평균
         return t
     # rl85
     import torch
