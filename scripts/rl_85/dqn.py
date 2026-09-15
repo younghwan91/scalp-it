@@ -302,4 +302,15 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int)
     ap.add_argument("--pick", action="store_true")
     a = ap.parse_args()
-    pick() if a.pick else train(a.seed)
+    from krx_quant_core.runtime import DataSpec, start_run
+
+    # 학습·VAL 은 전진 이전 날짜만 — research/runs/rl85 OOS(2026-09-16~) 잠금이 막는다.
+    cfg = {"mode": "pick" if a.pick else "train", "seed": a.seed, "COST": COST, "GAMMA": GAMMA,
+           "N_ENV": N_ENV, "TRAIN_END": TRAIN_END, "VAL": VAL}
+    with start_run("rl85", cfg, repo_root=Path(__file__).resolve().parents[2],
+                   data=DataSpec("2026-08-24", VAL[1], "train+val"), seed=a.seed,
+                   allow_dirty=True) as run:
+        pick() if a.pick else train(a.seed)
+        sel = OUT / "selected.json"
+        if a.pick and sel.exists():
+            run.log_result({"selected": json.loads(sel.read_text())})

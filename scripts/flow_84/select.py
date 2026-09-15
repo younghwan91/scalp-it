@@ -19,6 +19,11 @@ from train import BLOCKS, policy  # noqa: E402
 
 from library import CACHE, candidates  # noqa: E402
 
+from krx_quant_core.runtime import DataSpec, start_run  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[2]
+LABEL = "flow84"  # research/runs/flow84 — OOS(2026-09-16~) 잠금·사전등록 해시가 여기 있다
+
 OUT = Path.home() / "of80" / "flow84_model"
 START = ["sec", "log_cumval", "spread_bp", "cum_rank", "n_tr10", "dist_lo300", "ret300",
          "same_size_val10", "sweep_ticks3", "dist_hi300"]           # 83번 중요도 상위 10
@@ -69,6 +74,17 @@ def cv_score(df, feats, y, params, rounds, q, masks):
 
 
 def main() -> None:
+    config = {"START": START, "FAST": FAST, "FAST_ROUNDS": FAST_ROUNDS, "FINAL": FINAL,
+              "FINAL_ROUNDS": FINAL_ROUNDS, "QUANTS": QUANTS, "MAX_FEATS": MAX_FEATS,
+              "MIN_GAIN_BP": MIN_GAIN_BP}
+    # 탐색(이미 본 17일)이라 미커밋 상태도 기록만 하고 막지 않는다(dirty 표시). 전진 판정은 final=True 로 따로.
+    with start_run(LABEL, config, repo_root=ROOT, data=DataSpec("2026-08-24", "2026-09-15", "explore"),
+                   seed=84, allow_dirty=True) as run:
+        log = _main()
+        run.log_result({k: log[k] for k in ("feats", "selected", "final", "n_trials_added") if k in log})
+
+
+def _main() -> dict:
     OUT.mkdir(parents=True, exist_ok=True)
     df = load()
     masks = list(block_masks(df))
@@ -144,6 +160,7 @@ def main() -> None:
     (OUT / "select_log.json").write_text(json.dumps(log, ensure_ascii=False, indent=1))
     print(json.dumps({k: log[k] for k in ("screen_passed", "feats", "final_table", "selected", "final",
                                           "n_trials_added") if k in log}, ensure_ascii=False, indent=1))
+    return log
 
 
 if __name__ == "__main__":
