@@ -1364,6 +1364,7 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
     trade_date = date.today()  # noqa: DTZ011 — KST naive, 프로젝트 표준
     seq = SeqAssigner()
     etf_shadow = _build_etf_shadow(args, trade_date)
+    tiger_shadow, tiger_codes = _build_tiger_shadow(args, trade_date)
 
     def on_frame(msg: dict) -> None:
         # N-2: 한 프레임 처리 중 어떤 예외도 소켓 루프(다른 실포지션 관리)를 죽이지
@@ -1374,6 +1375,8 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
             ticks, quotes, _vis = parse_real_message(msg, trade_date, seq, received_at=now)
             if etf_shadow is not None:
                 _feed_etf_shadow(etf_shadow, ticks, quotes)
+            if tiger_shadow is not None:
+                _feed_tiger_shadow(tiger_shadow, tiger_codes, ticks, quotes)
             for q in quotes:                      # 호가로 bid1 우선 갱신
                 bids, asks = quote_levels(q)
                 detector.on_quote(str(q["code"]), q["ts"], q.get("bid1"),
@@ -1479,6 +1482,11 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
     if executor is not None:
         executor.flush(datetime.now())  # noqa: DTZ005
         print(executor.summary(), file=sys.stderr, flush=True)
+    if tiger_shadow is not None:
+        try:
+            tiger_shadow.flush()
+        except Exception as exc:  # noqa: BLE001 — 그림자 마감 실패로 종료 요약을 막지 않는다
+            print(f"[호랑이그림자] 마감 실패: {exc}", file=sys.stderr, flush=True)
     if etf_shadow is not None:
         try:
             etf_shadow.flush(datetime.now())  # noqa: DTZ005
@@ -1535,6 +1543,56 @@ def _feed_etf_shadow(shadow: Any, ticks: list[dict], quotes: list[dict]) -> None
                            best_bid=t.get("best_bid"), best_ask=t.get("best_ask"))
     except Exception as exc:  # noqa: BLE001
         print(f"[ETF그림자] 프레임 예외(무시): {exc}", file=sys.stderr, flush=True)
+
+
+def _build_tiger_shadow(args: argparse.Namespace, trade_date: date) -> tuple[Any, set[str]]:
+    """86번 호랑이 규칙 그림자 — 주문 없음. 준비 실패면 (None, ∅) 로 감지·매매는 그대로 돈다."""
+    if not getattr(args, "tiger_shadow", False):
+        return None, set()
+    try:
+        import json
+
+        from .realtime.tiger_shadow import TigerShadow
+
+        prev = None
+        pq = Path(args.tiger_prevq)
+        if pq.exists():
+            prev = float(json.loads(pq.read_text())["q99_dstr30"])
+        conn = connect(args.dsn or os.environ.get("KR_QUANT_DB"))
+        try:
+            cur = conn.cursor()
+            cur.execute("select code from stocks")      # 주식만(ETF 제외) — 리플레이와 같은 유니버스
+            codes = {r[0] for r in cur.fetchall()}
+        finally:
+            conn.close()
+        log_path = Path(args.tiger_shadow_log)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def sink(rec: dict) -> None:
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"day": trade_date.isoformat(), **rec}, ensure_ascii=False) + "\n")
+
+        print(f"# 호랑이그림자(86) — 전일 문턱 {prev}, 주식 {len(codes)}종목 대상", file=sys.stderr, flush=True)
+        return TigerShadow(prev_quantile=prev, sink=sink), codes
+    except Exception as exc:  # noqa: BLE001 — 그림자 준비 실패로 매매를 죽이지 않는다
+        print(f"[호랑이그림자] 비활성 — 준비 실패: {exc}", file=sys.stderr, flush=True)
+        return None, set()
+
+
+def _feed_tiger_shadow(shadow: Any, codes: set[str], ticks: list[dict], quotes: list[dict]) -> None:
+    """프레임을 호랑이 그림자에 흘린다. 어떤 예외도 삼킨다 — 실매매 프레임 처리가 먼저다."""
+    try:
+        for q in quotes:
+            if str(q["code"]) in codes:
+                shadow.on_quote(str(q["code"]), q["ts"], bid1=q.get("bid1"), ask1=q.get("ask1"),
+                                bidqty1=q.get("bidqty1"))
+        for t in ticks:
+            if t.get("price") is None or str(t["code"]) not in codes:
+                continue
+            shadow.on_tick(str(t["code"]), t["ts"], float(t["price"]), volume=t.get("volume"), side=t.get("side"),
+                           strength=t.get("strength"), best_bid=t.get("best_bid"), best_ask=t.get("best_ask"))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[호랑이그림자] 프레임 예외(무시): {exc}", file=sys.stderr, flush=True)
 
 
 def _duration_seconds(spec: str | None) -> float | None:
@@ -1654,6 +1712,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--etf-shadow", default="",
                    help="쉼표 구분 ETF — 81번 체결강도 규칙을 소켓에서 그림자로 돌린다(주문 없음)")
     p.add_argument("--etf-shadow-log", default="data/etf81_shadow.jsonl")
+    p.add_argument("--tiger-shadow", action="store_true",
+                   help="86번 호랑이 규칙(알고리즘 체결·체결강도 가속·지정가 대기열) 실시간 그림자 — 주문 없음")
+    p.add_argument("--tiger-shadow-log", default="data/tiger86_shadow.jsonl")
+    p.add_argument("--tiger-prevq", default="data/tiger86_prevq.json",
+                   help="09:35 전 문턱(전일 dstr30 99%% 분위) — simnode 17:00 이 만들어 보낸다")
     p.add_argument("--collect-fill-pool", type=int, default=300,
                    help="수집 후보 풀 크기(전일 거래대금 상위 N종목)")
     p.add_argument("--thin-book-bp", type=float, default=0.0,

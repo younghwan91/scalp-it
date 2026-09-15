@@ -211,6 +211,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --collect-fill-interval 60 --collect-reserve 12 --collect-fill-ttl 600 \
     --collect-pin 069500,122630,102110,360750,133690,379800,114800,233740,229200,396500,091160,251340,381180,305720 \
     --etf-shadow 069500,122630,102110,360750,133690,379800,114800,233740,229200,396500,091160,251340,381180,305720 \
+    --tiger-shadow \
     --program-interval 60 --program-dump-qty 700 \
     --position-notional 10000000 \
     --lock-min-krw 300000000 --lock-wall-decay 0.7 \
