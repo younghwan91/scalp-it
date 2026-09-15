@@ -209,6 +209,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --universe-size 12 --max-roundtrip-bp 30 --order-krw 10000000 \
     --leader-scan-interval 10 --leader-scan-min-rt 12 --leader-scan-max 8 \
     --collect-fill-interval 60 --collect-reserve 12 --collect-fill-ttl 600 \
+    --collect-pin 069500,229200,122630,252670,233740,251340 \
     --program-interval 60 --program-dump-qty 700 \
     --position-notional 10000000 \
     --lock-min-krw 300000000 --lock-wall-decay 0.7 \

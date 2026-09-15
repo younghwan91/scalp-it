@@ -873,13 +873,19 @@ async def _watch_collect_fill(
     if taken is None:
         taken = {}
     loop = asyncio.get_running_loop()
+    # 고정 수집(--collect-pin) — 80번 기각 뒤 매도세 면제 ETF 의 틱을 모은다. 전일
+    # 거래대금 풀(daily_bars 는 주식만)에 없으니 후보 맨 앞에 박고, 매 바퀴 "방금 봤다"로
+    # 갱신해 ttl 로 안 내려가게 한다. 매매가 자리를 달라면(_preempt_collect_slots)
+    # 가장 뜨거운 것으로 보여 맨 나중에 내주고, 다음 바퀴에 다시 붙는다.
+    pins = [c.strip() for c in str(getattr(args, "collect_pin", "") or "").split(",")
+            if c.strip()]
 
     # 채우고 나서 쉰다 — 장 시작 직후가 가장 아까운 구간이라 첫 사이클을 미루지 않는다.
     # 소켓이 아직 안 붙었으면 add_codes 가 조용히 빈 손으로 돌아오고 다음 바퀴에 다시 본다.
     while True:
         try:
             now = loop.time()
-            for code in movers:
+            for code in [*movers, *pins]:
                 if code in taken:
                     taken[code] = now       # 아직 순위에 있다 — 유예를 갱신한다
             # 순위에서 사라진 지 오래된 건 자리를 내준다. 안 그러면 오전에 붙은
@@ -900,7 +906,7 @@ async def _watch_collect_fill(
                     taken.pop(code, None)
             subscribed = collector.subscribed_codes
             # 감지기가 아는 종목은 후보에서 뺀다 — 그쪽은 매매 자리다.
-            want = [c for c in fill_pool(movers, pool)
+            want = [c for c in fill_pool([*pins, *movers], pool)
                     if c not in detector.codes and c not in taken]
             take = plan_fill(want, subscribed,
                              cap=collector.code_capacity,
@@ -1587,6 +1593,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--collect-fill-ttl", type=float, default=600.0,
                    help="수집 종목이 등락률 순위에서 사라진 뒤 자리를 내주기까지(초). "
                         "짧으면 등록만 낭비하고 길면 오후 대장이 붙을 자리가 없다")
+    p.add_argument("--collect-pin", default="",
+                   help="쉼표 구분 — 수집 채움이 항상 먼저 붙이고 안 내리는 종목(저장만). "
+                        "80번: 매도세 면제 ETF 틱 수집")
     p.add_argument("--collect-fill-pool", type=int, default=300,
                    help="수집 후보 풀 크기(전일 거래대금 상위 N종목)")
     p.add_argument("--thin-book-bp", type=float, default=0.0,

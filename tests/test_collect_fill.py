@@ -456,3 +456,65 @@ def test_preempt_is_a_noop_when_collection_holds_nothing():
         col, _FakeDetector(["매매1"]), None, {}, ["대장X"]))
     assert added == [] and rejected == ["대장X"]
     assert col.removed == []
+
+
+def test_pinned_codes_are_collected_first_and_never_go_stale(tmp_path):
+    """`--collect-pin` 종목(매도세 면제 ETF)은 전일 거래대금 풀에 없어도 먼저 붙고,
+    순위에 안 보여도 ttl 로 내려가지 않는다 — 80번 기각 뒤 비용 벽이 없는 상품의
+    틱을 모으는 자리다. 과거 틱은 소급 수집이 안 된다."""
+    import argparse
+    import asyncio
+    import sqlite3
+
+    from scalp_it import cli_pair_detect as C
+
+    conn = sqlite3.connect(tmp_path / "t.db")
+    conn.execute("create table daily_bars (code text, date text, trade_value real)")
+    conn.executemany("insert into daily_bars values (?,?,?)",
+                     [("A", "2026-08-28", 900.0), ("B", "2026-08-28", 800.0)])
+    conn.commit()
+
+    class FakeCollector:
+        code_capacity = 6
+        subscribed_codes: list[str] = []
+
+        def __init__(self) -> None:
+            self.added: list[str] = []
+            self.removed: list[str] = []
+
+        async def add_codes(self, codes):
+            self.added.extend(codes)
+            self.subscribed_codes = [*self.subscribed_codes, *codes]
+            return list(codes), []
+
+        async def remove_codes(self, codes):
+            self.removed.extend(codes)
+            return list(codes)
+
+    class FakeDetector:
+        codes: set[str] = set()
+
+    class FakeBus:
+        def notice(self, msg: str) -> None:
+            pass
+
+    collector = FakeCollector()
+    args = argparse.Namespace(collect_fill_interval=0.01, collect_reserve=2,
+                              collect_fill_pool=300, collect_fill_ttl=0.0,
+                              collect_pin="069500,233740")
+    taken: dict[str, float] = {}
+
+    async def run():
+        task = asyncio.create_task(
+            C._watch_collect_fill(collector, FakeDetector(), FakeBus(), args, conn,
+                                  taken=taken))
+        await asyncio.sleep(0.2)
+        task.cancel()
+
+    asyncio.run(run())
+    assert collector.added[:2] == ["069500", "233740"]
+    assert "069500" not in collector.removed and "233740" not in collector.removed
+
+
+def test_cron_pins_tax_exempt_etfs(cron_args):
+    assert set(cron_args.collect_pin.split(",")) >= {"069500", "229200", "122630", "233740"}
