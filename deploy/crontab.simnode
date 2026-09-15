@@ -25,6 +25,9 @@
 # 매일 리포트만 갱신한다(data/etf81_report.md). 판정은 OOS 10거래일·30거래 이후에만 난다.
 20 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run --extra pg python scripts/etf_strength_81.py >> data/etf81.cron.log 2>&1
 
-# 83번 기관형 체결·전환점 전진 OOS — 평일 16:30. 사전등록 docs/research/manju/83. 판정은 전진 10거래일·30거래 뒤.
-# 전용 venv(~/of80/.rlvenv: lightgbm·numba)와 학습 산출물(~/of80/flow83_model)은 simnode 에만 있다.
-30 16 * * 1-5 cd /home/young/git/scalp-it/scripts/flow_83 && export $(grep -v "^#" ../../../quant-airflow/.env | xargs) && FLOW83_FORWARD=1 /home/young/of80/.rlvenv/bin/python -W ignore forward.py >> /home/young/git/scalp-it/data/flow83.cron.log 2>&1
+# 83·84·85 전진 판정 — 평일 16:30/16:40/16:50. 매일은 캐시·거래 건수만(수익 수치 없음),
+# 전진 10거래일·30거래가 차면 같은 명령이 start_run(final=True)로 한 번만 판정하고 research/runs/<study> 에 잠근다.
+# 전용 venv(~/of80/.rlvenv)·학습 산출물(~/of80/*_model, rl85)은 simnode 에만 있다.
+30 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study flow83 >> data/forward_flow83.cron.log 2>&1
+40 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study flow84 >> data/forward_flow84.cron.log 2>&1
+50 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl85 >> data/forward_rl85.cron.log 2>&1
