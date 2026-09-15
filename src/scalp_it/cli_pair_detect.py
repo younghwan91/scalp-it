@@ -1363,6 +1363,7 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
 
     trade_date = date.today()  # noqa: DTZ011 — KST naive, 프로젝트 표준
     seq = SeqAssigner()
+    etf_shadow = _build_etf_shadow(args, trade_date)
 
     def on_frame(msg: dict) -> None:
         # N-2: 한 프레임 처리 중 어떤 예외도 소켓 루프(다른 실포지션 관리)를 죽이지
@@ -1371,6 +1372,8 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
         try:
             now = datetime.now()  # noqa: DTZ005 — KST naive
             ticks, quotes, _vis = parse_real_message(msg, trade_date, seq, received_at=now)
+            if etf_shadow is not None:
+                _feed_etf_shadow(etf_shadow, ticks, quotes)
             for q in quotes:                      # 호가로 bid1 우선 갱신
                 bids, asks = quote_levels(q)
                 detector.on_quote(str(q["code"]), q["ts"], q.get("bid1"),
@@ -1476,10 +1479,62 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
     if executor is not None:
         executor.flush(datetime.now())  # noqa: DTZ005
         print(executor.summary(), file=sys.stderr, flush=True)
+    if etf_shadow is not None:
+        try:
+            etf_shadow.flush(datetime.now())  # noqa: DTZ005
+        except Exception as exc:  # noqa: BLE001 — 그림자 마감 실패로 종료 요약을 막지 않는다
+            print(f"[ETF그림자] 마감 실패: {exc}", file=sys.stderr, flush=True)
     print(f"누적 알림 {bus.count}건 · 틱필터 배제 {detector.filtered_count}건"
           f" · 프레임 {collector.frames_seen:,}"
           f" · 저장 틱 {collector.ticks_stored:,}", file=sys.stderr, flush=True)
     return 0
+
+
+def _build_etf_shadow(args: argparse.Namespace, trade_date: date) -> Any:
+    """81번 ETF 체결강도 그림자 — 문턱을 못 만들면 None(감지·매매는 그대로 돈다).
+
+    주문 경로와 무관하다. 가상 체결을 ``--etf-shadow-log`` 에 JSON 한 줄씩 남길 뿐이다.
+    """
+    codes = [c.strip() for c in str(getattr(args, "etf_shadow", "") or "").split(",") if c.strip()]
+    if not codes:
+        return None
+    try:
+        import json
+
+        from .realtime.etf_strength import CELLS, StrengthShadow, load_thresholds
+
+        tconn = connect(args.dsn or os.environ.get("KR_QUANT_DB"))
+        try:
+            thr = load_thresholds(tconn, codes, trade_date.isoformat())
+        finally:
+            tconn.close()
+        log_path = Path(args.etf_shadow_log)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def sink(rec: dict) -> None:
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"day": trade_date.isoformat(), **rec}, ensure_ascii=False) + "\n")
+
+        print(f"# ETF그림자(81) — 문턱 {len({c for c, _ in thr})}/{len(codes)}종목, 셀 {len(CELLS)}",
+              file=sys.stderr, flush=True)
+        return StrengthShadow(thr, cells=CELLS, sink=sink) if thr else None
+    except Exception as exc:  # noqa: BLE001 — 그림자 준비 실패로 매매를 죽이지 않는다
+        print(f"[ETF그림자] 비활성 — 문턱 준비 실패: {exc}", file=sys.stderr, flush=True)
+        return None
+
+
+def _feed_etf_shadow(shadow: Any, ticks: list[dict], quotes: list[dict]) -> None:
+    """프레임을 그림자에 흘린다. 어떤 예외도 삼킨다 — 실매매 프레임 처리가 먼저다."""
+    try:
+        for q in quotes:
+            shadow.on_quote(str(q["code"]), q["ts"], q.get("bid1"), q.get("ask1"))
+        for t in ticks:
+            if t.get("price") is None:
+                continue
+            shadow.on_tick(str(t["code"]), t["ts"], float(t["price"]), strength=t.get("strength"),
+                           best_bid=t.get("best_bid"), best_ask=t.get("best_ask"))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ETF그림자] 프레임 예외(무시): {exc}", file=sys.stderr, flush=True)
 
 
 def _duration_seconds(spec: str | None) -> float | None:
@@ -1596,6 +1651,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--collect-pin", default="",
                    help="쉼표 구분 — 수집 채움이 항상 먼저 붙이고 안 내리는 종목(저장만). "
                         "80번: 매도세 면제 ETF 틱 수집")
+    p.add_argument("--etf-shadow", default="",
+                   help="쉼표 구분 ETF — 81번 체결강도 규칙을 소켓에서 그림자로 돌린다(주문 없음)")
+    p.add_argument("--etf-shadow-log", default="data/etf81_shadow.jsonl")
     p.add_argument("--collect-fill-pool", type=int, default=300,
                    help="수집 후보 풀 크기(전일 거래대금 상위 N종목)")
     p.add_argument("--thin-book-bp", type=float, default=0.0,
