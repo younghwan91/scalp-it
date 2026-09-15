@@ -162,7 +162,17 @@ def trades_for(study: str, days: list[str]) -> pd.DataFrame:
         R.COST, R.Q = R.R85.COST, R.R85.Q
 
     sel = json.loads(STUDIES[study]["model"].read_text())
-    prep = pickle.loads((R.OUT / f"seed{sel['seed']}" / "prep.pkl").read_bytes())
+    # 학습 스크립트를 직접 실행해 저장한 prep 은 Scaler 가 __main__ 소속으로 피클돼 있다 — 여기서 이어 준다.
+    scaler_cls = R.R85.Scaler if study == "rl87" else R.Scaler
+
+    class _Unpickler(pickle.Unpickler):
+        def find_class(self, module, name):
+            if module == "__main__" and name == "Scaler":
+                return scaler_cls
+            return super().find_class(module, name)
+
+    with open(R.OUT / f"seed{sel['seed']}" / "prep.pkl", "rb") as fh:
+        prep = _Unpickler(fh).load()
     parts = R.load_days(days, prep["features"], forward_ok=True)
     bk = R.make_book(parts, prep["scaler"])
     q = R.Q(len(prep["features"]) + R.EXTRA)
