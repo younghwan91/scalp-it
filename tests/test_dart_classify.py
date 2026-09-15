@@ -118,3 +118,23 @@ def test_classify_frame_on_empty():
     out = classify_frame(pd.DataFrame({"report_nm": []}))
     assert list(out.columns) == ["report_nm", "material_type", "is_correction"]
     assert out.empty
+
+
+def test_correction_markers_match_library():
+    """``is_correction`` 은 krx-news-client 에 위임한다. 표식이 어긋나면 사전등록 피처
+    (``n_correction``)와 ``classify_report`` 의 표식 제거가 서로 다른 규칙을 쓰게 된다."""
+    from krx_news_client.models.schemas import CORRECTION_MARKERS
+
+    from scalp_it.dart.classify import _CORRECTION_MARKERS
+
+    assert tuple(CORRECTION_MARKERS) == tuple(_CORRECTION_MARKERS)
+
+
+@pytest.mark.parametrize(
+    "report_nm",
+    ["  [정정]주요사항보고서", "주요사항보고서[기재정정]", "[첨부정정]", "", None, "[ 정정]x"],
+)
+def test_is_correction_edge_cases(report_nm):
+    text = str(report_nm or "").strip()
+    expected = any(text.startswith(m) for m in ("[기재정정]", "[첨부정정]", "[첨부추가]", "[정정]"))
+    assert is_correction(report_nm) is expected

@@ -154,7 +154,7 @@ wheels = [
 
 [[package]]
 name = "krx-news-client"
-version = "0.3.1"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -162,9 +162,9 @@ dependencies = [
     { name = "lxml" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/10/12/855630e06e2f1ab83e9b877343ba3987eda9e82997504e7a3eafd440a7a4/krx_news_client-0.3.1.tar.gz", hash = "sha256:4679abbce5e41a0351d7889694c06812eaeab31e4a74e1fa5fbf7e248863e7d9", size = 49186, upload-time = "2026-09-13T06:49:11.353Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f1/43/639ecbebb55228be983575a9a62e0a5dc9b55a0fdfdbdcc1797f40dcec44/krx_news_client-0.4.0.tar.gz", hash = "sha256:853dcf2b92fa8b62db5ff2d333be20a68d3e6ff08c53e72702a57205b9e7be9e", size = 64089, upload-time = "2026-09-15T12:33:21.643Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/da/83/99b027e9a145c4782280dbdb011a11c261819205a151eb3266be97e51700/krx_news_client-0.3.1-py3-none-any.whl", hash = "sha256:a9fe0ff3ec9b1f05434297d021df1ca3eb9ce81430cdf90437c4884b09316b28", size = 18521, upload-time = "2026-09-13T06:49:10.149Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/47/12c0c98f041d77111fe2185ea839049baf0a5e1f6aa8ea7e7e8090d7f471/krx_news_client-0.4.0-py3-none-any.whl", hash = "sha256:3dbb785318f55389f56c4fef24b66907582e0327d5ddf2ccc8847e7775b6b4b6", size = 30284, upload-time = "2026-09-15T12:33:20.407Z" },
 ]
 
 [[package]]
@@ -849,7 +849,7 @@ pg = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "kiwoom-client", specifier = ">=0.4.0" },
-    { name = "krx-news-client", specifier = ">=0.3.1" },
+    { name = "krx-news-client", specifier = ">=0.4.0" },
     { name = "krx-quant-core", specifier = "==0.1.1" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "openpyxl", specifier = ">=3.1" },

@@ -117,3 +117,32 @@ def test_consecutive_calls_on_one_client_do_not_reuse_a_dead_event_loop(httpx_mo
     # mock 전송은 루프에 안 묶여 위 호출만으로는 재현이 안 된다 — 원인 자체를 막는다:
     # 호출이 끝나면 루프에 묶인 AsyncClient 가 남아 있으면 안 된다.
     assert client._scraper._client is None
+
+
+def test_library_rebuilds_client_when_event_loop_changes(httpx_mock):
+    """krx-news-client 0.4.0 이 루프가 바뀌면 httpx 클라이언트를 새로 만든다.
+
+    파사드의 ``async with`` 닫기가 빠져도 두 번째 ``asyncio.run`` 이 죽은 루프의
+    클라이언트를 재사용하지 않는다는 것 — 0.4.0 미만으로 내려가면 여기서 깨진다.
+    """
+    import asyncio
+
+    from krx_news_client import DartScraper
+
+    httpx_mock.add_response(json=_page([_ITEM]))
+    httpx_mock.add_response(json=_page([_ITEM]))
+    scraper = DartScraper(api_key="k1")
+
+    async def call():
+        await scraper.search_disclosures(bgn_de="20260907", end_de="20260914", corp_cls="Y")
+        return scraper._client
+
+    first = asyncio.run(call())  # 일부러 close 하지 않는다
+    second = asyncio.run(call())
+    assert first is not None and second is not None
+    assert second is not first
+
+
+def test_api_keys_error_message_is_unchanged():
+    with pytest.raises(DartError, match="DART 인증키가 없다"):
+        api_keys({"DART_API_KEY": "  ", "DART_API_KEY_2": ""})

@@ -1,5 +1,7 @@
 import itertools
 
+import pytest
+
 from scalp_it.cli_dart import main, quarter_ranges
 
 
@@ -95,3 +97,32 @@ def test_quarter_ranges_handles_february_boundaries():
     for bgn, end in quarter_ranges("20231201", "20240601"):
         start, stop = pd.Timestamp(bgn), pd.Timestamp(end)
         assert stop <= start + pd.DateOffset(months=3) - pd.Timedelta(days=1)
+
+
+def _pandas_quarter_ranges(start: str, end: str) -> list[tuple[str, str]]:
+    """krx-news-client 0.4.0 으로 옮기기 전 이 레포의 pandas 구현 — 동치성 기준."""
+    import pandas as pd
+
+    cursor, finish = pd.Timestamp(start), pd.Timestamp(end)
+    ranges: list[tuple[str, str]] = []
+    while cursor <= finish:
+        stop = min(cursor + pd.DateOffset(months=3) - pd.Timedelta(days=1), finish)
+        ranges.append((cursor.strftime("%Y%m%d"), stop.strftime("%Y%m%d")))
+        cursor = stop + pd.Timedelta(days=1)
+    return ranges
+
+
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [
+        ("20160901", "20260814"),
+        ("20231201", "20240601"),
+        ("20260131", "20260430"),  # 말일 넘침: 1/31 + 3개월 → 4/29 까지
+        ("20240229", "20250301"),  # 윤일 시작
+        ("20260801", "20260814"),
+        ("20260814", "20260814"),
+    ],
+)
+def test_quarter_ranges_matches_former_pandas_implementation(start, end):
+    """라이브러리로 옮긴 뒤에도 수집 구간이 한 칸도 달라지면 안 된다."""
+    assert quarter_ranges(start, end) == _pandas_quarter_ranges(start, end)

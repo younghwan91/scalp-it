@@ -9,51 +9,40 @@
 ``krx_news_client``(daytrade-it도 쓰는 형제 레포)로 옮겼다 — daytrade-it의
 DART 폴러와 같은 로직을 따로 유지하지 않기 위해서다. 이 파사드는 그
 ``asyncio`` 인터페이스를 기존 sync 호출부(``cli_dart.py``)가 쓰던 모양 그대로
-감싸고, raw dict row(=``rcept_no``/``corp_cls`` 포함)를 그대로 돌려준다 —
-``Disclosure`` 모델은 이 필드들을 안 들고 있어서 우리 저장 스키마와 안 맞는다.
+감싸고, raw dict row(=``rcept_no``/``corp_cls`` 포함)를 그대로 돌려준다.
+
+2026-09-15: krx-news-client 0.4.0 이 이벤트 루프 결측 버그(같은 스크레이퍼로
+``asyncio.run`` 을 두 번 부르면 두 번째가 ``Event loop is closed`` — 2026-09-14
+코스닥 공시가 통째로 빠진 사고)를 라이브러리에서 고쳤다. 그래서 여기 있던
+``_run_then_close`` 우회를 지우고 ``async with`` 로 호출마다 클라이언트를 닫기만 한다.
+키 환경변수 읽기도 ``DartScraper.from_env`` 에 맡긴다.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
-from typing import Any
+import time
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, TypeVar
 
 from krx_news_client import DartAPIError, DartQuotaExceededError, DartScraper
 
-_KEY_ENV = ("DART_API_KEY", "DART_API_KEY_2", "DART_API_KEY_3")
+_T = TypeVar("_T")
 
 
 class DartError(Exception):
     """OpenDART 가 오류를 돌려주었거나(한도초과 포함), 인증키가 없다."""
 
 
-def api_keys(env: dict | None = None) -> list[str]:
-    """설정된 DART 인증키를 순서대로 모은다."""
-    source = os.environ if env is None else env
-    keys = [str(source.get(name) or "").strip() for name in _KEY_ENV]
-    keys = [k for k in keys if k]
-    if not keys:
+def api_keys(env: Mapping[str, str] | None = None) -> list[str]:
+    """설정된 DART 인증키(``DART_API_KEY``, ``_2``, ``_3``)를 순서대로 모은다."""
+    try:
+        return DartScraper.from_env(env=env).api_keys
+    except ValueError as exc:
         raise DartError(
             "DART 인증키가 없다. DART_API_KEY 를 설정하라 "
             "(quant-airflow/.env 에 이미 있다면 export 해서 쓰면 된다)."
-        )
-    return keys
-
-
-async def _run_then_close(scraper: DartScraper, coro: Any) -> Any:
-    """코루틴을 돌리고 스크레이퍼의 httpx 클라이언트를 **같은 루프 안에서** 닫는다.
-
-    호출마다 ``asyncio.run`` 이 새 이벤트 루프를 연다. ``DartScraper`` 는 첫 호출에서
-    만든 ``httpx.AsyncClient`` 를 계속 재사용하는데 그 연결은 첫 루프에 묶여 있어,
-    두 번째 호출(cli_dart 의 법인구분 Y 다음 K)이 ``RuntimeError: Event loop is
-    closed`` 로 죽었다 — 2026-09-14 새벽 발견, 코스닥 공시가 통째로 빠지는 버그.
-    dart.db 의 mtime 은 갱신되므로 daytrade-it 공시 게이트의 신선도 검사도 못 잡는다.
-    """
-    try:
-        return await coro
-    finally:
-        await scraper.close()
+        ) from exc
 
 
 class DartClient:
@@ -67,6 +56,20 @@ class DartClient:
         # 이 아니라 일 쿼터 문제라서) -- 그래도 호출부가 명시적으로 원하면 존중한다.
         self._sleep = sleep
 
+    def _run(self, call: Callable[[DartScraper], Awaitable[_T]]) -> _T:
+        """한 번의 ``asyncio.run`` 안에서 호출하고 클라이언트를 같은 루프에서 닫는다."""
+
+        async def runner() -> _T:
+            async with self._scraper as scraper:
+                return await call(scraper)
+
+        try:
+            return asyncio.run(runner())
+        except DartQuotaExceededError as exc:
+            raise DartError(f"모든 인증키가 한도 초과다: {exc}") from exc
+        except DartAPIError as exc:
+            raise DartError(f"OpenDART 오류: {exc}") from exc
+
     def search(
         self,
         *,
@@ -78,36 +81,16 @@ class DartClient:
     ) -> dict[str, Any]:
         """공시검색 한 페이지. 한도 초과면 다음 키로 넘어간다."""
         if self._sleep:
-            import time
-
             time.sleep(self._sleep)
-        try:
-            return asyncio.run(
-                _run_then_close(
-                    self._scraper,
-                    self._scraper.search_disclosures(
-                        bgn_de=bgn_de, end_de=end_de, corp_cls=corp_cls,
-                        page_no=page_no, page_count=page_count,
-                    ),
-                )
+        return self._run(
+            lambda s: s.search_disclosures(
+                bgn_de=bgn_de, end_de=end_de, corp_cls=corp_cls,
+                page_no=page_no, page_count=page_count,
             )
-        except DartQuotaExceededError as exc:
-            raise DartError(f"모든 인증키가 한도 초과다: {exc}") from exc
-        except DartAPIError as exc:
-            raise DartError(f"OpenDART 오류: {exc}") from exc
+        )
 
     def search_all(self, *, bgn_de: str, end_de: str, corp_cls: str) -> list[dict[str, Any]]:
         """구간의 모든 페이지를 모은다."""
-        try:
-            return asyncio.run(
-                _run_then_close(
-                    self._scraper,
-                    self._scraper.search_disclosures_all(
-                        bgn_de=bgn_de, end_de=end_de, corp_cls=corp_cls
-                    ),
-                )
-            )
-        except DartQuotaExceededError as exc:
-            raise DartError(f"모든 인증키가 한도 초과다: {exc}") from exc
-        except DartAPIError as exc:
-            raise DartError(f"OpenDART 오류: {exc}") from exc
+        return self._run(
+            lambda s: s.search_disclosures_all(bgn_de=bgn_de, end_de=end_de, corp_cls=corp_cls)
+        )
