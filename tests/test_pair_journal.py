@@ -101,6 +101,24 @@ def test_build_entries_keeps_alert_without_close():
     assert entries[0].exit_reason == "미청산"
 
 
+def test_build_entries_keeps_blocked_close_without_alert():
+    """차단(국면·프로그램수급) 중 알림은 alerts 로그에 레코드가 안 남는다 — 그림자 청산만
+    있어도 일지에 나와야 한다. 09-15 그림자 3건(손절 2)이 "진입 0건"에 묻혔다."""
+    shadow = _close(blocked=True, shadow=True, exit_reason="손절",
+                    pnl=-0.0115, pnl_krw=-115020.0)
+    entries = build_entries([], [shadow])
+    assert len(entries) == 1
+    e = entries[0]
+    assert e.blocked and e.exit_reason == "손절" and e.pnl_krw == -115020.0
+    out = render_journal(entries, day="2026-08-26")
+    assert "안 샀지만 기록 1건" in out
+
+
+def test_build_entries_ignores_orphan_opposite_basis_shadow():
+    """체결가정 반대편 그림자(blocked 아님)는 실매매의 복제라 단독으로 올리지 않는다."""
+    assert build_entries([], [_close(shadow=True, blocked=False)]) == []
+
+
 def test_build_entries_marks_filtered_signals():
     """배제된 신호도 복기 대상이다 — 왜 안 샀는지가 왜 샀는지만큼 중요하다."""
     notice = {"notice": "[10:20:00] 짝꿍 필터배제(min_sl_ticks)  대장(100000) → 후속(200000)"}

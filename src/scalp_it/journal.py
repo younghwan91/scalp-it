@@ -172,9 +172,11 @@ def build_entries(alerts: Iterable[dict[str, Any]],
         by_key[key] = c
 
     out: list[JournalEntry] = []
+    matched: set[tuple[str, str]] = set()
     for a in alerts:
         ts = str(a.get("ts") or "")
         fol = str(a.get("follower") or "")
+        matched.add((ts, fol))
         c = by_key.get((ts, fol), {})
         out.append(JournalEntry(
             ts=ts,
@@ -188,6 +190,27 @@ def build_entries(alerts: Iterable[dict[str, Any]],
             blocked=bool(c.get("blocked")) if c else False,
             entry=a.get("entry"),
             exit_price=c.get("exit_price"),
+            pnl=c.get("pnl"), pnl_krw=c.get("pnl_krw"),
+            mae=c.get("mae"), mfe=c.get("mfe"),
+        ))
+
+    # 차단(국면 0·프로그램 투매) 중 알림은 alerts 로그에 레코드가 안 남아 짝이 없다.
+    # 그림자 청산만으로 항목을 만든다 — 안 그러면 "차단이 옳았나"가 일지에서 사라진다
+    # (09-15 손절 2건이 "진입 0건"에 묻힘). blocked 아닌 짝 없는 그림자는 반대 체결가정
+    # 복제라 올리지 않는다.
+    for key, c in by_key.items():
+        if key in matched or not c.get("blocked"):
+            continue
+        lead = str(c.get("leader") or "")
+        fol_name = str(c.get("follower_name") or "")
+        out.append(JournalEntry(
+            ts=key[0], leader=lead, leader_name="",
+            follower=key[1], follower_name=fol_name,
+            why_entry=f"대장 {lead} → 후속 {fol_name or key[1]} 알림(차단 중이라 진입 안 함)",
+            why_exit=why_exited(c),
+            exit_reason=str(c.get("exit_reason") or "미청산"),
+            blocked=True,
+            entry=c.get("entry"), exit_price=c.get("exit_price"),
             pnl=c.get("pnl"), pnl_krw=c.get("pnl_krw"),
             mae=c.get("mae"), mfe=c.get("mfe"),
         ))
@@ -240,8 +263,8 @@ def render_journal(entries: Sequence[JournalEntry], *, day: str,
         # 자리에서 무슨 일이 있었는지만 남긴다 — 실현손익에는 1원도 안 들어간다.
         tot = sum(e.pnl_krw or 0.0 for e in shadows)
         win = sum(1 for e in shadows if (e.pnl_krw or 0.0) > 0)
-        lines += [f"## 안 샀지만 기록 {len(shadows)}건 (국면 차단 · 실계좌 무관)",
-                  (f"만쥬 기준 쉬는 날이라 진입하지 않았다. 샀다면 승 {win} · "
+        lines += [f"## 안 샀지만 기록 {len(shadows)}건 (국면·프로그램 투매 차단 · 실계좌 무관)",
+                  (f"차단 규칙대로 진입하지 않았다. 샀다면 승 {win} · "
                    f"합계 {tot:+,.0f}원."), ""]
         for e in sorted(shadows, key=lambda x: -abs(x.pnl_krw or 0.0))[:10]:
             pnl = f"{e.pnl_krw:+,.0f}원" if e.pnl_krw is not None else "—"
