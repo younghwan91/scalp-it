@@ -279,6 +279,8 @@ def main() -> None:
         t = trades_for(a.study, days)
         n = len(t)
         lines += [f"- 누적 정책 거래 {n}건 (수익 수치는 최종 평가 때 한 번만 계산)"]
+        # 의사결정 패리티(승격 9번)용 — 거래 목록만 저장한다. 집계·수익 수치는 여기서 출력하지 않는다.
+        t.to_csv(ROOT / "data" / f"{a.study}_forward.daily_trades.csv", index=False)
         if len(days) >= MIN_DAYS and n >= MIN_TRADES:
             from krx_quant_core.runtime import DataSpec, start_run
 
