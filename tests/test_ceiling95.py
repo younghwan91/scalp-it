@@ -61,3 +61,18 @@ def test_pessimistic_return_measured_from_fill_second():
     e = C.fill_second(bid)
     mp = C.maker_pessimistic(bid, e, C.window_max(ask, 3))   # 체결 t=5 → 매도창 [6,8] 최댓값 120
     assert abs(mp[3] - (120 / 100 - 1 - C.COST)) < 1e-12
+
+
+def test_short_oracle_profits_when_price_falls():
+    #          t: 0    1    2    3    4
+    bid = np.array([100, 100, 90, 80, 80], float)
+    ask = np.array([101, 101, 91, 81, 81], float)
+    tk, mk = C.oracle_short(bid, ask, h=2)      # t=0 → 진입 bid[1]=100, 환매수 min(ask[2],ask[3])=81
+    assert abs(tk[0] - (100 / 81 - 1 - C.COST)) < 1e-12
+    assert abs(mk[0] - (101 / 80 - 1 - C.COST)) < 1e-12
+
+
+def test_short_loses_when_price_rises():
+    bid = np.array([100, 100, 110, 120, 120], float)
+    tk, _ = C.oracle_short(bid, bid + 1, h=2)
+    assert tk[0] < 0

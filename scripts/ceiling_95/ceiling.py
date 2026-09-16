@@ -55,6 +55,37 @@ def oracle(bid: np.ndarray, ask: np.ndarray, h: int) -> tuple[np.ndarray, np.nda
     return tk, mk
 
 
+def oracle_short(bid: np.ndarray, ask: np.ndarray, h: int) -> tuple[np.ndarray, np.ndarray]:
+    """공매도 천장 — 먼저 팔고 나중에 되산다. → (테이커 순수익, 메이커 순수익).
+
+    왜: 일중 드리프트가 음수면 롱은 그만큼이 역풍이고 숏은 순풍이다. 롱만 재고 "우위가 없다"고
+    결론내는 것은 방향을 하나 안 본 것이다. 비용은 같다(매도 시 세금은 진입에서 부과된다).
+    - 테이커: t+1 매수1호가에 매도 → 창 안 매도1호가 **최솟값**에 환매수
+    - 메이커: t+1 매도1호가에 매도(체결 가정) → 창 안 매수1호가 최솟값에 환매수
+    """
+    n = len(bid)
+    lo_ask = np.full(n, np.nan, np.float64)
+    lo_bid = np.full(n, np.nan, np.float64)
+    for j in range(2, h + 2):
+        sa = np.full(n, np.nan)
+        sb = np.full(n, np.nan)
+        sa[: n - j] = ask[j:]
+        sb[: n - j] = bid[j:]
+        lo_ask = np.fmin(lo_ask, sa)
+        lo_bid = np.fmin(lo_bid, sb)
+    e_taker = np.full(n, np.nan)
+    e_maker = np.full(n, np.nan)
+    e_taker[: n - 1] = bid[1:]
+    e_maker[: n - 1] = ask[1:]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        tk = e_taker / lo_ask - 1 - COST
+        mk = e_maker / lo_bid - 1 - COST
+    bad = ~(e_taker > 0) | ~(e_maker > 0) | ~(lo_ask > 0) | ~(lo_bid > 0)
+    tk[bad] = np.nan
+    mk[bad] = np.nan
+    return tk, mk
+
+
 def fill_second(bid: np.ndarray) -> np.ndarray:
     """지정가 bid[t+1] 이 **뚫려서** 체결된 초. 없으면 −1. (t 당 한 번, 보유 구간과 무관)"""
     n = len(bid)
@@ -114,7 +145,7 @@ def main(days: list[str] | None = None) -> int:
     if not files:
         print(f"캐시가 없다: {CACHE}")
         return 2
-    acc: dict[int, dict[str, list]] = {h: {"tk": [], "mk": [], "mp": [], "burst": []} for h in HORIZONS}
+    acc: dict[int, dict[str, list]] = {h: {"tk": [], "mk": [], "mp": [], "stk": [], "smk": [], "burst": []} for h in HORIZONS}
     for f in files:
         d = pickle.load(open(f, "rb"))
         rows = d["rows"]
@@ -132,6 +163,9 @@ def main(days: list[str] | None = None) -> int:
                 ok = np.isfinite(tk[sl]) & np.isfinite(mk[sl])
                 acc[h]["tk"].append(tk[sl][ok])
                 acc[h]["mk"].append(mk[sl][ok])
+                stk, smk = oracle_short(bid, ask, h)
+                acc[h]["stk"].append(stk[sl][ok])
+                acc[h]["smk"].append(smk[sl][ok])
                 mp = maker_pessimistic(bid, e_fill, window_max(ask, h))
                 acc[h]["mp"].append(mp[sl][ok])
                 acc[h]["burst"].append(burst[sl][ok])
@@ -139,6 +173,8 @@ def main(days: list[str] | None = None) -> int:
     for h in HORIZONS:
         tk = np.concatenate(acc[h]["tk"]) * 1e4
         mk = np.concatenate(acc[h]["mk"]) * 1e4
+        stk = np.concatenate(acc[h]["stk"]) * 1e4
+        smk = np.concatenate(acc[h]["smk"]) * 1e4
         mp = np.concatenate(acc[h]["mp"]) * 1e4
         mpf = mp[np.isfinite(mp)]
         bu = np.concatenate(acc[h]["burst"])
@@ -153,6 +189,10 @@ def main(days: list[str] | None = None) -> int:
                                   "median": float(np.median(mpf)) if len(mpf) else None,
                                   "mean": float(mpf.mean()) if len(mpf) else None,
                                   "frac_pos": float((mpf > 0).mean()) if len(mpf) else None},
+            "short_taker": {"median": float(np.median(stk)), "mean": float(stk.mean()),
+                            "frac_pos": float((stk > 0).mean())},
+            "short_maker": {"median": float(np.median(smk)), "mean": float(smk.mean()),
+                            "frac_pos": float((smk > 0).mean())},
             "burst_top1pct": {"n": int(top.sum()),
                               "taker_median": float(np.median(tk[top])) if top.any() else None,
                               "maker_median": float(np.median(mk[top])) if top.any() else None},
@@ -163,6 +203,9 @@ def main(days: list[str] | None = None) -> int:
             r = rec[k]
             print(f"   {k:<5} 중앙 {r['median']:+7.1f}bp · 평균 {r['mean']:+7.1f}bp · "
                   f"상위10% {r['p90']:+7.1f}bp · 양(+) 비중 {r['frac_pos']:.1%}")
+        for k in ("short_taker", "short_maker"):
+            r = rec[k]
+            print(f"   {k:<12} 중앙 {r['median']:+7.1f}bp · 평균 {r['mean']:+7.1f}bp · 양(+) 비중 {r['frac_pos']:.1%}")
         q = rec["maker_pessimistic"]
         if q["median"] is not None:
             print(f"   maker(비관·뚫림체결 {q['fill_rate']:.1%}) 중앙 {q['median']:+7.1f}bp · "
