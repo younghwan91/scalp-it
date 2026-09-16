@@ -33,6 +33,7 @@ def _run(sig_rows, t_sec, t_px, t_vol, t_side, t_start, bid, ask, bq1, stg, tick
     hold = np.zeros(m, np.int64)
     filled = np.zeros(m, np.bool_)
     delay = np.full(m, -1)
+    tried = np.zeros(m, np.bool_)      # 실제로 주문을 낸 행(포지션·쿨다운으로 건너뛴 행과 구분)
     free = -1
     for k in range(m):
         row = sig_rows[k]
@@ -45,6 +46,7 @@ def _run(sig_rows, t_sec, t_px, t_vol, t_side, t_start, bid, ask, bq1, stg, tick
         Qa = bq1[j]
         if not (P > 0) or not (Qa == Qa):
             continue
+        tried[k] = True
         peak = stg[j]
         e = -1
         if taker:
@@ -98,7 +100,7 @@ def _run(sig_rows, t_sec, t_px, t_vol, t_side, t_start, bid, ask, bq1, stg, tick
         ret[k] = px / P - 1.0 - cost
         hold[k] = xs - e
         free = xs + 1
-    return ret, hold, filled, delay
+    return ret, hold, filled, delay, tried
 
 
 def day_thresholds(rows: pd.DataFrame, prev_q: float | None) -> np.ndarray:
@@ -163,16 +165,16 @@ def simulate_day(conn, day: str, prev_q: float | None, *, forward_ok: bool = Fal
             sig_rows = np.sort(rc.loc[rc.sig, "row"].to_numpy(np.int64))
             args = (sec, px, vol, side, start, p["bid"].astype(np.float64), p["ask"].astype(np.float64), bq, p["strength"].astype(np.float64),
                     p["tick"].astype(np.float64), N, COST)
-            r, h, f, dl = _run(sig_rows, *args, False)
-            rt, ht, ft, _ = _run(sig_rows, *args, True)
+            r, h, f, dl, tr_ = _run(sig_rows, *args, False)
+            rt, ht, ft, _, _ = _run(sig_rows, *args, True)
             rec = pd.DataFrame({"day": day, "code": c, "row": sig_rows, "ret": r, "hold": h, "filled": f,
-                                "delay": dl, "ret_taker": rt})
+                                "delay": dl, "tried": tr_, "ret_taker": rt})
             if control_seed is not None:
                 # §5 대조: 같은 종목·같은 날 결정 행 중 무작위 초(신호 수만큼), 같은 체결 모형·청산
                 rng = np.random.default_rng(control_seed + len(out))
                 pool = rc.row.to_numpy(np.int64)
                 cr = np.sort(rng.choice(pool, size=min(len(pool), len(sig_rows)), replace=False))
-                rc_, _, fc, _ = _run(cr, *args, False)
+                rc_, _, fc, _, _ = _run(cr, *args, False)
                 rec["ctrl_day_code_mean"] = float(np.nanmean(rc_[fc])) if fc.any() else np.nan
             out.append(rec)
     vals = rows.dstr30.to_numpy(np.float64)
@@ -197,7 +199,9 @@ def main(days: list[str]) -> None:
     a = pd.concat(res, ignore_index=True)
     f = a[a.filled]
     print("\n== 17일 합계(기술 — 판정 아님)")
-    print(f"신호 {len(a)} · 체결 {len(f)} ({len(f) / len(a):.0%}) · 체결 지연 중앙 {f.delay.median():.0f}초")
+    at = a[a.tried]
+    print(f"신호행 {len(a)} · **주문 {len(at)}** · 체결 {len(f)} (주문 대비 {len(f) / max(len(at), 1):.0%}) · "
+          f"체결 지연 중앙 {f.delay.median():.0f}초")
     print(f"지정가: 세전 {(f.ret.mean() + COST) * 1e4:+.1f}bp · 순 {f.ret.mean() * 1e4:+.1f}bp · 중앙 {f.ret.median() * 1e4:+.1f} · "
           f"승률 {(f.ret > 0).mean():.0%} · 보유 중앙 {f.hold.median():.0f}초 · 일별 양수 "
           f"{(f.groupby('day').ret.mean() > 0).sum()}/{f.day.nunique()}")
