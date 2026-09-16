@@ -20,7 +20,7 @@ dependencies = [
     "kiwoom-client>=0.4.0",
     "krx-news-client>=0.4.0",
     # 시장규칙·주문가드·체결판정·검증통계 공통 코어(scalp-it·daytrade-it·swing-it 공유)
-    "krx-quant-core==0.5.0",
+    "krx-quant-core==0.5.1",
 ]
 
 [project.optional-dependencies]
