@@ -1619,7 +1619,9 @@ def _build_rl_shadow(args: argparse.Namespace, trade_date: date) -> tuple[Any, s
                 "그림자(미승격)" if live else "그림자")
         print(f"# RL그림자({study}) — 피처 {len(meta['features'])}개 · 커널 {stream_cls.__name__} · {mode}",
               file=sys.stderr, flush=True)
-        return RLShadow(pol, stream_factory=stream_cls, sink=sink, codes=codes), codes
+        # 종목 간 순위(cum_rank)는 커널이 못 준다 — 그림자가 당일 누적 체결대금으로 만든다(백테스트와 같은 정의).
+        return RLShadow(pol, stream_factory=stream_cls, sink=sink, codes=codes,
+                        extra_features="turnover_rank"), codes
     except Exception as exc:  # noqa: BLE001 — 그림자 준비 실패로 매매를 죽이지 않는다
         print(f"[RL그림자] 비활성 — 준비 실패: {exc}", file=sys.stderr, flush=True)
         return None, set()

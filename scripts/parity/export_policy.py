@@ -31,15 +31,19 @@ def main() -> int:
         print("선택된 체크포인트가 없다(VAL 거래 30건 이상 없음) — 내보낼 정책이 없다")
         return 2
     seed, steps = sel["seed"], sel["steps"] // 1_000_000
+    # 학습이 rl_85 를 "rl85_dqn" 으로 불러 썼다 — 피클이 그 이름을 참조하므로 먼저 등록한다.
+    r85_spec = importlib.util.spec_from_file_location("rl85_dqn", ROOT / "scripts" / "rl_85" / "dqn.py")
+    r85 = importlib.util.module_from_spec(r85_spec)
+    sys.modules["rl85_dqn"] = r85
+    r85_spec.loader.exec_module(r85)
     spec = importlib.util.spec_from_file_location("mod", ROOT / "scripts" / MODULE[a.study] / "dqn.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["mod"] = mod
 
     class _U(pickle.Unpickler):                       # 학습이 __main__ 소속으로 피클한 Scaler 를 이어 준다
         def find_class(self, module, name):
-            if module == "__main__" and name == "Scaler":
-                spec.loader.exec_module(mod)
-                return getattr(mod, "Scaler", None) or mod.R85.Scaler
+            if name == "Scaler" and module in ("__main__", "rl85_dqn", "mod"):
+                return r85.Scaler
             return super().find_class(module, name)
 
     with open(base / f"seed{seed}" / "prep.pkl", "rb") as fh:
