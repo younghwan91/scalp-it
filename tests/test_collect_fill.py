@@ -517,4 +517,10 @@ def test_pinned_codes_are_collected_first_and_never_go_stale(tmp_path):
 
 
 def test_cron_pins_tax_exempt_etfs(cron_args):
-    assert set(cron_args.collect_pin.split(",")) >= {"069500", "229200", "122630", "233740"}
+    """95b(2026-09-17) 이후 ETF 핀은 4개만 남긴다 — 면세 ETF 천장이 0 근처로 측정돼 자리를 비웠다.
+
+    지수추종(069500)과 레버리지(122630·233740·251340)를 참조용으로 유지하고, 나머지 10자리는
+    다른 전략이 쓰는 `--collect-pin-file` 로 넘긴다.
+    """
+    assert set(cron_args.collect_pin.split(",")) == {"069500", "122630", "233740", "251340"}
+    assert cron_args.collect_pin_file, "비운 자리를 쓰려면 핀 파일 경로가 있어야 한다"

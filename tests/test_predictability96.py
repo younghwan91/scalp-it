@@ -4,6 +4,7 @@
 만들어진다. 학습은 무거워서 여기서 못 돌리지만, 라벨 산술은 손으로 아는 값으로 고정할 수 있다.
 """
 import importlib.util
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,7 @@ import numpy as np
 spec = importlib.util.spec_from_file_location(
     "predictability96", Path(__file__).resolve().parents[1] / "scripts" / "ceiling_95" / "predictability.py")
 P = importlib.util.module_from_spec(spec)
+sys.modules["predictability96"] = P      # numba 가 함수의 모듈을 되찾을 수 있어야 한다
 spec.loader.exec_module(P)
 
 

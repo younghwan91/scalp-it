@@ -211,8 +211,9 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --universe-size 12 --max-roundtrip-bp 30 --order-krw 10000000 \
     --leader-scan-interval 10 --leader-scan-min-rt 12 --leader-scan-max 8 \
     --collect-fill-interval 60 --collect-reserve 12 --collect-fill-ttl 600 \
-    --collect-pin 069500,122630,102110,360750,133690,379800,114800,233740,229200,396500,091160,251340,381180,305720 \
-    --etf-shadow 069500,122630,102110,360750,133690,379800,114800,233740,229200,396500,091160,251340,381180,305720 \
+    --collect-pin 069500,122630,233740,251340 \
+    --collect-pin-file data/collect_pins_extra.txt \
+    --etf-shadow 069500,122630,233740,251340 \
     --tiger-shadow \
     --rl-shadow data/policy_rl92 --rl-shadow-log data/rl_shadow_rl92.jsonl --rl-kernel window --rl-codes 8 \
     --program-interval 60 --program-dump-qty 700 \

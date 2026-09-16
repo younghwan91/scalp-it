@@ -420,6 +420,27 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
                 pass
 
 
+def _pin_codes(inline: str, path: str) -> list[str]:
+    """고정 수집 종목 = 인자 목록 + 파일 목록. 파일은 다른 전략(daytrade-it)이 전일 마감 뒤 떨군다.
+
+    파일이 없거나 못 읽으면 **경고만 하고 인자 목록으로 간다** — 남의 파일 때문에 매매가 안 뜨면 안 된다.
+    """
+    out = [c.strip() for c in str(inline or "").split(",") if c.strip()]
+    if path:
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"[경고] 고정 수집 파일을 못 읽는다({path}): {exc} — 인자 목록만 쓴다",
+                  file=sys.stderr, flush=True)
+        else:
+            for line in text.splitlines():
+                line = line.split("#", 1)[0]          # 줄 주석 — 날짜·메모가 종목으로 들어가면 안 된다
+                for tok in line.replace(",", " ").split():
+                    if tok and tok not in out:
+                        out.append(tok)
+    return out
+
+
 def _cap_codes_for_single_key(codes: list[str], types: list[str], *, dedicated: bool) -> list[str]:
     """전용 키가 없으면 커넥션 1개에 담기는 만큼으로 자른다.
 
@@ -877,14 +898,19 @@ async def _watch_collect_fill(
     # 거래대금 풀(daily_bars 는 주식만)에 없으니 후보 맨 앞에 박고, 매 바퀴 "방금 봤다"로
     # 갱신해 ttl 로 안 내려가게 한다. 매매가 자리를 달라면(_preempt_collect_slots)
     # 가장 뜨거운 것으로 보여 맨 나중에 내주고, 다음 바퀴에 다시 붙는다.
-    pins = [c.strip() for c in str(getattr(args, "collect_pin", "") or "").split(",")
-            if c.strip()]
+    pin_inline = getattr(args, "collect_pin", "")
+    pin_path = getattr(args, "collect_pin_file", "")
+    pins = _pin_codes(pin_inline, pin_path)
 
     # 채우고 나서 쉰다 — 장 시작 직후가 가장 아까운 구간이라 첫 사이클을 미루지 않는다.
     # 소켓이 아직 안 붙었으면 add_codes 가 조용히 빈 손으로 돌아오고 다음 바퀴에 다시 본다.
     while True:
         try:
             now = loop.time()
+            if pin_path:
+                # 매 바퀴 다시 읽는다 — 다른 전략이 장중에 신호 종목을 더할 수 있게 한다.
+                # 저장 전용이라 매매 판단에는 영향이 없고, 파일이 사라지면 인자 목록으로 돌아간다.
+                pins = _pin_codes(pin_inline, pin_path)
             for code in [*movers, *pins]:
                 if code in taken:
                     taken[code] = now       # 아직 순위에 있다 — 유예를 갱신한다
@@ -1862,6 +1888,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--collect-pin", default="",
                    help="쉼표 구분 — 수집 채움이 항상 먼저 붙이고 안 내리는 종목(저장만). "
                         "80번: 매도세 면제 ETF 틱 수집")
+    p.add_argument("--collect-pin-file", default="",
+                   help="한 줄 또는 쉼표 구분 종목 파일 — --collect-pin 에 더해 고정 수집한다(저장만). "
+                        "다른 전략이 전일 마감 뒤 떨구는 목록용. 없으면 조용히 건너뛴다")
     p.add_argument("--etf-shadow", default="",
                    help="쉼표 구분 ETF — 81번 체결강도 규칙을 소켓에서 그림자로 돌린다(주문 없음)")
     p.add_argument("--etf-shadow-log", default="data/etf81_shadow.jsonl")

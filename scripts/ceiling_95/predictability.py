@@ -98,8 +98,8 @@ def label_bracket(bid: np.ndarray, rows: np.ndarray, tp: float = TP, sl: float =
 try:                                   # 초 단위 루프 — 파이썬으로는 하루치도 못 돈다
     import numba
 
-    label_fixed = numba.njit(cache=True)(label_fixed)
-    label_bracket = numba.njit(cache=True)(label_bracket)
+    label_fixed = numba.njit(label_fixed)
+    label_bracket = numba.njit(label_bracket)
 except Exception:                      # noqa: BLE001
     pass
 
