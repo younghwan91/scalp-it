@@ -1490,9 +1490,10 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
         print(executor.summary(), file=sys.stderr, flush=True)
     if rl_shadow is not None:
         try:
-            rl_shadow.flush()
-            if rl_shadow.disabled_reason:
-                print(f"[RL그림자] 꺼져 있었다 — {rl_shadow.disabled_reason}", file=sys.stderr, flush=True)
+            rl_shadow.stop()
+            reason = getattr(rl_shadow.shadow, "disabled_reason", None)
+            print(f"[RL그림자] 종료 — 버린 프레임 {rl_shadow.dropped:,}건"
+                  + (f" · 꺼져 있었다: {reason}" if reason else ""), file=sys.stderr, flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[RL그림자] 마감 실패: {exc}", file=sys.stderr, flush=True)
     if tiger_shadow is not None:
@@ -1622,8 +1623,14 @@ def _build_rl_shadow(args: argparse.Namespace, trade_date: date) -> tuple[Any, s
         print(f"# RL그림자({study}) — 피처 {len(meta['features'])}개 · 커널 {stream_cls.__name__} · {mode}",
               file=sys.stderr, flush=True)
         # 종목 간 순위(cum_rank)는 커널이 못 준다 — 그림자가 당일 누적 체결대금으로 만든다(백테스트와 같은 정의).
-        return RLShadow(pol, stream_factory=stream_cls, sink=sink, codes=codes,
-                        extra_features="turnover_rank"), codes
+        shadow = RLShadow(pol, stream_factory=stream_cls, sink=sink, codes=codes,
+                          extra_features="turnover_rank")
+        # 창 커널은 종목당 1초 81ms 다 — 이벤트 루프에서 돌리면 주문이 밀린다. 별도 스레드로 뺀다.
+        from .realtime.rl_shadow_worker import ShadowWorker
+
+        worker = ShadowWorker(shadow)
+        worker.start()
+        return worker, codes
     except Exception as exc:  # noqa: BLE001 — 그림자 준비 실패로 매매를 죽이지 않는다
         print(f"[RL그림자] 비활성 — 준비 실패: {exc}", file=sys.stderr, flush=True)
         return None, set()
@@ -1646,18 +1653,20 @@ class _WindowAdapter:
         return self.inner.update(self.sec) if self.sec >= 0 else {}
 
 
-def _feed_rl_shadow(shadow: Any, codes: set[str], ticks: list[dict], quotes: list[dict]) -> None:
+def _feed_rl_shadow(worker: Any, codes: set[str], ticks: list[dict], quotes: list[dict]) -> None:
+    """큐에 넣기만 한다 — 계산은 그림자 스레드가 하고, 밀리면 버린다(매매가 먼저다)."""
     try:
         for q in quotes:
             if str(q["code"]) in codes:
-                shadow.on_quote(str(q["code"]), q["ts"], bid1=q.get("bid1"), ask1=q.get("ask1"),
-                                bidqty1=q.get("bidqty1"), askqty1=q.get("askqty1"),
-                                bid_depth3=q.get("total_bid_qty"), ask_depth3=q.get("total_ask_qty"))
+                worker.feed_quote(str(q["code"]), q["ts"], bid1=q.get("bid1"), ask1=q.get("ask1"),
+                                  bidqty1=q.get("bidqty1"), askqty1=q.get("askqty1"),
+                                  bid_depth3=q.get("total_bid_qty"), ask_depth3=q.get("total_ask_qty"))
         for t in ticks:
             if t.get("price") is None or str(t["code"]) not in codes:
                 continue
-            shadow.on_tick(str(t["code"]), t["ts"], float(t["price"]), volume=t.get("volume"), side=t.get("side"),
-                           strength=t.get("strength"), best_bid=t.get("best_bid"), best_ask=t.get("best_ask"))
+            worker.feed_tick(str(t["code"]), t["ts"], float(t["price"]), volume=t.get("volume"),
+                             side=t.get("side"), strength=t.get("strength"),
+                             best_bid=t.get("best_bid"), best_ask=t.get("best_ask"))
     except Exception as exc:  # noqa: BLE001
         print(f"[RL그림자] 프레임 예외(무시): {exc}", file=sys.stderr, flush=True)
 
