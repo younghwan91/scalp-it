@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # 장중 짝꿍 감지기 자동 실행 (소켓 수집 겸함).
-# ⚠️ 2026-08-27 부터 **실주문 1주**가 나간다(--confirm-real, 사용자 승인).
-#    되돌리려면 아래 실행줄에서 --confirm-real 을 지운다 — 그 즉시 dry-run.
+# 2026-09-16 밤부터 **실주문 중단**(--confirm-real 제거 → dry-run). 사용자 목표:
+# "기존의 매매방식으로 진행하지 말고, 확실한 우위를 가진 매매 기준을 성립한 뒤 실매매를 준비한다".
+# 짝꿍 신호·그림자·수집은 그대로 돌아간다. 되살리려면 아래 실행줄에 --confirm-real 을 다시 넣는다.
+# (2026-08-27~09-16 은 --confirm-real 로 1주 실주문이 나갔다.)
 # App key 1세션 제약: 이 프로세스가 tick-collect 를 대체한다(감지+저장).
 # 크래시 시 15:20 까지 자동 재시작해 하루를 통째로 날리지 않는다.
 # 2026-09-07: KIWOOM_APP_KEY_2/SECRET_2 가 있으면 DualKeyCollector 로 정원이
@@ -198,7 +200,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
   # 불타기(만쥬 A-4, 2026-09-06 사용자 승인) — +3%·+6% 확정 수익마다 1주씩
   # 추가매수(기본 1주 → 최대 3주). 물타기는 arm 이 양수라 구조적으로 안 걸린다.
   /home/young/.local/bin/uv run --extra pg scalp-pair-detect \
-    --live --live-order --confirm-real --duration "$(date '+%H:%M')-15:20" \
+    --live --live-order --duration "$(date '+%H:%M')-15:20" \
     --take-profit 0 --stop-loss -0.005 --disaster-line -0.02 --hold 180 \
     --trail-arm 0.03 --trail 0.015 --entry-ticks-up 2 --halt-below-jo 5 \
     --pyramid-arm 0.03 --pyramid-arm 0.06 --pyramid-add-qty 1 \
