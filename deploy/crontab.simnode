@@ -43,4 +43,6 @@
 20 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl92 >> data/forward_rl92.cron.log 2>&1
 25 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl93 >> data/forward_rl93.cron.log 2>&1
 30 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl94 >> data/forward_rl94.cron.log 2>&1
-
+# 의사결정 패리티(승격 9번) — 17:40. 트레이더의 RL 그림자 기록을 당겨와 배치 재현과 **일치율만** 본다.
+# 수익 수치는 전진 최종 평가 때 한 번만 계산한다(OOS 잠금).
+40 17 * * 1-5 cd /home/young/git/scalp-it && rsync -t -e "ssh -o BatchMode=yes -o ConnectTimeout=20" trader-local:git/scalp-it/data/rl_shadow_rl92.jsonl data/ >> data/parity_rl92.log 2>&1; deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/parity/decision_parity.py --study rl92 --agreement-only >> data/parity_rl92.log 2>&1

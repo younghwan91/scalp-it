@@ -34,14 +34,18 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--study", required=True)
     ap.add_argument("--days", type=int, default=5, help="최근 N 거래일만 본다")
-    ap.add_argument("--batch-csv", default=None, help="배치 재현 거래 CSV(기본: data/<study>_forward.final_trades.csv)")
+    ap.add_argument("--batch-csv", default=None, help="배치 재현 거래 CSV(기본: 매일 저장본 → 최종본 순)")
+    ap.add_argument("--agreement-only", action="store_true",
+                    help="일치율만 본다 — 수익 수치는 전진 최종 평가 전까지 계산하지 않는다")
     a = ap.parse_args()
 
     live = live_trades(a.study)
     if live.empty:
         print(f"실시간 그림자 기록이 없다 — 감지기에 --rl-shadow {a.study} 를 켜고 거래일을 쌓아야 한다")
         return 2
-    bp = Path(a.batch_csv) if a.batch_csv else ROOT / "data" / f"{a.study}_forward.final_trades.csv"
+    daily = ROOT / "data" / f"{a.study}_forward.daily_trades.csv"
+    bp = Path(a.batch_csv) if a.batch_csv else (daily if daily.exists()
+                                                else ROOT / "data" / f"{a.study}_forward.final_trades.csv")
     if not bp.exists():
         print(f"배치 재현 결과가 없다: {bp}")
         return 2
@@ -54,6 +58,11 @@ def main() -> int:
         if len(same) and (np.abs(same.sec.to_numpy() - r.sec) <= MATCH_SEC).any():
             matched += 1
     rate = matched / max(len(live), 1)
+    if a.agreement_only:
+        ok = rate >= MIN_RATE and len(days) >= 5
+        print(f"수익 수치는 계산하지 않음(--agreement-only) · 거래일 {len(days)}/5")
+        print("\n판정:", "일치율 기준 충족" if ok else "미달 — 일치율 또는 거래일 부족")
+        return 0 if ok else 1
     lb = live.groupby("day").ret.mean().mean() * 1e4
     bb = batch.groupby("day").ret.mean().mean() * 1e4
     print(f"거래일 {len(days)} · 실시간 {len(live)}건 · 배치 {len(batch)}건")
