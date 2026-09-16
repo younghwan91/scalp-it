@@ -41,6 +41,12 @@ STUDIES = {
                  "doc": "docs/research/manju/89-two-head-limit-bandit-preregistration.md"},
     "bandit91": {"model": HOME / "bandit91_run" / "state.pt", "n_trials": 2094,
                  "doc": "docs/research/manju/91-limit-bandit-30feat-preregistration.md"},
+    "rl92": {"model": HOME / "rl92" / "selected.json", "n_trials": 2249,
+             "doc": "docs/research/manju/92-rl-fast-exit-preregistration.md"},
+    "rl93": {"model": HOME / "rl93" / "selected.json", "n_trials": 2309,
+             "doc": "docs/research/manju/93-rl-end-to-end-preregistration.md"},
+    "rl94": {"model": HOME / "rl94" / "selected.json", "n_trials": 2369,
+             "doc": "docs/research/manju/94-rl-full-universe-preregistration.md"},
     "rl85": {"model": HOME / "rl85" / "selected.json", "n_trials": 1618,
              "doc": "docs/research/manju/85-rl-wave-riding-preregistration.md"},
 }
@@ -75,6 +81,12 @@ def build_caches(conn, days: list[str]) -> None:
         L84.build_day(d)
         fills87.build(d)
         rewards88.build(d)
+        if (ROOT / "scripts" / "rl_94" / "build.py").exists():
+            os.environ["FLOW94_FORWARD"] = "1"
+            spec94 = importlib.util.spec_from_file_location("build94", ROOT / "scripts" / "rl_94" / "build.py")
+            b94 = importlib.util.module_from_spec(spec94)
+            spec94.loader.exec_module(b94)
+            b94.build(d)
 
 
 def trades_for(study: str, days: list[str]) -> pd.DataFrame:
@@ -163,13 +175,15 @@ def trades_for(study: str, days: list[str]) -> pd.DataFrame:
     import importlib.util
 
     import torch
-    name = "rl_87" if study == "rl87" else "rl_85"
+    name = {"rl87": "rl_87", "rl92": "rl_92", "rl93": "rl_93", "rl94": "rl_94"}.get(study, "rl_85")
     spec = importlib.util.spec_from_file_location(f"{name}_mod", ROOT / "scripts" / name / "dqn.py")
     R = importlib.util.module_from_spec(spec)
     sys.modules[f"{name}_mod"] = R
     spec.loader.exec_module(R)
-    if study == "rl87":
+    if study in ("rl87", "rl92"):
         R.COST, R.Q = R.R85.COST, R.R85.Q
+    elif study in ("rl93", "rl94"):
+        R.COST = R.R85.COST
 
     sel = json.loads(STUDIES[study]["model"].read_text())
     # 학습 스크립트를 직접 실행해 저장한 prep 은 Scaler 가 __main__ 소속으로 피클돼 있다 — 여기서 이어 준다.

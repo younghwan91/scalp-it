@@ -39,3 +39,8 @@
 5 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study bandit88 >> data/forward_bandit88.cron.log 2>&1
 10 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study bandit89 >> data/forward_bandit89.cron.log 2>&1
 15 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study bandit91 >> data/forward_bandit91.cron.log 2>&1
+# 92·93·94 RL 전진(고정값 없는 정책들) — 17:20/17:25/17:30
+20 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl92 >> data/forward_rl92.cron.log 2>&1
+25 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl93 >> data/forward_rl93.cron.log 2>&1
+30 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl94 >> data/forward_rl94.cron.log 2>&1
+
