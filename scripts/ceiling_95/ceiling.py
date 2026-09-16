@@ -138,6 +138,21 @@ def maker_pessimistic(bid: np.ndarray, e: np.ndarray, maxask: np.ndarray) -> np.
     return out
 
 
+TICK_BINS = ((0.0, 2.0), (2.0, 4.0), (4.0, 7.0), (7.0, 12.0), (12.0, 25.0), (25.0, 1e9))
+
+
+def _by_tick(tk: np.ndarray, mk: np.ndarray, tb: np.ndarray) -> dict[str, dict]:
+    """틱 폭 구간별 천장 — 1틱이 몇 bp 인지가 스프레드 비용의 하한을 정한다."""
+    out: dict[str, dict] = {}
+    for lo, hi in TICK_BINS:
+        m = np.isfinite(tb) & (tb >= lo) & (tb < hi)
+        lab = f"{lo:g}~{hi:g}" if hi < 1e8 else f"{lo:g}+"
+        out[lab] = {"n": int(m.sum()),
+                    "taker": float(np.median(tk[m])) if m.any() else None,
+                    "maker": float(np.median(mk[m])) if m.any() else None}
+    return out
+
+
 def main(days: list[str] | None = None) -> int:
     files = sorted(glob.glob(str(CACHE / "*.pkl")))
     if days:
@@ -145,7 +160,8 @@ def main(days: list[str] | None = None) -> int:
     if not files:
         print(f"캐시가 없다: {CACHE}")
         return 2
-    acc: dict[int, dict[str, list]] = {h: {"tk": [], "mk": [], "mp": [], "stk": [], "smk": [], "burst": []} for h in HORIZONS}
+    acc: dict[int, dict[str, list]] = {h: {"tk": [], "mk": [], "mp": [], "stk": [], "smk": [],
+                                           "burst": [], "tickbp": []} for h in HORIZONS}
     for f in files:
         d = pickle.load(open(f, "rb"))
         rows = d["rows"]
@@ -156,6 +172,9 @@ def main(days: list[str] | None = None) -> int:
             burst = np.zeros(len(bid))
             if len(sub):
                 burst[sub.row.to_numpy()] = sub.buyval10.to_numpy()
+            # 1틱이 가격의 몇 bp 인가 — 스프레드 비용의 구조적 하한이다(저가주일수록 크다).
+            mid = np.where((bid > 0) & (ask > 0), (bid + ask) / 2, np.nan)
+            tickbp = np.where(mid > 0, p["tick"].astype(np.float64) / mid * 1e4, np.nan)
             e_fill = fill_second(bid)
             for h in HORIZONS:
                 tk, mk = oracle(bid, ask, h)
@@ -169,6 +188,7 @@ def main(days: list[str] | None = None) -> int:
                 mp = maker_pessimistic(bid, e_fill, window_max(ask, h))
                 acc[h]["mp"].append(mp[sl][ok])
                 acc[h]["burst"].append(burst[sl][ok])
+                acc[h]["tickbp"].append(tickbp[sl][ok])
     out = {"days": len(files), "cost_bp": COST * 1e4, "horizons": {}}
     for h in HORIZONS:
         tk = np.concatenate(acc[h]["tk"]) * 1e4
@@ -177,6 +197,7 @@ def main(days: list[str] | None = None) -> int:
         smk = np.concatenate(acc[h]["smk"]) * 1e4
         mp = np.concatenate(acc[h]["mp"]) * 1e4
         mpf = mp[np.isfinite(mp)]
+        tb = np.concatenate(acc[h]["tickbp"])
         bu = np.concatenate(acc[h]["burst"])
         top = bu >= np.quantile(bu[bu > 0], 0.99) if (bu > 0).any() else np.zeros(len(bu), bool)
         rec = {
@@ -193,6 +214,7 @@ def main(days: list[str] | None = None) -> int:
                             "frac_pos": float((stk > 0).mean())},
             "short_maker": {"median": float(np.median(smk)), "mean": float(smk.mean()),
                             "frac_pos": float((smk > 0).mean())},
+            "by_tick_bp": _by_tick(tk, mk, tb),
             "burst_top1pct": {"n": int(top.sum()),
                               "taker_median": float(np.median(tk[top])) if top.any() else None,
                               "maker_median": float(np.median(mk[top])) if top.any() else None},
@@ -206,6 +228,10 @@ def main(days: list[str] | None = None) -> int:
         for k in ("short_taker", "short_maker"):
             r = rec[k]
             print(f"   {k:<12} 중앙 {r['median']:+7.1f}bp · 평균 {r['mean']:+7.1f}bp · 양(+) 비중 {r['frac_pos']:.1%}")
+        print("   틱폭(bp) 구간별 — 테이커/메이커 중앙, 초 수")
+        for lab, r in rec["by_tick_bp"].items():
+            if r["n"]:
+                print(f"     {lab:>10}: {r['taker']:+7.1f} / {r['maker']:+7.1f}  ({r['n']:,}초)")
         q = rec["maker_pessimistic"]
         if q["median"] is not None:
             print(f"   maker(비관·뚫림체결 {q['fill_rate']:.1%}) 중앙 {q['median']:+7.1f}bp · "

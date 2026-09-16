@@ -76,3 +76,13 @@ def test_short_loses_when_price_rises():
     bid = np.array([100, 100, 110, 120, 120], float)
     tk, _ = C.oracle_short(bid, bid + 1, h=2)
     assert tk[0] < 0
+
+
+def test_tick_bins_split_by_tick_width():
+    tk = np.array([-30.0, -10.0, -1.0, +5.0])
+    mk = np.array([-5.0, -2.0, +1.0, +3.0])
+    tb = np.array([20.0, 8.0, 3.0, 1.0])            # 저가주 → 고가주
+    out = C._by_tick(tk, mk, tb)
+    assert out["0~2"]["n"] == 1 and out["0~2"]["taker"] == 5.0
+    assert out["12~25"]["n"] == 1 and out["12~25"]["taker"] == -30.0
+    assert sum(r["n"] for r in out.values()) == 4, "구간이 모든 초를 덮어야 한다"
