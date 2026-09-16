@@ -27,10 +27,10 @@ from pathlib import Path
 import numpy as np
 
 COST = 0.0023
-LO, HI = 300, 22800 - 1200
+LO, HI = 300, 22800 - 1200   # 긴 시한은 오전 진입만 표본에 남는다 — 결과를 읽을 때 기억할 것
 TAKES = (1, 2, 3, 4, 6, 8)          # 익절 틱
 STOPS = (0, 2, 4, 8)                # 손절 틱(0 = 없음)
-HORIZONS = (60, 300, 600)
+HORIZONS = (60, 300, 600, 1800, 3600, 7200)
 CACHE = Path.home() / "of80" / "flow83"
 
 
