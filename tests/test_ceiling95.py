@@ -83,6 +83,17 @@ def test_tick_bins_split_by_tick_width():
     mk = np.array([-5.0, -2.0, +1.0, +3.0])
     tb = np.array([20.0, 8.0, 3.0, 1.0])            # 저가주 → 고가주
     out = C._by_tick(tk, mk, tb)
+    assert out["0~2"]["maker_pess"] is None, "체결 자료가 없으면 비관 열은 비어 있어야 한다"
     assert out["0~2"]["n"] == 1 and out["0~2"]["taker"] == 5.0
     assert out["12~25"]["n"] == 1 and out["12~25"]["taker"] == -30.0
     assert sum(r["n"] for r in out.values()) == 4, "구간이 모든 초를 덮어야 한다"
+
+
+def test_tick_bins_report_pessimistic_when_given():
+    tk = np.array([-30.0, -10.0])
+    mk = np.array([-5.0, -2.0])
+    tb = np.array([20.0, 3.0])
+    mp = np.array([-1.0, np.nan])                   # 첫 행만 체결됐다
+    out = C._by_tick(tk, mk, tb, mp)
+    assert out["12~25"]["maker_pess"] == -1.0 and out["12~25"]["n_pess"] == 1
+    assert out["2~4"]["maker_pess"] is None and out["2~4"]["n_pess"] == 0

@@ -141,15 +141,27 @@ def maker_pessimistic(bid: np.ndarray, e: np.ndarray, maxask: np.ndarray) -> np.
 TICK_BINS = ((0.0, 2.0), (2.0, 4.0), (4.0, 7.0), (7.0, 12.0), (12.0, 25.0), (25.0, 1e9))
 
 
-def _by_tick(tk: np.ndarray, mk: np.ndarray, tb: np.ndarray) -> dict[str, dict]:
-    """틱 폭 구간별 천장 — 1틱이 몇 bp 인지가 스프레드 비용의 하한을 정한다."""
+def _by_tick(tk: np.ndarray, mk: np.ndarray, tb: np.ndarray,
+             mp: np.ndarray | None = None) -> dict[str, dict]:
+    """틱 폭 구간별 천장. `mp`(뚫림 체결) 를 주면 **역선택을 반영한 현실 쪽** 값도 같이 낸다.
+
+    메이커 천장은 사실상 스프레드를 먹은 값이라 틱이 넓을수록 커진다 — 그게 우위인지
+    역선택으로 상쇄되는지는 `mp` 열에서만 보인다.
+    """
     out: dict[str, dict] = {}
     for lo, hi in TICK_BINS:
         m = np.isfinite(tb) & (tb >= lo) & (tb < hi)
         lab = f"{lo:g}~{hi:g}" if hi < 1e8 else f"{lo:g}+"
-        out[lab] = {"n": int(m.sum()),
-                    "taker": float(np.median(tk[m])) if m.any() else None,
-                    "maker": float(np.median(mk[m])) if m.any() else None}
+        rec = {"n": int(m.sum()),
+               "taker": float(np.median(tk[m])) if m.any() else None,
+               "maker": float(np.median(mk[m])) if m.any() else None,
+               "maker_pess": None, "n_pess": 0}
+        if mp is not None:
+            mm = m & np.isfinite(mp)
+            rec["n_pess"] = int(mm.sum())
+            if mm.any():
+                rec["maker_pess"] = float(np.median(mp[mm]))
+        out[lab] = rec
     return out
 
 
@@ -214,7 +226,7 @@ def main(days: list[str] | None = None) -> int:
                             "frac_pos": float((stk > 0).mean())},
             "short_maker": {"median": float(np.median(smk)), "mean": float(smk.mean()),
                             "frac_pos": float((smk > 0).mean())},
-            "by_tick_bp": _by_tick(tk, mk, tb),
+            "by_tick_bp": _by_tick(tk, mk, tb, mp),
             "burst_top1pct": {"n": int(top.sum()),
                               "taker_median": float(np.median(tk[top])) if top.any() else None,
                               "maker_median": float(np.median(mk[top])) if top.any() else None},
@@ -228,10 +240,12 @@ def main(days: list[str] | None = None) -> int:
         for k in ("short_taker", "short_maker"):
             r = rec[k]
             print(f"   {k:<12} 중앙 {r['median']:+7.1f}bp · 평균 {r['mean']:+7.1f}bp · 양(+) 비중 {r['frac_pos']:.1%}")
-        print("   틱폭(bp) 구간별 — 테이커/메이커 중앙, 초 수")
+        print("   틱폭(bp) 구간별 — 테이커 / 메이커 / 메이커(뚫림체결) 중앙")
         for lab, r in rec["by_tick_bp"].items():
             if r["n"]:
-                print(f"     {lab:>10}: {r['taker']:+7.1f} / {r['maker']:+7.1f}  ({r['n']:,}초)")
+                pe = f"{r['maker_pess']:+7.1f}" if r["maker_pess"] is not None else "      -"
+                print(f"     {lab:>10}: {r['taker']:+7.1f} / {r['maker']:+7.1f} / {pe}"
+                      f"  ({r['n']:,}초, 체결 {r['n_pess']:,})")
         q = rec["maker_pessimistic"]
         if q["median"] is not None:
             print(f"   maker(비관·뚫림체결 {q['fill_rate']:.1%}) 중앙 {q['median']:+7.1f}bp · "
