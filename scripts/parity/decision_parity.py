@@ -58,6 +58,8 @@ def main() -> int:
         if len(same) and (np.abs(same.sec.to_numpy() - r.sec) <= MATCH_SEC).any():
             matched += 1
     rate = matched / max(len(live), 1)
+    print(f"거래일 {len(days)} · 실시간 {len(live)}건 · 배치 {len(batch)}건")
+    print(f"신호 초 ±{MATCH_SEC}초 일치: {matched}/{len(live)} = {rate:.0%} (기준 ≥{MIN_RATE:.0%})")
     if a.agreement_only:
         ok = rate >= MIN_RATE and len(days) >= 5
         print(f"수익 수치는 계산하지 않음(--agreement-only) · 거래일 {len(days)}/5")
@@ -65,8 +67,6 @@ def main() -> int:
         return 0 if ok else 1
     lb = live.groupby("day").ret.mean().mean() * 1e4
     bb = batch.groupby("day").ret.mean().mean() * 1e4
-    print(f"거래일 {len(days)} · 실시간 {len(live)}건 · 배치 {len(batch)}건")
-    print(f"신호 초 ±{MATCH_SEC}초 일치: {matched}/{len(live)} = {rate:.0%} (기준 ≥{MIN_RATE:.0%})")
     print(f"일평균 순수익: 실시간 {lb:+.1f}bp · 배치 {bb:+.1f}bp · 차이 {abs(lb - bb):.1f}bp (기준 ≤{MAX_BP_DIFF}bp)")
     ok = rate >= MIN_RATE and abs(lb - bb) <= MAX_BP_DIFF
     print("\n판정:", "통과 — 운용과 백테스트가 같은 판단을 한다" if ok else "미달 — 실매매 승격 불가")
