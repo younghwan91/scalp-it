@@ -34,6 +34,15 @@ class PolicyWeights:
     hi: np.ndarray
 
     @classmethod
+    def from_npz(cls, path: str | Path, *, features: list[str], mu, sd_, lo, hi) -> PolicyWeights:
+        """numpy 만으로 읽는다 — 운용 환경에 torch 를 넣지 않기 위해서다."""
+        z = np.load(path)
+        n = len([k for k in z.files if k.startswith("w")])
+        layers = [(z[f"w{i}"], z[f"b{i}"]) for i in range(n)]
+        return cls(features=list(features), layers=layers, mu=np.asarray(mu), sd=np.asarray(sd_),
+                   lo=np.asarray(lo), hi=np.asarray(hi))
+
+    @classmethod
     def from_checkpoint(cls, path: str | Path, *, features: list[str], mu, sd_, lo, hi) -> PolicyWeights:
         import torch
 

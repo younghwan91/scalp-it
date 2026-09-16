@@ -1578,9 +1578,11 @@ def _build_rl_shadow(args: argparse.Namespace, trade_date: date) -> tuple[Any, s
 
         base = Path(d)
         meta = json.loads((base / "policy.json").read_text(encoding="utf-8"))
-        pol = PolicyWeights.from_checkpoint(base / "ckpt.pt", features=meta["features"],
-                                            mu=np.array(meta["mu"]), sd_=np.array(meta["sd"]),
-                                            lo=np.array(meta["lo"]), hi=np.array(meta["hi"]))
+        load = (PolicyWeights.from_npz if (base / "weights.npz").exists()
+                else PolicyWeights.from_checkpoint)          # 운용은 numpy, 연구 환경은 torch
+        pol = load(base / ("weights.npz" if (base / "weights.npz").exists() else "ckpt.pt"),
+                   features=meta["features"], mu=np.array(meta["mu"]), sd_=np.array(meta["sd"]),
+                   lo=np.array(meta["lo"]), hi=np.array(meta["hi"]))
         kernel = str(getattr(args, "rl_kernel", "auto"))
         if kernel == "window" or (kernel == "auto" and not hasattr(lob, "SecondFeatureStreamV2")):
             # core 증분 커널(v2)이 아직 없으면 백테스트 함수를 창으로 다시 돌린다 — 값은 정의상 같고, 대신 무겁다.

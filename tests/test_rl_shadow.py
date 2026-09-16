@@ -163,3 +163,13 @@ def test_raw_events_reach_window_style_kernel():
                    best_bid=9990, best_ask=10000)
     assert seen["ticks"] == 3 and seen["quotes"] == 3
     assert seen["sec"] >= 0, "커널에 초가 전달돼야 한다"
+
+
+def test_weights_load_from_npz(tmp_path):
+    """운용 환경(torch 없음)에서도 정책을 읽어야 한다."""
+    p = tmp_path / "weights.npz"
+    np.savez(p, w0=np.zeros((8, 5), np.float32), b0=np.zeros(8, np.float32),
+             w1=np.zeros((4, 8), np.float32), b1=np.array([0, 0, 1, 0], np.float32))
+    pol = PolicyWeights.from_npz(p, features=["acc"], mu=np.zeros(1), sd_=np.ones(1),
+                                 lo=np.zeros(1), hi=np.ones(1))
+    assert int(np.argmax(pol.forward(np.zeros(1 + RLShadow.EXTRA, np.float32)))) == 2

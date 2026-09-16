@@ -51,7 +51,18 @@ def main() -> int:
     sc = prep["scaler"]
     out = Path(a.out).expanduser()
     out.mkdir(parents=True, exist_ok=True)
-    shutil.copy(base / f"seed{seed}" / f"ckpt_{steps:02d}M.pt", out / "ckpt.pt")
+    ckpt = base / f"seed{seed}" / f"ckpt_{steps:02d}M.pt"
+    shutil.copy(ckpt, out / "ckpt.pt")
+    # 운용 환경에 torch 를 넣지 않으려고 가중치를 numpy 로도 저장한다(그림자는 이걸 읽는다).
+    import numpy as np
+    import torch
+
+    sd = torch.load(ckpt, map_location="cpu", weights_only=False)
+    keys = sorted({k.rsplit(".", 1)[0] for k in sd if k.endswith(".weight")},
+                  key=lambda k: int(k.rsplit(".", 1)[-1]))
+    np.savez(out / "weights.npz",
+             **{f"w{i}": sd[f"{k}.weight"].numpy() for i, k in enumerate(keys)},
+             **{f"b{i}": sd[f"{k}.bias"].numpy() for i, k in enumerate(keys)})
     (out / "policy.json").write_text(json.dumps({
         "study": a.study, "seed": seed, "steps_m": steps, "features": list(prep["features"]),
         "mu": list(map(float, sc.mu)), "sd": list(map(float, sc.sd)),
