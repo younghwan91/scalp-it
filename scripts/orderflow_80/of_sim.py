@@ -6,12 +6,15 @@ import glob
 import itertools
 import pickle
 import sys
+from datetime import date as _date
 from multiprocessing import Pool
 
 import numpy as np
 import pandas as pd
+from krx_quant_core.costs import round_trip_cost
+from krx_quant_core.market.codes import Market
 
-COST = 0.0023
+COST = round_trip_cost(_date(2026, 1, 2), Market.KOSDAQ)  # 2026 세율 — 날짜 문맥 없음
 COOLDOWN = 60
 SIGNALS = [dict(acc=a, bs=b, r=r, spr=15.0)
            for a in (5, 10) for b in (0.75, 0.9) for r in (0.005, 0.01)]

@@ -5,13 +5,17 @@ usage: python of_build.py OUTDIR day1 day2 ...
 import os
 import pickle
 import sys
+from datetime import date as _date
 from multiprocessing import Pool
 
 import numpy as np
 import pandas as pd
 import psycopg2
+from krx_quant_core.costs import round_trip_cost
+from krx_quant_core.market.codes import Market
+from krx_quant_core.market.ticks import tick_size_int
 
-COST = 0.0023
+COST = round_trip_cost(_date(2026, 1, 2), Market.KOSDAQ)  # 2026 세율 — 날짜 문맥 없음
 HS = (5, 15, 30, 60, 120, 300)
 T0, T1 = 9 * 3600, 15 * 3600 + 20 * 60  # 09:00~15:20
 N = T1 - T0
@@ -31,10 +35,8 @@ def ffill(a):
 
 
 def _tick(p):
-    for lim, t in ((2000, 1), (5000, 5), (20000, 10), (50000, 50), (200000, 100), (500000, 500)):
-        if p < lim:
-            return t
-    return 1000
+    # 호가단위 정본은 krx-quant-core(주식 표). NaN 은 옛 표 구현처럼 최상위 틱(1000).
+    return tick_size_int(p) if p == p else 1000
 
 
 def roll_sum(a, w):

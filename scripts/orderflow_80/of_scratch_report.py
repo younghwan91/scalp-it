@@ -1,7 +1,12 @@
 import sys
+from datetime import date as _date
 
 import numpy as np
 import pandas as pd
+from krx_quant_core.costs import round_trip_cost
+from krx_quant_core.market.codes import Market
+
+COST = round_trip_cost(_date(2026, 1, 2), Market.KOSDAQ)  # 2026 세율 — 날짜 문맥 없음
 
 t = pd.read_csv(sys.argv[1], dtype={"code": str})
 pd.set_option("display.width", 250)
@@ -22,5 +27,5 @@ print(r[r.topn == 5].groupby("sig")[["mean", "win", "per_day"]].mean().round(2).
 print("\ngross decomposition best cell")
 b = r.sort_values("daymean", ascending=False).iloc[0]
 g = t[(t["rank"] < b.topn) & (t.sig == b.sig) & (t.tp == b.tp) & (t.scr == b.scr) & (t.hold == b.hold)]
-print("gross mean bp", round((g.net.mean() + 0.0023) * 1e4, 1), "win gross>0", round(((g.net + 0.0023) > 0).mean(), 3))
+print("gross mean bp", round((g.net.mean() + COST) * 1e4, 1), "win gross>0", round(((g.net + COST) > 0).mean(), 3))
 print(g.groupby("code").net.agg(["size", "mean"]).assign(mean=lambda x: x["mean"] * 1e4).round(1).to_string())

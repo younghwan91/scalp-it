@@ -8,10 +8,13 @@ from __future__ import annotations
 import glob
 import pickle
 from dataclasses import dataclass
+from datetime import date as _date
 from pathlib import Path
 
 import numba
 import numpy as np
+from krx_quant_core.costs import round_trip_cost
+from krx_quant_core.market.codes import Market
 
 CACHE = Path.home() / "of80" / "cache2"
 TRAIN = ("2026-08-24", "2026-09-03")
@@ -20,7 +23,7 @@ OOS = ("2026-09-08", "2026-09-15")
 FEATS = ("acc", "buyshare10", "buyshare30", "ret30", "ret300", "ofi10", "imb3", "spread_bp",
          "strength", "dstr10", "dstr30", "dstr60", "v30", "v600", "spread_ticks", "sec")
 LOG_FEATS = {"acc", "v30", "v600"}
-COST = 0.0023
+COST = round_trip_cost(_date(2026, 1, 2), Market.KOSDAQ)  # 2026 세율 — 날짜 문맥 없음
 
 
 @dataclass

@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 from common import trade_ret
-from dataset import Scaler, load
+from dataset import COST, Scaler, load
 
 OUT = Path.home() / "of80" / "rl82"
 QUANTS = (0.9, 0.95, 0.99, 0.995, 0.999)
@@ -61,7 +61,7 @@ def main() -> None:
         t = policy_trades(va, pv, thr)
         dm = daymean(t)
         rep["val"][str(q)] = {"thr_bp": thr, "n": len(t), "daymean_bp": dm * 1e4,
-                              "gross_bp": (t.ret.mean() + 0.0023) * 1e4 if len(t) else None}
+                              "gross_bp": (t.ret.mean() + COST) * 1e4 if len(t) else None}
         if len(t) >= 20 and (best is None or dm > best[1]):
             best = (q, dm, thr)
     rep["selected"] = None if best is None else {"q": best[0], "thr_bp": best[2]}

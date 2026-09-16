@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from krx_quant_core.market.ticks import tick_size_int
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -52,10 +53,8 @@ def etf_tick(p: float) -> float:
 
 
 def stock_tick(p: float) -> float:
-    for lim, t in ((2000, 1), (5000, 5), (20000, 10), (50000, 50), (200000, 100), (500000, 500)):
-        if p < lim:
-            return float(t)
-    return 1000.0
+    # 호가단위 정본은 krx-quant-core(주식 표). NaN 은 옛 표 구현처럼 최상위 틱(1000).
+    return float(tick_size_int(p)) if p == p else 1000.0
 
 
 TICK = etf_tick

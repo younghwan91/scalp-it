@@ -169,7 +169,7 @@ wheels = [
 
 [[package]]
 name = "krx-quant-core"
-version = "0.4.1"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "kiwoom-client" },
@@ -177,9 +177,9 @@ dependencies = [
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pandas" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a0/33/96464da0831f1b23ffd7104cd1815d7efffc651c884238e9ea9a75de09fa/krx_quant_core-0.4.1.tar.gz", hash = "sha256:8d9fc84e0cbffbf16db5a5f4992221ade1f38707e6448b0f3c863f698628746e", size = 200715, upload-time = "2026-09-15T14:37:46.987Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fa/4c/347b87d6f63de824bbd77d5e43f5070b23819231620b8f6bd1559c872031/krx_quant_core-0.5.0.tar.gz", hash = "sha256:843de4596c4770c0e8f0b98bace1d641f286a04a32ad44ec0fb0dea475d42fae", size = 295255, upload-time = "2026-09-16T15:07:15.593Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/d2/3830ae8d3696311d55aa61aa7620d0f4b4d08004cd845b17094125d508ec/krx_quant_core-0.4.1-py3-none-any.whl", hash = "sha256:bdc8499105e2e3409213ef13af3f287b6cfc3ea67dfbdc12abda7d4d3d92da9b", size = 124050, upload-time = "2026-09-15T14:37:45.677Z" },
+    { url = "https://files.pythonhosted.org/packages/48/40/913324c22c0e285c014dd7dc069c788a139ba91ef432a9f47384fbdda30e/krx_quant_core-0.5.0-py3-none-any.whl", hash = "sha256:bd3143106be44f82e357a6fe22d1a5f1b091a9d7fe30d8e1e2842cabfe59dda8", size = 170831, upload-time = "2026-09-16T15:07:13.815Z" },
 ]
 
 [[package]]
@@ -916,7 +916,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "kiwoom-client", specifier = ">=0.4.0" },
     { name = "krx-news-client", specifier = ">=0.4.0" },
-    { name = "krx-quant-core", specifier = "==0.4.1" },
+    { name = "krx-quant-core", specifier = "==0.5.0" },
     { name = "numba", marker = "extra == 'features'", specifier = ">=0.60" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "openpyxl", specifier = ">=3.1" },
@@ -988,7 +988,7 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -1067,7 +1067,7 @@ resolution-markers = [
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a7/25/c2700dfaf6442b4effaa91af24ebce5dc9d31bb4a69706313aae70d72cd0/scipy-1.18.0.tar.gz", hash = "sha256:67b2ad2ad54c72ca6d04975a9b2df8c3638c34ddd5b28738e94fc2b57929d378", size = 30774447, upload-time = "2026-06-19T15:01:43.456Z" }
 wheels = [

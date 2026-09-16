@@ -47,6 +47,8 @@ from krx_quant_core.backtest.fills import limit_buy_filled, limit_sell_filled
 from .risk_guard import LEADER_HOLDING, LEADER_LOST
 
 if TYPE_CHECKING:
+    from krx_quant_core.execution.book import PositionBook
+
     from ..adapters.kiwoom_order import KiwoomOrderClient, OrderResult
     from .pair_detector import Alert
 
@@ -118,6 +120,7 @@ class OrderExecutor:
         pyramid_arms: tuple[float, ...] = (),
         pyramid_add_qty: int = 1,
         notice: Callable[[str], None] | None = None,
+        book: PositionBook | None = None,
     ) -> None:
         self._client = client
         self._qty = max(1, int(qty))
@@ -140,6 +143,9 @@ class OrderExecutor:
         self._pyramid_arms = tuple(float(a) for a in pyramid_arms)
         self._pyramid_add_qty = max(1, int(pyramid_add_qty))
         self._notice = notice or (lambda _s: None)
+        # 체결 장부(krx-quant-core PositionBook) — **기록 전용**. 판단에 쓰지 않고, 실패해도
+        # 경고만 남긴다(:meth:`_journal`). None 이면 아무것도 안 한다(기존 동작 그대로).
+        self._book = book
         self.positions: list[LivePosition] = []
         self.history: list[LivePosition] = []
 
@@ -295,6 +301,7 @@ class OrderExecutor:
         """
         if self._check_sell_fill(pos, price):
             if 0 < pos.sell_qty < pos.qty:
+                self._journal("sell", pos.code, pos.sell_qty, pos.sell_price, ts, pos.sell_ord_no)
                 # 분할 체결 — 포지션은 **끝나지 않았다**. 잔량을 그대로 감시로 되돌린다.
                 # 잔량의 청산규칙은 **다음 틱**부터 다시 돈다(이 틱은 여기서 끝난다).
                 # 한 틱 지연을 감수하는 이유: 같은 틱에서 곧바로 전량 매도를 이어 내면
@@ -302,6 +309,7 @@ class OrderExecutor:
                 self._settle_partial(pos)
                 return False
             pos.status = "exited"
+            self._journal("sell", pos.code, pos.qty, pos.sell_price, ts, pos.sell_ord_no)
             self._notice(
                 f"[주문] 청산체결({pos.exit_reason}) — {pos.name}({pos.code}) "
                 f"{pos.qty}주 @ {(pos.sell_price or 0):,}"
@@ -388,6 +396,7 @@ class OrderExecutor:
             return
         if pos.add_pending_qty > 0:
             if self._is_buy_filled(pos.add_ord_no, float(pos.add_price or 0), pos.code, price):
+                self._journal("buy", pos.code, pos.add_pending_qty, pos.add_price, ts, pos.add_ord_no)
                 pos.qty += pos.add_pending_qty
                 pos.pyramid_next += 1
                 self._notice(
@@ -498,8 +507,31 @@ class OrderExecutor:
             pos.status = "filled"
             pos.fill_ts = ts
             pos.fill_price = pos.entry
+            self._journal("buy", pos.code, pos.qty, pos.entry, ts, pos.buy_ord_no)
             self._notice(f"[주문] 체결 — {pos.name}({pos.code}) {pos.qty}주 @ {pos.entry:,}")
         return filled
+
+    def _journal(self, side: str, code: str, qty: int, price: float | None, ts: datetime,
+                 ord_no: str | None) -> None:
+        """체결 1건을 장부에 남긴다. **어떤 실패도 실행기로 새지 않는다**(경고만).
+
+        장부는 사후 대사·손익 기록용이다. 여기서 예외가 나가면 체결 확인 뒤 상태 전이가
+        끊겨 포지션이 무감시로 남을 수 있으므로, 잡아서 알림만 남기고 계속 간다.
+
+        ``price`` 는 체결 확인 시점에 실행기가 아는 값 — 매수·불타기는 **지정가**, 매도는
+        접수가다. 실제 체결가(부분 체결·가격 개선)와 다를 수 있다.
+        """
+        if self._book is None:
+            return
+        try:
+            # 지연 import — 코어 0.5.0 전용 모듈이라, 최상위에 두면 핀이 늦은 날 실시간
+            # 프로세스 import 자체가 죽는다. 장부를 켠 경우에만 필요하다.
+            from krx_quant_core.execution.events import Fill
+
+            self._book.apply(Fill(ord_no=str(ord_no or ""), code=code, side=side,  # type: ignore[arg-type]
+                                  qty=int(qty), price=int(price or 0), ts=ts))
+        except Exception as exc:  # noqa: BLE001 — 기록 실패가 매매를 멈추면 안 된다
+            self._notice(f"[주문][경고] 장부 기록 실패 — {code} {side} {qty}주 @ {price}: {exc}")
 
     def _check_sell_fill(self, pos: LivePosition, price: float) -> bool:
         """청산 매도가 체결됐는지. live 는 잔고 소멸, dry 는 매수와 대칭인 근사.

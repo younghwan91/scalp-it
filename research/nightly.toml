@@ -1,0 +1,8 @@
+# kqc nightly 가 simnode 에서 도는 job 목록(deploy/crontab.simnode 17:45).
+# job 마다 별도 프로세스 그룹·timeout 으로 격리되고, 로그는 ~/.kqc/nightly/<날짜>/ 에 남는다.
+
+[[job]]
+name = "pair-sweep-yesterday"
+cmd = ["/home/young/.local/bin/uv", "run", "--extra", "pg", "python", "scripts/nightly_pair_sweep.py"]
+timeout_min = 90
+weekdays_only = true

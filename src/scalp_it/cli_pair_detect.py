@@ -1149,7 +1149,34 @@ def build_order_executor(
                          partial_exit_after_s=args.partial_exit_after,
                          pyramid_arms=tuple(sorted(args.pyramid_arm or ())),
                          pyramid_add_qty=args.pyramid_add_qty,
-                         notice=lambda s: print(s, flush=True))
+                         notice=lambda s: print(s, flush=True),
+                         # 장부는 **실발주일 때만** — dry-run 모의 체결이 실계좌 journal 처럼
+                         # data/positions 에 쌓이면 사후 대사가 거짓 포지션을 본다.
+                         book=_open_position_book() if real else None)
+
+
+def _open_position_book() -> Any | None:
+    """실행기 체결 장부(krx-quant-core ``PositionBook``) — 날짜별 journal, **기록 전용**.
+
+    같은 날 재시작(런처의 크래시 재시작)이면 journal 을 재생해 이어 쓴다. 어떤 이유로든
+    못 열면 장부만 끄고(None) 경고한다 — 장부 때문에 08:55 기동이 죽으면 안 된다.
+    세율은 2026 기준 KOSPI·KOSDAQ 이 같아(0.20%) 시장 구분 없이 KOSDAQ 으로 계산한다
+    (``market_of`` 하드코딩 — 세율이 갈리는 해가 오면 종목 시장 조회로 바꿔야 한다).
+
+    한계(기록 전용이라 감수): 매수 기록가는 체결 확인 시점의 **지정가**(``pos.entry``)라
+    실제 체결가와 다를 수 있다. 재시작 재생은 journal 만 보므로, 재시작 전에 들고 있던
+    포지션을 새 프로세스가 인수하지 않으면(실행기는 메모리 상태라 인수하지 않는다) 장부에
+    그 보유가 청산되지 않은 채 남는다 — 계좌 잔고가 정본이다.
+    """
+    path = Path("data/positions") / f"{date.today().isoformat()}.jsonl"  # noqa: DTZ011
+    try:
+        from krx_quant_core.execution.book import PositionBook
+
+        return PositionBook.load(path, market_of=lambda _code: "KOSDAQ")
+    except Exception as exc:  # noqa: BLE001 — 장부는 부가 기능, 기동을 막지 않는다
+        print(f"[경고] 체결 장부를 못 열었다({path}: {exc}) — 장부 없이 진행한다",
+              file=sys.stderr, flush=True)
+        return None
 
 
 def _connect_order_client(args: argparse.Namespace, guard: Any) -> tuple[Any, Any]:
@@ -2060,8 +2087,48 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+#: ``--live`` 단일 인스턴스 잠금(flock). 런처가 레포 루트로 cd 한 뒤 띄우므로 상대경로다.
+PAIR_DETECT_LOCK = Path("data/pair_detect.lock")
+#: 잠금을 못 잡았을 때 끝나기 전에 기다리는 초. 런처(pair_detect_daily.sh)는 종료코드와
+#: 무관하게 5초 뒤 다시 띄우므로, 바로 끝내면 몇 초마다 uv 기동을 반복하는 헛바퀴가 된다.
+#: 기다렸다 0 으로 끝나면 앞 프로세스가 살아 있는 동안은 1분에 한 번만 확인하고, 앞
+#: 프로세스가 죽으면 다음 회차에 이어받는다(대기 중 잠금이 풀려도 매매 공백은 최대 ~1분).
+ALREADY_RUNNING_WAIT_S = 60.0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not args.live:
+        return _main(args)
+    # 같은 계좌로 감지기 둘이 돌면 같은 신호에 주문이 두 번 나간다. 감지기·실행기(인증·
+    # 계좌조회)를 만들기 **전에** 잠근다. 프로세스가 죽으면 커널이 flock 을 풀어 준다.
+    try:
+        from krx_quant_core.execution.oms import AlreadyRunning, InstanceLock
+    except ImportError as exc:  # 코어 0.5.0 미만 — 잠금 때문에 장중 기동을 죽이지 않는다
+        print(f"[경고] krx-quant-core 에 InstanceLock 이 없다({exc}) — 잠금 없이 진행한다. "
+              f"'uv sync --extra pg' 로 코어를 0.5.x 로 올릴 것", file=sys.stderr, flush=True)
+        return _main(args)
+    lock = InstanceLock(PAIR_DETECT_LOCK)
+    try:
+        lock.acquire()
+    except AlreadyRunning:
+        print(f"[잠금] 짝꿍 감지기가 이미 실행 중이다({PAIR_DETECT_LOCK}) — 중복 주문을 막으려고 "
+              f"뜨지 않는다. {ALREADY_RUNNING_WAIT_S:.0f}초 기다린 뒤 종료(0)한다.",
+              file=sys.stderr, flush=True)
+        time.sleep(ALREADY_RUNNING_WAIT_S)
+        return 0
+    except Exception as exc:  # noqa: BLE001 — 잠금 파일 문제(권한·경로)로 매 재기동마다 죽지 않는다
+        print(f"[경고][잠금] 잠금 파일을 잡지 못했다({PAIR_DETECT_LOCK}: {exc!r}) — **잠금 없이** "
+              f"진행한다. 중복 실행 보호가 꺼졌다: data/ 권한·경로를 확인할 것",
+              file=sys.stderr, flush=True)
+        return _main(args)
+    try:
+        return _main(args)
+    finally:
+        lock.release()
+
+
+def _main(args: argparse.Namespace) -> int:
     pairs = resolve_pairs(args)
     uni = build_universe_inputs(args)
     # 만쥬는 고정 쌍을 안 쓴다 — 그날 대장이 상한가로 가면 **그 자리에서** 같은 테마

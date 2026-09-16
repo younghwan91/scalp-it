@@ -85,6 +85,15 @@ else
   bad "kiwoom-client 핀이 낡았거나 호가단위가 틀렸다 — 'uv sync --extra pg' 후 재확인 (테마 조회가 조용히 잘린다)"
 fi
 
+# krx-quant-core 버전 — 레포 핀(0.5.x: 체결 장부·단일 인스턴스 잠금)과 venv 가 어긋나면
+# 옛 코어로 돈다. 판단은 사람 몫이라 WARN 만 낸다(FAIL 없음). __version__ 속성은 코어에서
+# 갱신이 안 돼 낡았으므로 설치 메타데이터를 읽는다.
+KQC_VER="$("$UV" run --extra pg python -c 'import importlib.metadata as m; print(m.version("krx-quant-core"))' 2>/dev/null | tail -1)"
+case "$KQC_VER" in
+  0.5.*) ok "krx-quant-core $KQC_VER (0.5.x)" ;;
+  *)     warn "krx-quant-core 버전이 '${KQC_VER:-조회 실패}' — 기대 0.5.x. 'uv sync --extra pg' 확인" ;;
+esac
+
 # 런처가 실제로 넘기는 롱플래그 전부가 파서에 정의돼 있는지 대조한다. 위
 # `--help` 는 콘솔 스크립트·import 사슬이 사는 것만 보증하지, 런처 실행줄의
 # 플래그 철자가 하나 틀려도 그건 못 잡는다 — argparse 는 그러면 exit 2 로

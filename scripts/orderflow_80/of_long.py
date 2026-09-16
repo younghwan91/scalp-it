@@ -1,11 +1,14 @@
 import glob
 import pickle
 import sys
+from datetime import date as _date
 
 import numpy as np
 import pandas as pd
+from krx_quant_core.costs import round_trip_cost
+from krx_quant_core.market.codes import Market
 
-COST = 0.0023
+COST = round_trip_cost(_date(2026, 1, 2), Market.KOSDAQ)  # 2026 세율 — 날짜 문맥 없음
 start, end = sys.argv[1:3]
 HS = (300, 600, 1200, 1800, 3600)
 out = []

@@ -44,6 +44,15 @@
     uv run --extra pg python scripts/pair_sweep.py --replay 2026-08-24 \\
         --grid 'accel_min_ratio=0,1.2,1.5' --grid 'volume_burst_ratio=0,2,3' --yes
 
+실행 엔진(2026-09-16~)
+=====================
+
+조합은 krx-quant-core ``research.run_sweep`` 으로 **병렬** 실행되고, 시도한 모든 조합이
+``research/runs/pair-sweep-<날짜>/TRIALS.jsonl`` 시행 원장에 남는다(DSR 의 N). 틱은 부모가
+한 번 읽어 모듈 전역(:data:`_CTX`)에 두고 fork 로 자식에게 공유한다. 엔진은 simnode·깨끗한
+git 트리에서만 돈다 — 로컬 디버깅은 ``--legacy-serial``(원장 기록 없는 옛 직렬 루프).
+``--jobs N``(기본: 코어 기본값) · ``--no-cache``(같은 sha·날짜·조합 캐시 무시).
+
 ``--grid NAME=v1,v2,...`` 를 여러 번 주면 축의 데카르트곱을 돈다. 값 ``none``/``off``
 (그리고 Optional 필드의 ``0``)은 "끔"으로 읽는다 — ``--stop-loss 0`` 이 손절 없음인
 CLI 관례와 같다. ``DetectorConfig`` 에 없는 이름은 건너뛰며 경고한다.
@@ -52,6 +61,7 @@ CLI 관례와 같다. ``DetectorConfig`` 에 없는 이름은 건너뛰며 경�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import itertools
 import json
 import os
@@ -84,6 +94,7 @@ from scalp_it.realtime.pair_detector import (
 from scalp_it.realtime.risk_guard import RiskGuard, RiskGuardConfig
 
 COSTS = {"net34": COST_LO, "net64": COST_BASE, "net94": COST_HI}
+ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = "data/pair_sweep.jsonl"
 _NONE_WORDS = {"none", "off", "null", "-", "없음"}
 
@@ -255,6 +266,104 @@ def run_combo(pairs: list[Pair], cfg: DetectorConfig, rows: list[tuple],
     }
 
 
+# --------------------------------------------------------------------- 엔진
+
+#: 조합 실행에 필요한 공유 상태. 부모가 틱을 읽은 뒤 :func:`set_context` 로 채우고,
+#: ``run_sweep`` 의 fork 자식은 이걸 그대로 물려받는다(179만 틱을 피클하지 않는다).
+_CTX: dict[str, Any] = {}
+
+
+def set_context(*, pairs: list[Pair], rows: list[tuple], guard_cfg: RiskGuardConfig,
+                last_ts: datetime, base: DetectorConfig, axis_names: list[str]) -> None:
+    _CTX.clear()
+    _CTX.update(pairs=pairs, rows=rows, guard_cfg=guard_cfg, last_ts=last_ts, base=base,
+                axis_names=list(axis_names))
+
+
+def _evaluate(params: dict[str, Any]) -> dict[str, Any]:
+    """조합 하나 → 결과 레코드(옛 직렬 루프가 만들던 것과 같은 모양)."""
+    base: DetectorConfig = _CTX["base"]
+    cfg = replace(base, **params) if params else base
+    res = run_combo(_CTX["pairs"], cfg, _CTX["rows"], _CTX["guard_cfg"], _CTX["last_ts"])
+    res["params"] = {k: params.get(k) for k in _CTX["axis_names"]}
+    res["config"] = {f.name: getattr(cfg, f.name) for f in fields(DetectorConfig)}
+    return res
+
+
+def _objective(params: dict[str, Any]) -> dict[str, Any]:
+    """``run_sweep`` objective(모듈 최상위 — 자식 프로세스로 피클된다).
+
+    레코드를 ``result`` 한 칸에 통째로 담는다. 지표를 펼치면 DataFrame 이 정수를 numpy
+    타입·NaN 섞인 float 로 바꿔 JSONL 출력 모양이 달라진다.
+    """
+    params = {k: v for k, v in params.items() if k != _CTX_KEY}
+    return {"result": json.loads(json.dumps(_evaluate(params), ensure_ascii=False, default=str))}
+
+
+#: 엔진에 넘기는 config 에 끼워 넣는 입력 지문 키. 코어 캐시 키는 git sha·날짜·config 뿐이라
+#: 이게 없으면 같은 날짜·그리드에 --pairs·--limit-ticks·--aggressive·가드 설정만 바꾼 실행이
+#: 이전 결과를 그대로 받는다. 원장에서도 입력이 다르면 다른 시행으로 센다.
+_CTX_KEY = "_input_fp"
+
+
+def _context_fingerprint() -> str:
+    rows = _CTX["rows"]
+    payload = json.dumps([
+        [(p.leader, p.follower) for p in _CTX["pairs"]], len(rows),
+        rows[0] if rows else None, rows[-1] if rows else None,
+        {f.name: getattr(_CTX["base"], f.name) for f in fields(DetectorConfig)},
+        repr(_CTX["guard_cfg"]), str(_CTX["last_ts"]),
+    ], ensure_ascii=False, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def run_serial(combos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``--legacy-serial``: 옛 직렬 루프 그대로(원장 기록 없음, 어디서든 돈다)."""
+    results: list[dict[str, Any]] = []
+    for i, params in enumerate(combos, 1):
+        base: DetectorConfig = _CTX["base"]
+        hw = history_warning(replace(base, **params) if params else base)
+        if hw:
+            print(hw, file=sys.stderr, flush=True)
+        res = json.loads(json.dumps(_evaluate(params), ensure_ascii=False, default=str))
+        results.append(res)
+        desc = " ".join(f"{k}={_fmt_param(v)}" for k, v in params.items()) or "(기본)"
+        print(f"  [{i}/{len(combos)}] {desc} → 알림 {res['alerts']} · 배제 "
+              f"{res['filtered']} ({res['elapsed_s']:.1f}s)", flush=True)
+    return results
+
+
+def run_engine(combos: list[dict[str, Any]], *, day: str, repo_root: Path | str = ROOT,
+               n_jobs: int | None = None, cache: bool = True) -> list[dict[str, Any]]:
+    """krx-quant-core ``run_sweep`` 으로 병렬 실행 + 시행 원장 기록. 순서는 ``combos`` 그대로.
+
+    한 조합이라도 실패하면 모든 오류를 모아 ``SystemExit`` — 옛 직렬 루프도 예외면 멈췄다.
+    """
+    from krx_quant_core.research import run_sweep
+    from krx_quant_core.runtime import DataSpec
+
+    base: DetectorConfig = _CTX["base"]
+    for params in combos:
+        hw = history_warning(replace(base, **params) if params else base)
+        if hw:
+            print(hw, file=sys.stderr, flush=True)
+    fp = _context_fingerprint()
+    configs = [{**params, _CTX_KEY: fp} for params in combos]
+    sweep = run_sweep(_objective, configs, label=f"pair-sweep-{day}", repo_root=repo_root,
+                      data=DataSpec(day, day, "sweep"), n_jobs=n_jobs, cache=cache)
+    rows = sweep.frame.to_dict("records")
+    errors = [r["error"] for r in rows if isinstance(r.get("error"), str)]
+    if errors:
+        raise SystemExit(f"조합 {len(errors)}/{len(rows)}개 실패: " + " | ".join(errors[:5]))
+    results = [r["result"] for r in rows]
+    for i, res in enumerate(results, 1):
+        desc = " ".join(f"{k}={_fmt_param(v)}" for k, v in res["params"].items()) or "(기본)"
+        print(f"  [{i}/{len(results)}] {desc} → 알림 {res['alerts']} · 배제 "
+              f"{res['filtered']} ({res['elapsed_s']:.1f}s)", flush=True)
+    print(f"시행 원장: {sweep.label} 누적 {sweep.n_trials}건", flush=True)
+    return results
+
+
 def _fmt_param(v: Any) -> str:
     if v is None:
         return "off"
@@ -339,6 +448,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="이 조합 수를 넘으면 실행 전에 확인(기본 12)")
     p.add_argument("--yes", action="store_true", help="확인 생략")
     p.add_argument("--list-only", action="store_true", help="조합만 찍고 종료(DB 접속 안 함)")
+    p.add_argument("--jobs", type=int, default=None,
+                   help="병렬 프로세스 수(기본: krx-quant-core 기본값 min(cpu-2, 14))")
+    p.add_argument("--no-cache", action="store_true",
+                   help="같은 git sha·날짜·조합의 이전 결과 캐시를 쓰지 않는다")
+    p.add_argument("--legacy-serial", action="store_true",
+                   help="옛 직렬 루프(원장 기록 없음·simnode 아니어도 됨) — 로컬 디버깅용")
     return p
 
 
@@ -407,19 +522,19 @@ def main(argv: list[str] | None = None) -> int:
         cost_rate=0.0,                                         # 세전 — 비용은 집계에서
     )
 
-    results: list[dict[str, Any]] = []
-    for i, params in enumerate(combos, 1):
-        cfg = replace(base, **params) if params else base
-        hw = history_warning(cfg)
-        if hw:
-            print(hw, file=sys.stderr, flush=True)
-        res = run_combo(pairs, cfg, rows, guard_cfg, last_ts)
-        res["params"] = {k: params.get(k) for k in axis_names}
-        res["config"] = {f.name: getattr(cfg, f.name) for f in fields(DetectorConfig)}
-        results.append(res)
-        desc = " ".join(f"{k}={_fmt_param(v)}" for k, v in params.items()) or "(기본)"
-        print(f"  [{i}/{len(combos)}] {desc} → 알림 {res['alerts']} · 배제 "
-              f"{res['filtered']} ({res['elapsed_s']:.1f}s)", flush=True)
+    set_context(pairs=pairs, rows=rows, guard_cfg=guard_cfg, last_ts=last_ts, base=base,
+                axis_names=axis_names)
+    if args.legacy_serial:
+        results = run_serial(combos)
+    else:
+        from krx_quant_core.runtime.oos import RunRefused
+
+        try:
+            results = run_engine(combos, day=args.replay, n_jobs=args.jobs,
+                                 cache=not args.no_cache)
+        except RunRefused as exc:
+            raise SystemExit(f"스윕 엔진이 실행을 거부했다: {exc}\n"
+                             f"(로컬 디버깅이면 --legacy-serial)") from exc
 
     print(flush=True)
     print_table(results, axis_names)

@@ -8,11 +8,15 @@ import glob
 import itertools
 import pickle
 import sys
+from datetime import date as _date
 
 import numpy as np
 import pandas as pd
+from krx_quant_core.costs import round_trip_cost
+from krx_quant_core.market.codes import Market
+from krx_quant_core.market.ticks import tick_size_int
 
-COST = 0.0023
+COST = round_trip_cost(_date(2026, 1, 2), Market.KOSDAQ)  # 2026 세율 — 날짜 문맥 없음
 IS_END = "2026-09-07"
 HS = (5, 15, 30, 60, 120, 300)
 CACHE = "/home/young/of80/cache2"
@@ -21,10 +25,8 @@ pd.set_option("display.width", 250)
 
 
 def tick(p):
-    for lim, t in ((2000, 1), (5000, 5), (20000, 10), (50000, 50), (200000, 100), (500000, 500)):
-        if p < lim:
-            return t
-    return 1000
+    # 호가단위 정본은 krx-quant-core(주식 표). NaN 은 옛 표 구현처럼 최상위 틱(1000).
+    return tick_size_int(p) if p == p else 1000
 
 
 def show(name, g):
