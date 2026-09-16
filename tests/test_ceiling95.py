@@ -41,3 +41,23 @@ def test_cost_is_subtracted_once():
     ask = np.full(6, 100.0)                                # 스프레드 0 · 움직임 없음
     tk, _ = C.oracle(bid, ask, h=3)
     assert abs(tk[0] + C.COST) < 1e-12
+
+
+def test_pessimistic_fill_requires_price_through():
+    bid = np.array([100.0] * 20)
+    e = C.fill_second(bid)
+    assert (e < 0).all(), "가격이 안 뚫렸는데 체결로 보면 역선택을 과소평가한다"
+    bid2 = bid.copy()
+    bid2[5] = 99.0                                     # t=3 지정가 bid[4]=100 → t=5 에 뚫린다
+    e2 = C.fill_second(bid2)
+    assert e2[3] == 5
+
+
+def test_pessimistic_return_measured_from_fill_second():
+    bid = np.array([100.0] * 20)
+    bid[5] = 99.0
+    ask = np.array([101.0] * 20)
+    ask[7] = 120.0
+    e = C.fill_second(bid)
+    mp = C.maker_pessimistic(bid, e, C.window_max(ask, 3))   # 체결 t=5 → 매도창 [6,8] 최댓값 120
+    assert abs(mp[3] - (120 / 100 - 1 - C.COST)) < 1e-12
