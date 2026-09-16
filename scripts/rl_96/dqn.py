@@ -73,8 +73,14 @@ class Env(R93.Env):
         return super().step(ACT4[np.asarray(act)])
 
 
-def load_days(days, *, forward_ok=False):
-    """93번 로더 + 분 단위 피처를 (code,row) 로 붙인다. 행 순서·필터는 93 과 동일하게 유지한다."""
+def load_days(days, feats=None, *, forward_ok=False):
+    """93번 로더 + 분 단위 피처를 (code,row) 로 붙인다. 행 순서·필터는 93 과 동일하게 유지한다.
+
+    `feats` 는 전진 판정(scripts/forward_gate.py)이 산출물에 저장된 피처 목록을 그대로 넘기는 자리다.
+    학습 때와 다르면 열 순서가 어긋나므로 **다르면 즉시 멈춘다**(조용히 맞추지 않는다).
+    """
+    if feats is not None and list(feats) != FEATS:
+        raise SystemExit("산출물의 피처 목록이 지금 코드와 다르다 — 정책을 다시 내보내라")
     parts = []
     for d in days:
         if not forward_ok:
@@ -110,6 +116,10 @@ def _one_day(day, merged):
                     p["bid"][frows[ok]].astype(np.float64), p["tick"][nx[ok]].astype(np.float64), frows[ok],
                     fsec[ok], fP[ok]))
     return out
+
+
+make_book = R93.make_book          # 전진 판정이 R.make_book 을 부른다 — 93 과 같은 책이어야 한다
+STATE = R93.STATE
 
 
 def greedy(q, bk) -> pd.DataFrame:

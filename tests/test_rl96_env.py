@@ -48,3 +48,18 @@ def test_training_records_action_names_for_the_shadow():
     m = _mod()
     assert m.ACTION_NAMES == ("hold", "limit_buy", "sell")
     assert len(m.ACTION_NAMES) == m.N_ACT
+
+
+def test_forward_gate_surface_is_present():
+    """전진 판정이 부르는 이름들이 모듈에 있어야 한다 — 없으면 판정 당일에 터진다."""
+    m = _mod()
+    for name in ("load_days", "make_book", "greedy", "Q", "EXTRA", "OUT", "R85", "STATE"):
+        assert hasattr(m, name), f"forward_gate 가 R.{name} 을 부른다"
+
+
+def test_feature_mismatch_stops_instead_of_guessing():
+    import pytest as _pytest
+
+    m = _mod()
+    with _pytest.raises(SystemExit):
+        m.load_days(["2026-08-24"], ["없는피처"], forward_ok=True)

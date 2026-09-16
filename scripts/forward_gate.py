@@ -47,6 +47,8 @@ STUDIES = {
              "doc": "docs/research/manju/93-rl-end-to-end-preregistration.md"},
     "rl94": {"model": HOME / "rl94" / "selected.json", "n_trials": 2369,
              "doc": "docs/research/manju/94-rl-full-universe-preregistration.md"},
+    "rl96": {"model": HOME / "rl96" / "selected.json", "n_trials": 2429,
+             "doc": "docs/research/manju/96-minute-scale-limit-preregistration.md"},
     "rl85": {"model": HOME / "rl85" / "selected.json", "n_trials": 1618,
              "doc": "docs/research/manju/85-rl-wave-riding-preregistration.md"},
 }
@@ -175,19 +177,20 @@ def trades_for(study: str, days: list[str]) -> pd.DataFrame:
     import importlib.util
 
     import torch
-    name = {"rl87": "rl_87", "rl92": "rl_92", "rl93": "rl_93", "rl94": "rl_94"}.get(study, "rl_85")
+    name = {"rl87": "rl_87", "rl92": "rl_92", "rl93": "rl_93", "rl94": "rl_94",
+            "rl96": "rl_96"}.get(study, "rl_85")
     spec = importlib.util.spec_from_file_location(f"{name}_mod", ROOT / "scripts" / name / "dqn.py")
     R = importlib.util.module_from_spec(spec)
     sys.modules[f"{name}_mod"] = R
     spec.loader.exec_module(R)
     if study in ("rl87", "rl92"):
         R.COST, R.Q = R.R85.COST, R.R85.Q
-    elif study in ("rl93", "rl94"):
+    elif study in ("rl93", "rl94", "rl96"):
         R.COST = R.R85.COST
 
     sel = json.loads(STUDIES[study]["model"].read_text())
     # 학습 스크립트를 직접 실행해 저장한 prep 은 Scaler 가 __main__ 소속으로 피클돼 있다 — 여기서 이어 준다.
-    scaler_cls = R.R85.Scaler if study == "rl87" else R.Scaler
+    scaler_cls = R.R85.Scaler if study in ("rl87", "rl96") else R.Scaler
 
     class _Unpickler(pickle.Unpickler):
         def find_class(self, module, name):
