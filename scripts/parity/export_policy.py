@@ -1,0 +1,62 @@
+"""학습된 RL 정책을 실시간 그림자가 읽는 형식으로 내보낸다(승격 체크리스트 9번 준비).
+
+    ~/of80/.rlvenv/bin/python scripts/parity/export_policy.py --study rl93 --out ~/of80/policy_rl93
+
+`<out>/policy.json`(피처 이름·표준화 통계·연구 이름) + `<out>/ckpt.pt`(선택된 체크포인트 가중치).
+감지기는 `--rl-shadow <out>` 로 읽는다. **여기서 값을 새로 만들지 않는다** — 학습이 저장한 것을 그대로 옮긴다.
+"""
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import pickle
+import shutil
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+HOME = Path.home() / "of80"
+MODULE = {"rl85": "rl_85", "rl87": "rl_87", "rl92": "rl_92", "rl93": "rl_93", "rl94": "rl_94"}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--study", required=True, choices=sorted(MODULE))
+    ap.add_argument("--out", required=True)
+    a = ap.parse_args()
+    base = HOME / a.study
+    sel = json.loads((base / "selected.json").read_text())
+    if not sel:
+        print("선택된 체크포인트가 없다(VAL 거래 30건 이상 없음) — 내보낼 정책이 없다")
+        return 2
+    seed, steps = sel["seed"], sel["steps"] // 1_000_000
+    spec = importlib.util.spec_from_file_location("mod", ROOT / "scripts" / MODULE[a.study] / "dqn.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["mod"] = mod
+
+    class _U(pickle.Unpickler):                       # 학습이 __main__ 소속으로 피클한 Scaler 를 이어 준다
+        def find_class(self, module, name):
+            if module == "__main__" and name == "Scaler":
+                spec.loader.exec_module(mod)
+                return getattr(mod, "Scaler", None) or mod.R85.Scaler
+            return super().find_class(module, name)
+
+    with open(base / f"seed{seed}" / "prep.pkl", "rb") as fh:
+        prep = _U(fh).load()
+    sc = prep["scaler"]
+    out = Path(a.out).expanduser()
+    out.mkdir(parents=True, exist_ok=True)
+    shutil.copy(base / f"seed{seed}" / f"ckpt_{steps:02d}M.pt", out / "ckpt.pt")
+    (out / "policy.json").write_text(json.dumps({
+        "study": a.study, "seed": seed, "steps_m": steps, "features": list(prep["features"]),
+        "mu": list(map(float, sc.mu)), "sd": list(map(float, sc.sd)),
+        "lo": list(map(float, sc.lo)), "hi": list(map(float, sc.hi)),
+        "val": {k: sel[k] for k in ("val_n", "val_daymean_bp", "val_mean_bp", "val_hold_med") if k in sel},
+    }, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"내보냄: {out} · 피처 {len(prep['features'])}개 · seed {seed} · {steps}M")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

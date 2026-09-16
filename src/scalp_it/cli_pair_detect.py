@@ -1368,6 +1368,7 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
     seq = SeqAssigner()
     etf_shadow = _build_etf_shadow(args, trade_date)
     tiger_shadow, tiger_codes = _build_tiger_shadow(args, trade_date)
+    rl_shadow, rl_codes = _build_rl_shadow(args, trade_date)
 
     def on_frame(msg: dict) -> None:
         # N-2: 한 프레임 처리 중 어떤 예외도 소켓 루프(다른 실포지션 관리)를 죽이지
@@ -1380,6 +1381,8 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
                 _feed_etf_shadow(etf_shadow, ticks, quotes)
             if tiger_shadow is not None:
                 _feed_tiger_shadow(tiger_shadow, tiger_codes, ticks, quotes)
+            if rl_shadow is not None:
+                _feed_rl_shadow(rl_shadow, rl_codes, ticks, quotes)
             for q in quotes:                      # 호가로 bid1 우선 갱신
                 bids, asks = quote_levels(q)
                 detector.on_quote(str(q["code"]), q["ts"], q.get("bid1"),
@@ -1485,6 +1488,13 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
     if executor is not None:
         executor.flush(datetime.now())  # noqa: DTZ005
         print(executor.summary(), file=sys.stderr, flush=True)
+    if rl_shadow is not None:
+        try:
+            rl_shadow.flush()
+            if rl_shadow.disabled_reason:
+                print(f"[RL그림자] 꺼져 있었다 — {rl_shadow.disabled_reason}", file=sys.stderr, flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[RL그림자] 마감 실패: {exc}", file=sys.stderr, flush=True)
     if tiger_shadow is not None:
         try:
             tiger_shadow.flush()
@@ -1546,6 +1556,68 @@ def _feed_etf_shadow(shadow: Any, ticks: list[dict], quotes: list[dict]) -> None
                            best_bid=t.get("best_bid"), best_ask=t.get("best_ask"))
     except Exception as exc:  # noqa: BLE001
         print(f"[ETF그림자] 프레임 예외(무시): {exc}", file=sys.stderr, flush=True)
+
+
+def _build_rl_shadow(args: argparse.Namespace, trade_date: date) -> tuple[Any, set[str]]:
+    """RL 정책 실시간 추론 그림자(주문 없음) — 승격 체크리스트 9번 경로.
+
+    정책 산출물(`<dir>/policy.json` + `ckpt.pt`)이 있고 피처 커널이 그 피처를 전부 줄 때만 돈다.
+    못 주면 모듈이 스스로 추론을 끈다(0 으로 채워 돌리지 않는다).
+    """
+    d = str(getattr(args, "rl_shadow", "") or "")
+    if not d:
+        return None, set()
+    try:
+        import json
+
+        import numpy as np
+
+        from krx_quant_core.backtest import lob
+
+        from .realtime.rl_shadow import PolicyWeights, RLShadow
+
+        base = Path(d)
+        meta = json.loads((base / "policy.json").read_text(encoding="utf-8"))
+        pol = PolicyWeights.from_checkpoint(base / "ckpt.pt", features=meta["features"],
+                                            mu=np.array(meta["mu"]), sd_=np.array(meta["sd"]),
+                                            lo=np.array(meta["lo"]), hi=np.array(meta["hi"]))
+        stream_cls = getattr(lob, "SecondFeatureStreamV2", lob.SecondFeatureStream)
+        log_path = Path(args.rl_shadow_log)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def sink(rec: dict) -> None:
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"day": trade_date.isoformat(), **rec}, ensure_ascii=False) + "\n")
+
+        conn = connect(args.dsn or os.environ.get("KR_QUANT_DB"))
+        try:
+            cur = conn.cursor()
+            cur.execute("select code from stocks")
+            codes = {r[0] for r in cur.fetchall()}
+        finally:
+            conn.close()
+        print(f"# RL그림자({meta.get('study', base.name)}) — 피처 {len(meta['features'])}개, 커널 {stream_cls.__name__}",
+              file=sys.stderr, flush=True)
+        return RLShadow(pol, stream_factory=stream_cls, sink=sink, codes=codes), codes
+    except Exception as exc:  # noqa: BLE001 — 그림자 준비 실패로 매매를 죽이지 않는다
+        print(f"[RL그림자] 비활성 — 준비 실패: {exc}", file=sys.stderr, flush=True)
+        return None, set()
+
+
+def _feed_rl_shadow(shadow: Any, codes: set[str], ticks: list[dict], quotes: list[dict]) -> None:
+    try:
+        for q in quotes:
+            if str(q["code"]) in codes:
+                shadow.on_quote(str(q["code"]), q["ts"], bid1=q.get("bid1"), ask1=q.get("ask1"),
+                                bidqty1=q.get("bidqty1"), askqty1=q.get("askqty1"),
+                                bid_depth3=q.get("total_bid_qty"), ask_depth3=q.get("total_ask_qty"))
+        for t in ticks:
+            if t.get("price") is None or str(t["code"]) not in codes:
+                continue
+            shadow.on_tick(str(t["code"]), t["ts"], float(t["price"]), volume=t.get("volume"), side=t.get("side"),
+                           strength=t.get("strength"), best_bid=t.get("best_bid"), best_ask=t.get("best_ask"))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[RL그림자] 프레임 예외(무시): {exc}", file=sys.stderr, flush=True)
 
 
 def _build_tiger_shadow(args: argparse.Namespace, trade_date: date) -> tuple[Any, set[str]]:
@@ -1718,6 +1790,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tiger-shadow", action="store_true",
                    help="86번 호랑이 규칙(알고리즘 체결·체결강도 가속·지정가 대기열) 실시간 그림자 — 주문 없음")
     p.add_argument("--tiger-shadow-log", default="data/tiger86_shadow.jsonl")
+    p.add_argument("--rl-shadow", default="",
+                   help="RL 정책 산출물 디렉터리(policy.json+ckpt.pt) — 실시간 추론 그림자, 주문 없음")
+    p.add_argument("--rl-shadow-log", default="data/rl_shadow.jsonl")
     p.add_argument("--tiger-prevq", default="data/tiger86_prevq.json",
                    help="09:35 전 문턱(전일 dstr30 99%% 분위) — simnode 17:00 이 만들어 보낸다")
     p.add_argument("--collect-fill-pool", type=int, default=300,
