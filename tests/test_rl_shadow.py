@@ -173,3 +173,83 @@ def test_weights_load_from_npz(tmp_path):
     pol = PolicyWeights.from_npz(p, features=["acc"], mu=np.zeros(1), sd_=np.ones(1),
                                  lo=np.zeros(1), hi=np.ones(1))
     assert int(np.argmax(pol.forward(np.zeros(1 + RLShadow.EXTRA, np.float32)))) == 2
+
+
+# ── 지정가 대기열 체결(86 §3) 을 실시간에서도 흉내낸다 ────────────────────────
+# 96번은 지정가 진입만 한다. 그림자가 체결을 안 만들면 의사결정 패리티(승격 9번)를
+# 잴 수 없고, 정책이 라이브에서 무엇을 했는지 기록이 남지 않는다.
+def _shadow_with_limit(sink_rows, *, action):
+    """행동을 고정한 정책으로 그림자를 만든다 — 체결 로직만 시험하기 위해서다."""
+    import numpy as np
+
+    from scalp_it.realtime.rl_shadow import PolicyWeights, RLShadow
+
+    n_act = 4
+    w = np.zeros((n_act, 5), np.float32)
+    w[action] = 1.0                                  # 그 행동의 Q 만 크게
+    pol = PolicyWeights(features=["f"], layers=[(w, np.array([0, 0, 0, 0], np.float32))],
+                        mu=np.zeros(1), sd=np.ones(1), lo=np.full(1, -1e9), hi=np.full(1, 1e9))
+
+    class Stream:
+        def __init__(self, code=None):
+            self.sec = 0
+
+        def update(self, **kw):
+            return {"f": 1.0}
+
+    return RLShadow(pol, stream_factory=Stream, sink=sink_rows.append, codes={"A"},
+                    extra_features=lambda c, s: {})
+
+
+def test_limit_buy_fills_when_queue_ahead_is_consumed():
+    """앞 잔량 + 1 만큼 매도 체결이 지나가면 우리 지정가가 채워진다(86 §3)."""
+    from datetime import datetime
+
+    rows = []
+    sh = _shadow_with_limit(rows, action=2)          # 2 = 지정가 매수
+    t = datetime(2026, 9, 17, 9, 10, 0)
+    sh.on_quote("A", t, bid1=1000, ask1=1010, bidqty1=5, askqty1=50)
+    sh.on_tick("A", t, 1005, volume=1, side=1)
+    sh.on_quote("A", t.replace(second=1), bid1=1000, ask1=1010, bidqty1=5, askqty1=50)
+    # 다음 초부터 우리 가격에 매도 체결이 지나간다 — 앞 5 + 우리 1 = 6
+    for s in (2, 3):
+        ts = t.replace(second=s)
+        sh.on_quote("A", ts, bid1=1000, ask1=1010, bidqty1=5, askqty1=50)
+        sh.on_tick("A", ts, 1000, volume=4, side=-1)
+    sh.on_quote("A", t.replace(second=4), bid1=1000, ask1=1010, bidqty1=5, askqty1=50)
+    buys = [r for r in rows if r["event"] == "buy"]
+    assert buys, f"체결이 안 만들어졌다: {rows}"
+    assert buys[0]["kind"] == "지정가" and buys[0]["price"] == 1000
+
+
+def test_limit_buy_cancels_after_timeout_without_fill():
+    """10초 안에 안 채워지면 취소한다 — 86 §3 의 전제다."""
+    from datetime import datetime
+
+    rows = []
+    sh = _shadow_with_limit(rows, action=2)
+    t = datetime(2026, 9, 17, 9, 10, 0)
+    for s in range(0, 14):
+        ts = t.replace(second=s)
+        sh.on_quote("A", ts, bid1=1000, ask1=1010, bidqty1=500, askqty1=50)
+        sh.on_tick("A", ts, 1005, volume=1, side=1)
+    sh.on_quote("A", t.replace(second=14), bid1=1000, ask1=1010, bidqty1=500, askqty1=50)
+    assert not [r for r in rows if r["event"] == "buy"]
+    assert [r for r in rows if r["event"] == "limit_cancel"], f"취소 기록이 없다: {rows}"
+
+
+def test_limit_buy_fills_when_price_trades_through():
+    """가격이 우리 지정가 아래로 뚫고 내려가면 대기열과 무관하게 체결이다."""
+    from datetime import datetime
+
+    rows = []
+    sh = _shadow_with_limit(rows, action=2)
+    t = datetime(2026, 9, 17, 9, 10, 0)
+    sh.on_quote("A", t, bid1=1000, ask1=1010, bidqty1=9999, askqty1=50)
+    sh.on_tick("A", t, 1005, volume=1, side=1)
+    sh.on_quote("A", t.replace(second=1), bid1=1000, ask1=1010, bidqty1=9999, askqty1=50)
+    ts = t.replace(second=2)
+    sh.on_quote("A", ts, bid1=990, ask1=1000, bidqty1=9999, askqty1=50)
+    sh.on_tick("A", ts, 995, volume=1, side=-1)       # 우리 가격보다 아래에서 체결
+    sh.on_quote("A", t.replace(second=3), bid1=990, ask1=1000, bidqty1=9999, askqty1=50)
+    assert [r for r in rows if r["event"] == "buy"], f"뚫렸는데 체결이 없다: {rows}"

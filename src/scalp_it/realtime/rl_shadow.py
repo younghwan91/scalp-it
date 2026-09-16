@@ -20,6 +20,7 @@ import numpy as np
 __all__ = ["PolicyWeights", "RLShadow"]
 
 COST = 0.0023
+CANCEL_SECS = 10           # 지정가 취소 시한 — 86번 §3 체결 모형의 전제와 같다
 
 
 @dataclass
@@ -84,7 +85,12 @@ class _Code:
     entry: float = 0.0
     entry_sec: int = 0
     mark: float = 0.0
-    pending: str = ""          # "buy" | "sell" — 다음 초 호가로 체결한다
+    pending: str = ""          # "buy" | "sell" | "limit" — 앞의 둘은 다음 초 호가로 체결한다
+    lim_P: float = 0.0         # 걸어둔 지정가(0 = 없음)
+    lim_sec: int = 0           # 건 시각 — 취소 시한 판정용
+    lim_queue: float = 0.0     # 걸 때 앞에 있던 잔량(매수1호가 수량)
+    lim_cum: float = 0.0       # 건 뒤 우리 가격에 지나간 매도 체결량
+    lim_through: bool = False  # 가격이 우리 지정가 아래로 뚫렸는가
     feats: np.ndarray | None = field(default=None, repr=False)
 
 
@@ -143,6 +149,12 @@ class RLShadow:
             st.sell += v
         if strength is not None:
             st.strength = float(strength)
+        if st.lim_P > 0:
+            # 대기열 체결(86 §3): 우리 가격에 지나간 매도 체결량을 세고, 뚫림도 본다.
+            if float(price) < st.lim_P:
+                st.lim_through = True
+            elif side is not None and side < 0 and float(price) == st.lim_P:
+                st.lim_cum += float(volume or 0)
         feed = getattr(st.stream, "feed_tick", None)      # 창 재계산 커널은 원시 틱을 그대로 받는다
         if feed is not None:
             feed(ts, float(price), float(volume or 0), int(side or 0), strength, best_bid, best_ask)
@@ -185,6 +197,25 @@ class RLShadow:
         hold = min((st.sec - st.entry_sec) / 60.0, 10.0) if st.pos == 1 else 0.0
         return np.concatenate([z, [float(st.pos), unreal, hold, 1.0 if st.pending else 0.0]]).astype(np.float32)
 
+    def _resolve_limit(self, code: str, st: _Code) -> None:
+        """걸어둔 지정가를 이 초 마감 시점에 판정한다 — 체결이면 보유 시작, 시한이면 취소."""
+        if st.lim_through or st.lim_cum >= st.lim_queue + 1:
+            st.pos, st.entry, st.entry_sec = 1, st.lim_P, st.sec
+            st.mark = st.bid if st.bid > 0 else st.lim_P
+            self.sink({"event": "buy", "code": code, "sec": st.sec, "price": st.lim_P, "kind": "지정가",
+                       "wait": st.sec - st.lim_sec,
+                       "how": "뚫림" if st.lim_through else "대기열"})
+            self._clear_limit(st)
+        elif st.sec - st.lim_sec >= CANCEL_SECS:
+            self.sink({"event": "limit_cancel", "code": code, "sec": st.sec, "price": st.lim_P,
+                       "queue": st.lim_queue, "filled_qty": st.lim_cum})
+            self._clear_limit(st)
+
+    @staticmethod
+    def _clear_limit(st: _Code) -> None:
+        st.lim_P, st.lim_cum, st.lim_queue, st.lim_through = 0.0, 0.0, 0.0, False
+        st.pending = ""
+
     def _finalize(self, code: str, st: _Code) -> None:
         # 1) 직전 초에 정한 행동을 이 초 호가로 체결(백테스트와 같은 가정)
         if st.pending == "buy" and st.ask > 0:
@@ -196,6 +227,8 @@ class RLShadow:
             self.sink({"event": "sell", "code": code, "sec": st.sec, "price": st.bid, "ret": ret,
                        "hold": st.sec - st.entry_sec})
             st.pos, st.entry, st.pending = 0, 0.0, ""
+        elif st.lim_P > 0:
+            self._resolve_limit(code, st)
         else:
             st.pending = ""
         if st.pos == 1 and st.bid > 0:
@@ -222,8 +255,16 @@ class RLShadow:
         act = int(np.argmax(q))
         if act == 1:
             st.pending = "buy"
-        elif act == 2:                      # 지정가 매수는 대기열 모형이 필요하다 — 기록만 하고 체결은 안 만든다
-            self.sink({"event": "limit_intent", "code": code, "sec": st.sec, "price": st.bid})
+        elif act == 2 and st.pos == 0 and st.lim_P == 0:
+            # 지정가 매수 — 86 §3 대기열 모형을 실시간에서도 돌린다. 잔량을 모르면 체결을 지어내지 않는다.
+            if st.bid > 0 and st.bidqty1 == st.bidqty1:
+                st.lim_P, st.lim_sec, st.lim_queue = st.bid, st.sec, st.bidqty1
+                st.lim_cum, st.lim_through, st.pending = 0.0, False, "limit"
+                self.sink({"event": "limit_place", "code": code, "sec": st.sec, "price": st.bid,
+                           "queue": st.bidqty1})
+            else:
+                self.sink({"event": "limit_intent", "code": code, "sec": st.sec, "price": st.bid,
+                           "why": "잔량 미상 — 체결 모형 불가"})
         elif act == 3 and st.pos == 1:
             st.pending = "sell"
 
