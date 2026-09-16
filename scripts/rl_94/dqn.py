@@ -56,8 +56,8 @@ def load_days(days, feats=FEATS, *, forward_ok=False):
     for d in days:
         if not forward_ok:
             assert d < R85.FORWARD_START
-        rows = pickle.loads((C94 / f"{d}.pkl").read_bytes())
-        paths = pickle.loads((R85.C83 / f"{d}.pkl").read_bytes())["paths"]
+        obj = pickle.loads((C94 / f"{d}.pkl").read_bytes())
+        rows, paths = obj["rows"], obj["paths"]      # 94번 캐시가 자기 경로를 들고 있다
         fills = pickle.loads((FILLS / f"{d}.pkl").read_bytes())
         for code, g in rows.groupby("code"):
             if code not in fills:

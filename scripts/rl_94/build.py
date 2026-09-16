@@ -63,7 +63,7 @@ def build(day: str) -> str:
         news["sec"] = (news.ts.dt.hour * 3600 + news.ts.dt.minute * 60 + news.ts.dt.second - F83.T0).where(
             news.ts.dt.date.astype(str) == day, -10**6)
         news_sec = {c: np.sort(g.sec.to_numpy()) for c, g in news.groupby("code")}
-    parts, fills = [], {}
+    parts, fills, paths_out = [], {}, {}
     for ci, c in enumerate(codes):
         f, p = per[c]
         f["cum_rank"], f["log_cumval"], f["sec"] = rank[ci].astype(float), np.log1p(f["cumval"]), np.arange(N, dtype=float)
@@ -105,12 +105,14 @@ def build(day: str) -> str:
                             g.side.to_numpy(np.int64)[okt], start, p["bid"].astype(np.float64), bq,
                             p["strength"].astype(np.float64), N)
         fills[c] = (rows.astype(np.int64), fs, P, p["tick"][np.minimum(rows + 1, N - 1)].astype(np.float64))
+        # 94번은 필터를 풀어 83번 캐시에 없는 종목이 들어온다 — 경로를 여기서 같이 저장한다.
+        paths_out[c] = {k: p[k].astype(np.float32) for k in ("bid", "ask", "hi", "tick", "strength")}
     conn.close()
     data = pd.concat(parts, ignore_index=True)
     data.insert(0, "day", day)
     OUT.mkdir(parents=True, exist_ok=True)
     OUT_FILLS.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(pickle.dumps(data, protocol=5))
+    out.write_bytes(pickle.dumps({"rows": data, "paths": paths_out}, protocol=5))
     outf.write_bytes(pickle.dumps(fills, protocol=5))
     return f"{day} rows {len(data):,} codes {data.code.nunique()}"
 
