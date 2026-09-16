@@ -214,6 +214,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
     --collect-pin 069500,122630,102110,360750,133690,379800,114800,233740,229200,396500,091160,251340,381180,305720 \
     --etf-shadow 069500,122630,102110,360750,133690,379800,114800,233740,229200,396500,091160,251340,381180,305720 \
     --tiger-shadow \
+    --rl-shadow data/policy_rl92 --rl-shadow-log data/rl_shadow_rl92.jsonl --rl-kernel window --rl-codes 8 \
     --program-interval 60 --program-dump-qty 700 \
     --position-notional 10000000 \
     --lock-min-krw 300000000 --lock-wall-decay 0.7 \

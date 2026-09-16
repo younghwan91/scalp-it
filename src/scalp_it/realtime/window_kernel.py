@@ -61,6 +61,11 @@ class WindowKernelStream:
                   aq1: float, aq2: float, aq3: float) -> None:
         self.quotes.append((ts, bid1, ask1, bq1, bq2, bq3, aq1, aq2, aq3))
 
+    @staticmethod
+    def _rel(sec: int) -> int:
+        """09:00 기준 초로 맞춘다 — 호출자가 자정 기준(32400+) 을 줘도 받는다."""
+        return sec - T0 if sec >= T0 else sec
+
     def _trim(self, sec: int) -> None:
         lo = sec - self.window
         while self.ticks and (self.ticks[0][0].hour * 3600 + self.ticks[0][0].minute * 60
@@ -72,6 +77,7 @@ class WindowKernelStream:
 
     def update(self, sec: int) -> dict[str, float]:
         """초 `sec` 마감 시점의 피처. 배치와 같은 함수를 창 데이터로 돌린다."""
+        sec = self._rel(sec)
         self._trim(sec)
         if not self.ticks:
             return {}

@@ -59,6 +59,19 @@ def test_window_features_equal_full_batch():
     assert checked > 20, "비교한 항목이 너무 적다"
 
 
+def test_accepts_midnight_based_seconds():
+    """그림자는 자정 기준 초(32400+)를 준다 — 커널이 09:00 기준으로 맞춰야 한다."""
+    ticks, quotes = _synth()
+    s = WindowKernelStream("TEST", day="2026-09-17")
+    for row in ticks:
+        s.add_tick(*row)
+    for row in quotes:
+        s.add_quote(*row)
+    rel = s.update(800)
+    absolute = s.update(800 + 9 * 3600)
+    assert rel and absolute and rel["spread_bp"] == absolute["spread_bp"]
+
+
 def test_empty_input_returns_empty_dict():
     stream = WindowKernelStream("TEST", day="2026-09-17")
     assert stream.update(100) == {}
