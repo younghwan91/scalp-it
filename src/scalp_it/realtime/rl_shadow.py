@@ -83,12 +83,20 @@ class RLShadow:
     EXTRA = 4                  # 보유 여부 · 미실현% · 보유초/60 · 주문중
 
     def __init__(self, policy: PolicyWeights, *, stream_factory: Callable[[], Any],
-                 sink: Callable[[dict[str, Any]], None], codes: set[str] | None = None) -> None:
+                 sink: Callable[[dict[str, Any]], None], codes: set[str] | None = None,
+                 extra_features: Callable[[str, int], dict[str, float]] | str | None = None) -> None:
+        """extra_features: 커널이 못 주는 종목 간 피처(cum_rank·dayret_rank)의 공급자.
+
+        문자열 "turnover_rank" 를 주면 그림자가 당일 누적 체결대금으로 순위를 직접 만든다
+        (백테스트 정의와 같다). 부족한 피처를 0 으로 채우는 일은 하지 않는다 — 없으면 추론을 끈다.
+        """
         self.policy = policy
         self.stream_factory = stream_factory
         self.sink = sink
         self.codes = codes
+        self.extra_features = extra_features
         self.state: dict[str, _Code] = {}
+        self.cumval: dict[str, float] = {}
         self.disabled_reason: str | None = None
 
     def open_count(self) -> int:
@@ -116,6 +124,7 @@ class RLShadow:
             st.bid, st.ask = float(best_bid), float(best_ask)
         v = float(price) * float(volume or 0)
         st.cnt += 1
+        self.cumval[code] = self.cumval.get(code, 0.0) + v
         if side is not None and side > 0:
             st.buy += v
         elif side is not None and side < 0:
@@ -135,6 +144,15 @@ class RLShadow:
             st.sec = sec
             st.buy = st.sell = st.cnt = 0.0
         return st
+
+    def extra_for(self, code: str, sec: int) -> dict[str, float]:
+        """종목 간 피처. 공급자가 함수면 그대로 쓰고, "turnover_rank" 면 누적 체결대금 순위를 만든다."""
+        if callable(self.extra_features):
+            return dict(self.extra_features(code, sec))
+        if self.extra_features == "turnover_rank":
+            mine = self.cumval.get(code, 0.0)
+            return {"cum_rank": 1 + sum(1 for v in self.cumval.values() if v > mine)}
+        return {}
 
     def _vector(self, st: _Code, feats: dict[str, float]) -> np.ndarray | None:
         missing = [f for f in self.policy.features if f not in feats]
@@ -166,9 +184,10 @@ class RLShadow:
         if self.disabled_reason:
             return
         # 2) 이 초 상태로 커널을 돌리고 다음 행동을 정한다
-        feats = st.stream.update(buy=st.buy, sell=st.sell, cnt=st.cnt, bid=st.bid, ask=st.ask,
+        feats = dict(self.extra_for(code, st.sec))
+        feats.update(st.stream.update(buy=st.buy, sell=st.sell, cnt=st.cnt, bid=st.bid, ask=st.ask,
                                  strength=st.strength, bidqty1=st.bidqty1, askqty1=st.askqty1,
-                                 bid_depth3=st.bid_depth3, ask_depth3=st.ask_depth3)
+                                 bid_depth3=st.bid_depth3, ask_depth3=st.ask_depth3))
         x = self._vector(st, feats)
         if x is None:
             return

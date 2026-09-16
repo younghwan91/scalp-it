@@ -106,3 +106,31 @@ def test_weights_load_from_state_dict(tmp_path):
     assert len(pol.layers) == 2
     x = np.zeros(1 + RLShadow.EXTRA, np.float32)
     assert int(np.argmax(pol.forward(x))) == 1
+
+
+def test_cross_code_features_come_from_provider():
+    """종목 간 순위(cum_rank·dayret_rank)는 커널이 못 준다 — 공급자가 채우고, 없으면 추론을 끈다."""
+    pol = _policy(["acc", "cum_rank"], always=1)
+    logged = []
+    ranks = {}
+
+    def provider(code, sec):
+        return {"cum_rank": ranks.get(code, 99.0)}
+
+    sh = RLShadow(pol, stream_factory=lambda: _Stream({"acc": 1.0}), sink=logged.append,
+                  extra_features=provider)
+    ranks["005930"] = 3.0
+    _feed(sh, "005930", 4)
+    assert sh.disabled_reason is None, "공급자가 채우면 꺼지면 안 된다"
+    assert any(r["event"] == "buy" for r in logged)
+
+
+def test_cumval_rank_helper_ranks_by_turnover():
+    """그림자가 스스로 당일 누적 체결대금 순위를 만든다 — 백테스트의 cum_rank 와 같은 정의."""
+    pol = _policy(["acc", "cum_rank"], always=0)
+    sh = RLShadow(pol, stream_factory=lambda: _Stream({"acc": 1.0}), sink=lambda r: None,
+                  extra_features="turnover_rank")
+    _feed(sh, "AAA", 3, price=10000)          # 10,000 × 1주 × 3초
+    _feed(sh, "BBB", 3, price=50000)          # 더 큼
+    assert sh.extra_for("BBB", 0)["cum_rank"] == 1
+    assert sh.extra_for("AAA", 0)["cum_rank"] == 2
