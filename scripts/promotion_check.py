@@ -101,7 +101,18 @@ def main() -> int:
     for name, ok, note in rows:
         print(f"{'✅' if ok else '❌'} {name.ljust(width)}  {note}")
     passed = all(ok for _, ok, _ in rows)
-    print("\n판정:", "승격 가능 — 11개 항목 전부 통과" if passed else "승격 불가 — 미달 항목이 있다")
+    token = RUNS / a.study / "PROMOTED"
+    if passed:
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text(json.dumps({"checked_at": __import__("datetime").datetime.now().isoformat(),
+                                     "study": a.study}, ensure_ascii=False), encoding="utf-8")
+        print("\n판정: 승격 가능 — 11개 항목 전부 통과")
+        print(f"승격 토큰 생성: {token} (이 파일이 있어야 --rl-live 가 주문을 낸다)")
+    else:
+        if token.exists():
+            token.unlink()
+            print(f"\n승격 토큰 회수: {token}")
+        print("판정: 승격 불가 — 미달 항목이 있다")
     return 0 if passed else 1
 
 

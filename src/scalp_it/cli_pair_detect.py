@@ -1596,7 +1596,15 @@ def _build_rl_shadow(args: argparse.Namespace, trade_date: date) -> tuple[Any, s
             codes = {r[0] for r in cur.fetchall()}
         finally:
             conn.close()
-        print(f"# RL그림자({meta.get('study', base.name)}) — 피처 {len(meta['features'])}개, 커널 {stream_cls.__name__}",
+        from .realtime.rl_order_bridge import is_promoted, make_sink
+
+        study = meta.get("study", base.name)
+        runs = Path(__file__).resolve().parents[2] / "research" / "runs"
+        live = bool(getattr(args, "rl_live", False))
+        sink = make_sink(sink, executor=None, study=study, runs_dir=runs, live=live)
+        mode = ("실주문" if live and is_promoted(study, runs) else
+                "그림자(미승격)" if live else "그림자")
+        print(f"# RL그림자({study}) — 피처 {len(meta['features'])}개 · 커널 {stream_cls.__name__} · {mode}",
               file=sys.stderr, flush=True)
         return RLShadow(pol, stream_factory=stream_cls, sink=sink, codes=codes), codes
     except Exception as exc:  # noqa: BLE001 — 그림자 준비 실패로 매매를 죽이지 않는다
@@ -1793,6 +1801,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rl-shadow", default="",
                    help="RL 정책 산출물 디렉터리(policy.json+ckpt.pt) — 실시간 추론 그림자, 주문 없음")
     p.add_argument("--rl-shadow-log", default="data/rl_shadow.jsonl")
+    p.add_argument("--rl-live", action="store_true",
+                   help="RL 정책 실주문 — research/runs/<study>/PROMOTED(승격 점검 통과)가 있어야 열린다")
     p.add_argument("--tiger-prevq", default="data/tiger86_prevq.json",
                    help="09:35 전 문턱(전일 dstr30 99%% 분위) — simnode 17:00 이 만들어 보낸다")
     p.add_argument("--collect-fill-pool", type=int, default=300,
