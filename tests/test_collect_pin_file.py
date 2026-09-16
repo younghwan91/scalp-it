@@ -19,3 +19,15 @@ def test_missing_file_does_not_break(capsys):
 
 def test_empty_inputs():
     assert _pin_codes("", "") == []
+
+
+def test_rejects_things_that_are_not_krx_codes(capsys):
+    """남의 파일이다 — 헤더·설명·경로가 들어와도 구독 시도로 새면 안 된다."""
+    import tempfile
+    from pathlib import Path as _P
+
+    with tempfile.TemporaryDirectory() as d:
+        f = _P(d) / "pins.txt"
+        f.write_text("005930\nAAPL\n12345\n0059301\n/tmp/foo\n종목코드\n069500\n")
+        assert _pin_codes("", str(f)) == ["005930", "069500"]
+        assert "건너뛴다" in capsys.readouterr().err

@@ -433,11 +433,17 @@ def _pin_codes(inline: str, path: str) -> list[str]:
             print(f"[경고] 고정 수집 파일을 못 읽는다({path}): {exc} — 인자 목록만 쓴다",
                   file=sys.stderr, flush=True)
         else:
+            bad = []
             for line in text.splitlines():
                 line = line.split("#", 1)[0]          # 줄 주석 — 날짜·메모가 종목으로 들어가면 안 된다
                 for tok in line.replace(",", " ").split():
-                    if tok and tok not in out:
+                    if not (len(tok) == 6 and tok.isalnum()):
+                        bad.append(tok)               # 남의 파일이다 — 코드가 아닌 건 구독에 넘기지 않는다
+                    elif tok not in out:
                         out.append(tok)
+            if bad:
+                print(f"[경고] 고정 수집 파일에서 종목코드가 아닌 항목 {len(bad)}개를 건너뛴다: {bad[:3]}",
+                      file=sys.stderr, flush=True)
     return out
 
 
