@@ -70,6 +70,7 @@ def main() -> int:
     days = a.days or [pd.Timestamp.today().date().isoformat()]
     C.COST = a.cost_bp / 1e4                       # 95번과 같은 오라클 함수를 비용만 바꿔 쓴다
     acc = {h: {"tk": [], "mk": [], "mp": []} for h in C.HORIZONS}
+    per_code: dict[str, dict] = {}
     spreads = []
     for day in days:
         grid = day_grid(conn, day, ETFS)
@@ -87,12 +88,27 @@ def main() -> int:
                 ok = np.isfinite(tk[sl]) & np.isfinite(mk[sl])
                 acc[h]["tk"].append(tk[sl][ok])
                 acc[h]["mk"].append(mk[sl][ok])
-                acc[h]["mp"].append(C.maker_pessimistic(bid, e_fill, C.window_max(ask, h))[sl][ok])
+                mp_c = C.maker_pessimistic(bid, e_fill, C.window_max(ask, h))[sl][ok]
+                acc[h]["mp"].append(mp_c)
+                if h in (10, 60, 600):
+                    mpf = mp_c[np.isfinite(mp_c)]
+                    per_code.setdefault(code, {})[h] = (
+                        float(np.median(tk[sl][ok]) * 1e4), float(np.median(mk[sl][ok]) * 1e4),
+                        float(np.median(mpf) * 1e4) if len(mpf) else None)
     if not spreads:
         print("ETF 호가 데이터가 없다 — 수집 일수를 더 쌓아야 한다")
         return 2
     print(f"\nETF 스프레드 중앙값 {np.median(spreads):.2f}bp · 왕복 비용 가정 {a.cost_bp:.2f}bp")
-    out = {"days": days, "cost_bp": a.cost_bp, "spread_bp_median": float(np.median(spreads)), "horizons": {}}
+    print("\n종목별(중앙값 bp) — 테이커/메이커/메이커비관")
+    print(f"{'종목':<8}{'H=10':>26}{'H=60':>26}{'H=600':>26}")
+    for code, r in sorted(per_code.items()):
+        cells = []
+        for h in (10, 60, 600):
+            t, m, q = r.get(h, (float('nan'),) * 3)
+            cells.append(f"{t:+7.1f}/{m:+7.1f}/{(q if q is not None else float('nan')):+7.1f}")
+        print(f"{code:<8}" + "".join(f"{c:>26}" for c in cells))
+    out = {"days": days, "cost_bp": a.cost_bp, "spread_bp_median": float(np.median(spreads)),
+           "per_code": {k: {str(h): v for h, v in r.items()} for k, r in per_code.items()}, "horizons": {}}
     for h in C.HORIZONS:
         tk = np.concatenate(acc[h]["tk"]) * 1e4
         mk = np.concatenate(acc[h]["mk"]) * 1e4
