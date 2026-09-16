@@ -134,3 +134,32 @@ def test_cumval_rank_helper_ranks_by_turnover():
     _feed(sh, "BBB", 3, price=50000)          # 더 큼
     assert sh.extra_for("BBB", 0)["cum_rank"] == 1
     assert sh.extra_for("AAA", 0)["cum_rank"] == 2
+
+
+def test_raw_events_reach_window_style_kernel():
+    """창 재계산 커널은 집계가 아니라 원시 틱·호가가 필요하다 — 그림자가 그걸 넘겨야 한다."""
+    seen = {"ticks": 0, "quotes": 0, "sec": -1}
+
+    class _WindowLike:
+        sec = -1
+
+        def feed_tick(self, *a):
+            seen["ticks"] += 1
+
+        def feed_quote(self, *a):
+            seen["quotes"] += 1
+
+        def update(self, **kw):
+            seen["sec"] = self.sec
+            return {"acc": 1.0}
+
+    pol = _policy(["acc"], always=0)
+    sh = RLShadow(pol, stream_factory=lambda code=None: _WindowLike(), sink=lambda r: None)
+    from datetime import datetime, timedelta
+    t0 = datetime(2026, 9, 17, 9, 30, 0)
+    for k in range(3):
+        sh.on_quote("005930", t0 + timedelta(seconds=k), bid1=9990, ask1=10000, bidqty1=10, askqty1=10)
+        sh.on_tick("005930", t0 + timedelta(seconds=k), 10000, volume=1, side=1, strength=100.0,
+                   best_bid=9990, best_ask=10000)
+    assert seen["ticks"] == 3 and seen["quotes"] == 3
+    assert seen["sec"] >= 0, "커널에 초가 전달돼야 한다"

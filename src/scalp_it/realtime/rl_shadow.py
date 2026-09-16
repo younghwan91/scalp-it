@@ -114,6 +114,9 @@ class RLShadow:
                         ("bid_depth3", bid_depth3), ("ask_depth3", ask_depth3)):
             if v is not None:
                 setattr(st, name, float(v))
+        feed = getattr(st.stream, "feed_quote", None)
+        if feed is not None and bid1 and ask1:
+            feed(ts, float(bid1), float(ask1), bidqty1 or 0.0, 0.0, 0.0, askqty1 or 0.0, 0.0, 0.0)
 
     def on_tick(self, code: str, ts: datetime, price: float, *, volume=None, side=None, strength=None,
                 best_bid=None, best_ask=None) -> None:
@@ -131,13 +134,20 @@ class RLShadow:
             st.sell += v
         if strength is not None:
             st.strength = float(strength)
+        feed = getattr(st.stream, "feed_tick", None)      # 창 재계산 커널은 원시 틱을 그대로 받는다
+        if feed is not None:
+            feed(ts, float(price), float(volume or 0), int(side or 0), strength, best_bid, best_ask)
 
     # ----------------------------------------------------------------- 초 마감
     def _roll(self, code: str, ts: datetime) -> _Code:
         sec = ts.hour * 3600 + ts.minute * 60 + ts.second
         st = self.state.get(code)
         if st is None:
-            st = self.state[code] = _Code(stream=self.stream_factory())
+            try:
+                stream = self.stream_factory(code)       # 창 커널은 종목을 알아야 한다
+            except TypeError:
+                stream = self.stream_factory()
+            st = self.state[code] = _Code(stream=stream)
         if st.sec != sec:
             if st.sec >= 0 and sec > st.sec:
                 self._finalize(code, st)
@@ -184,6 +194,8 @@ class RLShadow:
         if self.disabled_reason:
             return
         # 2) 이 초 상태로 커널을 돌리고 다음 행동을 정한다
+        if hasattr(st.stream, "sec"):
+            st.stream.sec = st.sec
         feats = dict(self.extra_for(code, st.sec))
         feats.update(st.stream.update(buy=st.buy, sell=st.sell, cnt=st.cnt, bid=st.bid, ask=st.ask,
                                  strength=st.strength, bidqty1=st.bidqty1, askqty1=st.askqty1,

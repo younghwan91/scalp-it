@@ -1581,7 +1581,15 @@ def _build_rl_shadow(args: argparse.Namespace, trade_date: date) -> tuple[Any, s
         pol = PolicyWeights.from_checkpoint(base / "ckpt.pt", features=meta["features"],
                                             mu=np.array(meta["mu"]), sd_=np.array(meta["sd"]),
                                             lo=np.array(meta["lo"]), hi=np.array(meta["hi"]))
-        stream_cls = getattr(lob, "SecondFeatureStreamV2", lob.SecondFeatureStream)
+        kernel = str(getattr(args, "rl_kernel", "auto"))
+        if kernel == "window" or (kernel == "auto" and not hasattr(lob, "SecondFeatureStreamV2")):
+            # core 증분 커널(v2)이 아직 없으면 백테스트 함수를 창으로 다시 돌린다 — 값은 정의상 같고, 대신 무겁다.
+            from .realtime.window_kernel import WindowKernelStream
+
+            def stream_cls(code: str = "", _day=trade_date.isoformat()):
+                return _WindowAdapter(WindowKernelStream(code or "?", day=_day))
+        else:
+            stream_cls = getattr(lob, "SecondFeatureStreamV2", lob.SecondFeatureStream)
         log_path = Path(args.rl_shadow_log)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1592,8 +1600,13 @@ def _build_rl_shadow(args: argparse.Namespace, trade_date: date) -> tuple[Any, s
         conn = connect(args.dsn or os.environ.get("KR_QUANT_DB"))
         try:
             cur = conn.cursor()
-            cur.execute("select code from stocks")
+            n = int(getattr(args, "rl_codes", 8) or 8)
+            cur.execute("select code from daily_bars where date = (select max(date) from daily_bars) "
+                        f"and trade_value > 0 order by trade_value desc limit {n}")
             codes = {r[0] for r in cur.fetchall()}
+            if not codes:
+                cur.execute("select code from stocks limit %s", (n,))
+                codes = {r[0] for r in cur.fetchall()}
         finally:
             conn.close()
         from .realtime.rl_order_bridge import is_promoted, make_sink
@@ -1610,6 +1623,23 @@ def _build_rl_shadow(args: argparse.Namespace, trade_date: date) -> tuple[Any, s
     except Exception as exc:  # noqa: BLE001 — 그림자 준비 실패로 매매를 죽이지 않는다
         print(f"[RL그림자] 비활성 — 준비 실패: {exc}", file=sys.stderr, flush=True)
         return None, set()
+
+
+class _WindowAdapter:
+    """창 재계산 커널을 RLShadow 의 스트림 규약(update(**집계) → dict)에 맞춘다."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.sec = -1
+
+    def feed_tick(self, ts, price, volume, side, strength, best_bid, best_ask) -> None:
+        self.inner.add_tick(ts, price, volume or 0, side or 0, strength, best_bid, best_ask)
+
+    def feed_quote(self, ts, bid1, ask1, bq1, bq2, bq3, aq1, aq2, aq3) -> None:
+        self.inner.add_quote(ts, bid1, ask1, bq1, bq2, bq3, aq1, aq2, aq3)
+
+    def update(self, **_agg: float) -> dict[str, float]:
+        return self.inner.update(self.sec) if self.sec >= 0 else {}
 
 
 def _feed_rl_shadow(shadow: Any, codes: set[str], ticks: list[dict], quotes: list[dict]) -> None:
@@ -1801,6 +1831,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rl-shadow", default="",
                    help="RL 정책 산출물 디렉터리(policy.json+ckpt.pt) — 실시간 추론 그림자, 주문 없음")
     p.add_argument("--rl-shadow-log", default="data/rl_shadow.jsonl")
+    p.add_argument("--rl-kernel", choices=["auto", "core", "window"], default="auto",
+                   help="피처 커널 — auto: core v2 가 있으면 core, 없으면 창 재계산(백테스트 함수 그대로)")
+    p.add_argument("--rl-codes", type=int, default=8,
+                   help="RL 그림자 대상 종목 수 — 창 커널은 종목당 1초 81ms 라 적게 잡는다")
     p.add_argument("--rl-live", action="store_true",
                    help="RL 정책 실주문 — research/runs/<study>/PROMOTED(승격 점검 통과)가 있어야 열린다")
     p.add_argument("--tiger-prevq", default="data/tiger86_prevq.json",
