@@ -47,6 +47,7 @@ EVAL_EVERY = int(os.environ.get("RL96_EVAL", 2_000_000))
 GAMMA = 0.999
 N_ACT = 3                      # 0 유지 · 1 지정가 매수 · 2 시장가 매도
 ACT4 = np.array([0, 2, 3])     # 93번 행동 공간으로의 사상(1=시장가매수 제외)
+ACTION_NAMES = ("hold", "limit_buy", "sell")   # 산출물에 박아 그림자가 추측하지 않게 한다
 KEEP4 = [0, 2, 3]
 EXTRA = R93.EXTRA
 SEEDS = (196, 197, 198)
@@ -219,7 +220,7 @@ def train(seed: int) -> None:
             print(json.dumps(rec), flush=True)
             torch.save(q.state_dict(), out / f"ckpt_{steps // 1_000_000:02d}M.pt")
             (out / "val_log.json").write_text(json.dumps(log, indent=1))
-    pickle.dump({"scaler": sc, "features": FEATS}, open(out / "prep.pkl", "wb"))
+    pickle.dump({"scaler": sc, "features": FEATS, "actions": ACTION_NAMES}, open(out / "prep.pkl", "wb"))
 
 
 def pick() -> None:

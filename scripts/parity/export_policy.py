@@ -20,6 +20,22 @@ HOME = Path.home() / "of80"
 MODULE = {"rl85": "rl_85", "rl87": "rl_87", "rl92": "rl_92", "rl93": "rl_93", "rl94": "rl_94"}
 
 
+ACTIONS_4 = ("hold", "market_buy", "limit_buy", "sell")
+ACTIONS_3 = ("hold", "limit_buy", "sell")          # 96번 — 시장가 매수는 95번 측정으로 배제
+
+
+def _actions(prep: dict, *, out_dim: int) -> tuple[str, ...]:
+    """학습 산출물이 적어 뒀으면 그대로, 아니면 출력 차원으로 고른다."""
+    saved = prep.get("actions")
+    if saved:
+        return tuple(saved)
+    if out_dim == 3:
+        return ACTIONS_3
+    if out_dim == 4:
+        return ACTIONS_4
+    raise SystemExit(f"행동 {out_dim}개짜리 정책은 아직 모른다 — 행동 이름을 학습 쪽에서 저장하라")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--study", required=True, choices=sorted(MODULE))
@@ -65,6 +81,8 @@ def main() -> int:
              **{f"b{i}": sd[f"{k}.bias"].numpy() for i, k in enumerate(keys)})
     (out / "policy.json").write_text(json.dumps({
         "study": a.study, "seed": seed, "steps_m": steps, "features": list(prep["features"]),
+        # 행동 공간을 산출물에 박는다 — 그림자가 인덱스로 추측하면 한 칸 밀려도 조용하다.
+        "actions": list(_actions(prep, out_dim=len(sd[f"{keys[-1]}.bias"]))),
         "mu": list(map(float, sc.mu)), "sd": list(map(float, sc.sd)),
         "lo": list(map(float, sc.lo)), "hi": list(map(float, sc.hi)),
         "val": {k: sel[k] for k in ("val_n", "val_daymean_bp", "val_mean_bp", "val_hold_med") if k in sel},

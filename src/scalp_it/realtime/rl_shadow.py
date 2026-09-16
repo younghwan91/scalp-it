@@ -33,18 +33,25 @@ class PolicyWeights:
     sd: np.ndarray
     lo: np.ndarray
     hi: np.ndarray
+    actions: tuple[str, ...] = ("hold", "market_buy", "limit_buy", "sell")
+    """행동 공간 — **정책이 알려준다.** 96번은 3개(hold·limit_buy·sell)다.
+
+    인덱스로 고정하면 행동 수가 바뀌는 순간 한 칸씩 밀려 "매도를 눌렀는데 지정가를 건다"가 된다.
+    """
 
     @classmethod
-    def from_npz(cls, path: str | Path, *, features: list[str], mu, sd_, lo, hi) -> PolicyWeights:
+    def from_npz(cls, path: str | Path, *, features: list[str], mu, sd_, lo, hi,
+                 actions: tuple[str, ...] | None = None) -> PolicyWeights:
         """numpy 만으로 읽는다 — 운용 환경에 torch 를 넣지 않기 위해서다."""
         z = np.load(path)
         n = len([k for k in z.files if k.startswith("w")])
         layers = [(z[f"w{i}"], z[f"b{i}"]) for i in range(n)]
         return cls(features=list(features), layers=layers, mu=np.asarray(mu), sd=np.asarray(sd_),
-                   lo=np.asarray(lo), hi=np.asarray(hi))
+                   lo=np.asarray(lo), hi=np.asarray(hi), **({"actions": tuple(actions)} if actions else {}))
 
     @classmethod
-    def from_checkpoint(cls, path: str | Path, *, features: list[str], mu, sd_, lo, hi) -> PolicyWeights:
+    def from_checkpoint(cls, path: str | Path, *, features: list[str], mu, sd_, lo, hi,
+                        actions: tuple[str, ...] | None = None) -> PolicyWeights:
         import torch
 
         sd = torch.load(path, map_location="cpu", weights_only=False)
@@ -52,7 +59,7 @@ class PolicyWeights:
                       key=lambda k: int(k.rsplit(".", 1)[-1]))
         layers = [(sd[f"{k}.weight"].numpy(), sd[f"{k}.bias"].numpy()) for k in keys]
         return cls(features=list(features), layers=layers, mu=np.asarray(mu), sd=np.asarray(sd_),
-                   lo=np.asarray(lo), hi=np.asarray(hi))
+                   lo=np.asarray(lo), hi=np.asarray(hi), **({"actions": tuple(actions)} if actions else {}))
 
     def forward(self, x: np.ndarray) -> np.ndarray:
         h = x
@@ -246,16 +253,16 @@ class RLShadow:
         if x is None:
             return
         q = self.policy.forward(x)
-        mask = np.ones(len(q), bool)
-        if st.pos == 1:
-            mask[1] = mask[2] = False
-        else:
-            mask[3] = False
+        acts = self.policy.actions
+        busy = st.pos == 1 or st.lim_P > 0
+        mask = np.array([a == "hold"
+                         or (a in ("market_buy", "limit_buy") and not busy)
+                         or (a == "sell" and st.pos == 1) for a in acts[:len(q)]], bool)
         q = np.where(mask, q, -np.inf)
-        act = int(np.argmax(q))
-        if act == 1:
+        act = acts[int(np.argmax(q))]
+        if act == "market_buy":
             st.pending = "buy"
-        elif act == 2 and st.pos == 0 and st.lim_P == 0:
+        elif act == "limit_buy" and st.pos == 0 and st.lim_P == 0:
             # 지정가 매수 — 86 §3 대기열 모형을 실시간에서도 돌린다. 잔량을 모르면 체결을 지어내지 않는다.
             if st.bid > 0 and st.bidqty1 == st.bidqty1:
                 st.lim_P, st.lim_sec, st.lim_queue = st.bid, st.sec, st.bidqty1
@@ -265,7 +272,7 @@ class RLShadow:
             else:
                 self.sink({"event": "limit_intent", "code": code, "sec": st.sec, "price": st.bid,
                            "why": "잔량 미상 — 체결 모형 불가"})
-        elif act == 3 and st.pos == 1:
+        elif act == "sell" and st.pos == 1:
             st.pending = "sell"
 
     def flush(self) -> None:

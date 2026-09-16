@@ -253,3 +253,79 @@ def test_limit_buy_fills_when_price_trades_through():
     sh.on_tick("A", ts, 995, volume=1, side=-1)       # 우리 가격보다 아래에서 체결
     sh.on_quote("A", t.replace(second=3), bid1=990, ask1=1000, bidqty1=9999, askqty1=50)
     assert [r for r in rows if r["event"] == "buy"], f"뚫렸는데 체결이 없다: {rows}"
+
+
+# ── 행동 공간을 정책이 알려준다 ────────────────────────────────────────────────
+# 96번은 행동이 3개(유지·지정가매수·매도)다. 그림자가 4개로 고정돼 있으면 인덱스가
+# 한 칸씩 밀려 "매도를 눌렀는데 지정가를 건다" 같은 조용한 오류가 된다.
+def test_three_action_policy_maps_by_name_not_index():
+    from datetime import datetime
+
+    import numpy as np
+
+    from scalp_it.realtime.rl_shadow import PolicyWeights, RLShadow
+
+    rows = []
+    w = np.zeros((3, 5), np.float32)
+    w[2] = 1.0                                   # 3행동 정책에서 2 = 매도
+    pol = PolicyWeights(features=["f"], layers=[(w, np.zeros(3, np.float32))],
+                        mu=np.zeros(1), sd=np.ones(1), lo=np.full(1, -1e9), hi=np.full(1, 1e9),
+                        actions=("hold", "limit_buy", "sell"))
+
+    class Stream:
+        def __init__(self, code=None):
+            self.sec = 0
+
+        def update(self, **kw):
+            return {"f": 1.0}
+
+    sh = RLShadow(pol, stream_factory=Stream, sink=rows.append, codes={"A"},
+                  extra_features=lambda c, s: {})
+    t = datetime(2026, 9, 17, 9, 10, 0)
+    for s in (0, 1, 2):
+        ts = t.replace(second=s)
+        sh.on_quote("A", ts, bid1=1000, ask1=1010, bidqty1=5, askqty1=50)
+        sh.on_tick("A", ts, 1005, volume=1, side=1)
+    # 보유가 없으니 매도는 가려져야 하고, 지정가도 시장가도 안 걸려야 한다
+    assert not [r for r in rows if r["event"] in ("buy", "limit_place")], rows
+
+
+def test_default_action_space_is_the_four_action_one():
+    import numpy as np
+
+    from scalp_it.realtime.rl_shadow import PolicyWeights
+
+    pol = PolicyWeights(features=["f"], layers=[(np.zeros((4, 1), np.float32), np.zeros(4, np.float32))],
+                        mu=np.zeros(1), sd=np.ones(1), lo=np.zeros(1), hi=np.ones(1))
+    assert pol.actions == ("hold", "market_buy", "limit_buy", "sell")
+
+
+def test_three_action_policy_places_limit_when_it_chooses_action_one():
+    from datetime import datetime
+
+    import numpy as np
+
+    from scalp_it.realtime.rl_shadow import PolicyWeights, RLShadow
+
+    rows = []
+    w = np.zeros((3, 5), np.float32)
+    w[1] = 1.0                                   # 1 = 지정가 매수
+    pol = PolicyWeights(features=["f"], layers=[(w, np.zeros(3, np.float32))],
+                        mu=np.zeros(1), sd=np.ones(1), lo=np.full(1, -1e9), hi=np.full(1, 1e9),
+                        actions=("hold", "limit_buy", "sell"))
+
+    class Stream:
+        def __init__(self, code=None):
+            self.sec = 0
+
+        def update(self, **kw):
+            return {"f": 1.0}
+
+    sh = RLShadow(pol, stream_factory=Stream, sink=rows.append, codes={"A"},
+                  extra_features=lambda c, s: {})
+    t = datetime(2026, 9, 17, 9, 10, 0)
+    for s in (0, 1, 2):
+        ts = t.replace(second=s)
+        sh.on_quote("A", ts, bid1=1000, ask1=1010, bidqty1=5, askqty1=50)
+        sh.on_tick("A", ts, 1005, volume=1, side=1)
+    assert [r for r in rows if r["event"] == "limit_place"], rows

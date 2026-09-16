@@ -41,3 +41,10 @@ def test_feature_list_contains_both_scales():
     m = _mod()
     assert "dstr30" in m.FEATS and "ret1800" in m.FEATS
     assert len(m.FEATS) == len(set(m.FEATS)), "피처 이름이 겹치면 열이 조용히 덮인다"
+
+
+def test_training_records_action_names_for_the_shadow():
+    """행동 이름이 산출물에 남아야 그림자가 인덱스로 추측하지 않는다."""
+    m = _mod()
+    assert m.ACTION_NAMES == ("hold", "limit_buy", "sell")
+    assert len(m.ACTION_NAMES) == m.N_ACT
