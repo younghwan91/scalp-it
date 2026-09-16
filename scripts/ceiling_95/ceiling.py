@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 
 COST = 0.0023
-HORIZONS = (10, 30, 60)
+HORIZONS = (10, 30, 60, 300, 600, 1800)
 LO, HI = 300, 22800 - 600          # 09:05~15:10 (flow83 진입 구간과 같다)
 CACHE = Path.home() / "of80" / "flow83"
 
