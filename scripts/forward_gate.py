@@ -190,7 +190,9 @@ def trades_for(study: str, days: list[str]) -> pd.DataFrame:
 
     sel = json.loads(STUDIES[study]["model"].read_text())
     # 학습 스크립트를 직접 실행해 저장한 prep 은 Scaler 가 __main__ 소속으로 피클돼 있다 — 여기서 이어 준다.
-    scaler_cls = R.R85.Scaler if study in ("rl87", "rl96") else R.Scaler
+    # 연구 모듈이 Scaler 를 자체 정의했으면 그것, 아니면 85 것을 쓴다.
+    # 이름으로 분기하면 새 연구를 붙일 때마다 조용히 터진다(rl92 가 크론 첫 실행에서 그랬다).
+    scaler_cls = getattr(R, "Scaler", None) or R.R85.Scaler
 
     class _Unpickler(pickle.Unpickler):
         def find_class(self, module, name):
