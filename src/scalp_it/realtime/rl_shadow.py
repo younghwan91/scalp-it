@@ -195,8 +195,11 @@ class RLShadow:
     def _vector(self, st: _Code, feats: dict[str, float]) -> np.ndarray | None:
         missing = [f for f in self.policy.features if f not in feats]
         if missing:
-            self.disabled_reason = (f"피처 커널이 정책이 요구하는 값을 못 준다: {missing[:3]}"
-                                    f"{'…' if len(missing) > 3 else ''} — 추론을 끈다")
+            if self.disabled_reason is None:
+                self.disabled_reason = (f"피처 커널이 정책이 요구하는 값을 못 준다: {missing[:3]}"
+                                        f"{'…' if len(missing) > 3 else ''} — 추론을 끈다")
+                # 그 자리에서 남긴다 — 종료 때 알면 하루를 버린다(2026-09-17).
+                self.sink({"event": "disabled", "sec": st.sec, "reason": self.disabled_reason})
             return None
         raw = np.array([feats[f] for f in self.policy.features], float)
         z = self.policy.scale(raw)
@@ -245,10 +248,15 @@ class RLShadow:
         # 2) 이 초 상태로 커널을 돌리고 다음 행동을 정한다
         if hasattr(st.stream, "sec"):
             st.stream.sec = st.sec
+        kern = st.stream.update(buy=st.buy, sell=st.sell, cnt=st.cnt, bid=st.bid, ask=st.ask,
+                                strength=st.strength, bidqty1=st.bidqty1, askqty1=st.askqty1,
+                                bid_depth3=st.bid_depth3, ask_depth3=st.ask_depth3)
+        if not kern:
+            # 창이 아직 안 데워졌다(장 초반·거래 공백). **결손이 아니라 준비 안 됨**이므로 이 초만 건너뛴다.
+            # 2026-09-17 실측: 이걸 결손으로 보고 하루 종일 추론을 꺼서 기록이 0건이었다.
+            return
         feats = dict(self.extra_for(code, st.sec))
-        feats.update(st.stream.update(buy=st.buy, sell=st.sell, cnt=st.cnt, bid=st.bid, ask=st.ask,
-                                 strength=st.strength, bidqty1=st.bidqty1, askqty1=st.askqty1,
-                                 bid_depth3=st.bid_depth3, ask_depth3=st.ask_depth3))
+        feats.update(kern)
         x = self._vector(st, feats)
         if x is None:
             return

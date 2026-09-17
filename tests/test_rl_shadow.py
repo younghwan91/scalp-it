@@ -329,3 +329,68 @@ def test_three_action_policy_places_limit_when_it_chooses_action_one():
         sh.on_quote("A", ts, bid1=1000, ask1=1010, bidqty1=5, askqty1=50)
         sh.on_tick("A", ts, 1005, volume=1, side=1)
     assert [r for r in rows if r["event"] == "limit_place"], rows
+
+
+# ── 커널이 아직 안 데워진 것과 구조적으로 못 주는 것을 구분한다 ──────────────
+# 2026-09-17 실측: 장 초반 창 커널이 빈 dict 를 돌려주자 그림자가 "피처를 못 준다"로 보고
+# **하루 종일 추론을 껐다**(기록 0건). 준비 안 됨은 그 초를 건너뛰면 되고, 구조적 결손만 꺼야 한다.
+def _shadow_with_kernel(rows, kernel_out_seq):
+    import numpy as np
+
+    from scalp_it.realtime.rl_shadow import PolicyWeights, RLShadow
+
+    w = np.zeros((4, 5), np.float32)
+    w[1] = 1.0                                   # 항상 시장가 매수
+    pol = PolicyWeights(features=["f"], layers=[(w, np.zeros(4, np.float32))],
+                        mu=np.zeros(1), sd=np.ones(1), lo=np.full(1, -1e9), hi=np.full(1, 1e9))
+
+    class Stream:
+        def __init__(self, code=None):
+            self.sec = 0
+            self.i = 0
+
+        def update(self, **kw):
+            out = kernel_out_seq[min(self.i, len(kernel_out_seq) - 1)]
+            self.i += 1
+            return dict(out)
+
+    return RLShadow(pol, stream_factory=Stream, sink=rows.append, codes={"A"},
+                    extra_features=lambda c, s: {})
+
+
+def _feed_secs(sh, secs):
+    from datetime import datetime
+
+    t = datetime(2026, 9, 17, 9, 0, 0)
+    for s in secs:
+        ts = t.replace(minute=s // 60, second=s % 60)
+        sh.on_quote("A", ts, bid1=1000, ask1=1010, bidqty1=5, askqty1=50)
+        sh.on_tick("A", ts, 1005, volume=1, side=1)
+
+
+def test_empty_kernel_output_does_not_disable_for_the_day():
+    """창이 안 데워진 초는 건너뛰기만 한다 — 나중에 값이 오면 다시 돈다."""
+    rows = []
+    sh = _shadow_with_kernel(rows, [{}, {}, {"f": 1.0}])
+    _feed_secs(sh, [0, 1, 2, 3, 4])
+    assert sh.disabled_reason is None, f"준비 안 됨을 결손으로 오해했다: {sh.disabled_reason}"
+    assert [r for r in rows if r["event"] == "buy"], f"창이 데워진 뒤에도 안 돌았다: {rows}"
+
+
+def test_structural_missing_feature_still_disables():
+    """값은 주는데 정책이 요구하는 열이 없으면 그건 진짜 결손이다 — 꺼야 한다."""
+    rows = []
+    sh = _shadow_with_kernel(rows, [{"other": 1.0}])
+    _feed_secs(sh, [0, 1, 2, 3])
+    assert sh.disabled_reason and "f" in sh.disabled_reason
+    assert not [r for r in rows if r["event"] == "buy"]
+
+
+def test_disabling_is_announced_immediately_not_at_shutdown():
+    """꺼지면 그 자리에서 기록한다 — 15:20 종료 때 알면 하루를 버린다."""
+    rows = []
+    sh = _shadow_with_kernel(rows, [{"other": 1.0}])
+    _feed_secs(sh, [0, 1, 2, 3])
+    off = [r for r in rows if r["event"] == "disabled"]
+    assert off and "f" in off[0]["reason"]
+    assert len(off) == 1, "매 초 반복해서 남기면 로그가 덮인다"
