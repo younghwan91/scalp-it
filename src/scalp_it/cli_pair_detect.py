@@ -1688,7 +1688,8 @@ def _build_rl_shadow(args: argparse.Namespace, trade_date: date) -> tuple[Any, s
         # 창 커널은 종목당 1초 81ms 다 — 이벤트 루프에서 돌리면 주문이 밀린다. 별도 스레드로 뺀다.
         from .realtime.rl_shadow_worker import ShadowWorker
 
-        worker = ShadowWorker(shadow)
+        worker = ShadowWorker(
+            shadow, warn=lambda m: print(m, file=sys.stderr, flush=True), warn_every=2000)
         worker.start()
         return worker, codes
     except Exception as exc:  # noqa: BLE001 — 그림자 준비 실패로 매매를 죽이지 않는다

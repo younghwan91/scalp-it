@@ -31,3 +31,11 @@ def test_rejects_things_that_are_not_krx_codes(capsys):
         f.write_text("005930\nAAPL\n12345\n0059301\n/tmp/foo\n종목코드\n069500\n")
         assert _pin_codes("", str(f)) == ["005930", "069500"]
         assert "건너뛴다" in capsys.readouterr().err
+
+
+def test_cron_keeps_rl_codes_within_kernel_capacity(cron_args):
+    """창 커널은 종목당 1초 81ms 다 — 8종목은 초당 650ms 라 못 따라간다.
+
+    2026-09-18·21 실측: 8종목에서 프레임 115,547 / 76,005 건을 버리고 기록이 0건이었다.
+    """
+    assert cron_args.rl_codes <= 4, "창 커널이 못 따라가는 종목 수다"

@@ -82,3 +82,42 @@ def test_detector_builds_worker_not_raw_shadow(tmp_path):
     assert worker is None or hasattr(worker, "feed_tick"), "작업 스레드로 감싸야 한다"
     if worker is not None:
         worker.stop(timeout=2)
+
+
+# ── 버리는 중에 알린다 ────────────────────────────────────────────────────────
+# 2026-09-18·21 실측: 8종목에서 프레임 115,547 / 76,005건을 버리고도 **종료 때까지** 알리지 않아
+# 이틀을 통째로 날렸다. 목요일의 "꺼진 줄 몰랐다"와 같은 실패 형태다.
+def test_drops_are_reported_while_they_happen():
+    from scalp_it.realtime.rl_shadow_worker import ShadowWorker
+
+    class Sink:
+        def __init__(self):
+            self.msgs = []
+
+        def __call__(self, msg):
+            self.msgs.append(msg)
+
+    class Slow:
+        def on_tick(self, *a, **k):
+            pass
+
+        def on_quote(self, *a, **k):
+            pass
+
+    warn = Sink()
+    w = ShadowWorker(Slow(), maxsize=2, warn=warn, warn_every=5)
+    for i in range(20):
+        w.feed_tick("A", None, 100.0)
+    assert w.dropped > 0
+    assert warn.msgs, "버리는 중에 아무 말도 안 했다"
+    assert "버" in warn.msgs[0] or "drop" in warn.msgs[0].lower()
+    assert len(warn.msgs) <= 5, f"매번 떠들면 로그가 묻힌다: {len(warn.msgs)}회"
+
+
+def test_no_warning_when_nothing_is_dropped():
+    from scalp_it.realtime.rl_shadow_worker import ShadowWorker
+
+    msgs = []
+    w = ShadowWorker(object(), maxsize=100, warn=msgs.append)
+    w.feed_tick("A", None, 100.0)
+    assert not msgs
