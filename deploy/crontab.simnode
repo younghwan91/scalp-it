@@ -51,3 +51,7 @@
 # kqc nightly 가 job 마다 격리·timeout 을 건다. 스윕은 krx-quant-core run_sweep(시행 원장 research/runs/).
 45 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/.local/bin/uv run kqc nightly . >> data/nightly.cron.log 2>&1
 
+# 분봉 수집 — 2026-09-17 에 수동 루프가 끊겨 1,300종목 → 452종목으로 떨어졌다(09-22 발견).
+# 크론으로 고정한다. 15:40 에 trader 감지기가 내려간 뒤 도는 것이 중요하다 —
+# 키움 앱키는 1세션 제약이라 장중에 같은 키로 붙으면 매매 쪽 소켓을 밀어낸다.
+45 15 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && nice -n 15 .venv/bin/python -m scalp_it.cli_intraday --universe-top 1400 --pages 6 >> data/intraday_minute.cron.log 2>&1
