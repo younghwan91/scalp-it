@@ -39,3 +39,11 @@ def test_cron_keeps_rl_codes_within_kernel_capacity(cron_args):
     2026-09-18·21 실측: 8종목에서 프레임 115,547 / 76,005 건을 버리고 기록이 0건이었다.
     """
     assert cron_args.rl_codes <= 4, "창 커널이 못 따라가는 종목 수다"
+
+
+def test_cron_rl_codes_matches_measured_kernel_cost(cron_args):
+    """실측: 상위 종목 창 커널 55~129ms/초. 3종목(초당 300ms)에서도 프레임을 버렸다(09-22, 34,034건).
+
+    산술 여유가 있어도 이벤트 루프와 GIL 을 나눠 쓰면 못 따라간다. 운용은 1종목.
+    """
+    assert cron_args.rl_codes == 1
