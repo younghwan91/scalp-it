@@ -92,6 +92,14 @@ class _Code:
     entry: float = 0.0
     entry_sec: int = 0
     mark: float = 0.0
+    # **커널 입력 전용** — 그 초에 실제로 온 값만. 안 오면 NaN 이다.
+    # 배치(aggregate_seconds_v2)가 호가 없는 초에 NaN 을 넣기 때문이다(069500/09-22: 22,800초 중 3,881초).
+    # 위의 sticky 필드(bid/ask/…)는 체결 판정·평가손익용이라 직전 값을 유지한다. 두 용도를 섞으면 안 된다.
+    q: dict = field(default_factory=dict, repr=False)
+    # 그 초의 체결 — core v2 증분 커널이 집계값이 아니라 **체결 배열**을 받는다.
+    px: list = field(default_factory=list, repr=False)
+    vol: list = field(default_factory=list, repr=False)
+    sd: list = field(default_factory=list, repr=False)
     pending: str = ""          # "buy" | "sell" | "limit" — 앞의 둘은 다음 초 호가로 체결한다
     lim_P: float = 0.0         # 걸어둔 지정가(0 = 없음)
     lim_sec: int = 0           # 건 시각 — 취소 시한 판정용
@@ -132,10 +140,15 @@ class RLShadow:
         st = self._roll(code, ts)
         if bid1 and ask1:
             st.bid, st.ask = float(bid1), float(ask1)
+        if bid1:
+            st.q["bid"] = float(bid1)
+        if ask1:
+            st.q["ask"] = float(ask1)
         for name, v in (("bidqty1", bidqty1), ("askqty1", askqty1),
                         ("bid_depth3", bid_depth3), ("ask_depth3", ask_depth3)):
             if v is not None:
                 setattr(st, name, float(v))
+                st.q[name] = float(v)
         feed = getattr(st.stream, "feed_quote", None)
         if feed is not None and bid1 and ask1:
             feed(ts, float(bid1), float(ask1), bidqty1 or 0.0, 0.0, 0.0, askqty1 or 0.0, 0.0, 0.0)
@@ -147,8 +160,13 @@ class RLShadow:
         st = self._roll(code, ts)
         if best_bid and best_ask:
             st.bid, st.ask = float(best_bid), float(best_ask)
+            st.q.setdefault("bid", float(best_bid))
+            st.q.setdefault("ask", float(best_ask))
         v = float(price) * float(volume or 0)
         st.cnt += 1
+        st.px.append(float(price))
+        st.vol.append(float(volume or 0))
+        st.sd.append(int(side or 0))
         self.cumval[code] = self.cumval.get(code, 0.0) + v
         if side is not None and side > 0:
             st.buy += v
@@ -156,6 +174,7 @@ class RLShadow:
             st.sell += v
         if strength is not None:
             st.strength = float(strength)
+            st.q["strength"] = float(strength)
         if st.lim_P > 0:
             # 대기열 체결(86 §3): 우리 가격에 지나간 매도 체결량을 세고, 뚫림도 본다.
             if float(price) < st.lim_P:
@@ -181,6 +200,10 @@ class RLShadow:
                 self._finalize(code, st)
             st.sec = sec
             st.buy = st.sell = st.cnt = 0.0
+            st.px.clear()
+            st.vol.clear()
+            st.sd.clear()
+            st.q.clear()
         return st
 
     def extra_for(self, code: str, sec: int) -> dict[str, float]:
@@ -248,9 +271,14 @@ class RLShadow:
         # 2) 이 초 상태로 커널을 돌리고 다음 행동을 정한다
         if hasattr(st.stream, "sec"):
             st.stream.sec = st.sec
-        kern = st.stream.update(buy=st.buy, sell=st.sell, cnt=st.cnt, bid=st.bid, ask=st.ask,
-                                strength=st.strength, bidqty1=st.bidqty1, askqty1=st.askqty1,
-                                bid_depth3=st.bid_depth3, ask_depth3=st.ask_depth3)
+        nan = float("nan")
+        kern = st.stream.update(buy=st.buy, sell=st.sell, cnt=st.cnt,
+                                bid=st.q.get("bid", nan), ask=st.q.get("ask", nan),
+                                strength=st.q.get("strength", nan),
+                                bidqty1=st.q.get("bidqty1", nan), askqty1=st.q.get("askqty1", nan),
+                                bid_depth3=st.q.get("bid_depth3", nan),
+                                ask_depth3=st.q.get("ask_depth3", nan),
+                                price=tuple(st.px), volume=tuple(st.vol), side=tuple(st.sd))
         if not kern:
             # 창이 아직 안 데워졌다(장 초반·거래 공백). **결손이 아니라 준비 안 됨**이므로 이 초만 건너뛴다.
             # 2026-09-17 실측: 이걸 결손으로 보고 하루 종일 추론을 꺼서 기록이 0건이었다.

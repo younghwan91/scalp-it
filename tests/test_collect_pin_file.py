@@ -33,17 +33,11 @@ def test_rejects_things_that_are_not_krx_codes(capsys):
         assert "건너뛴다" in capsys.readouterr().err
 
 
-def test_cron_keeps_rl_codes_within_kernel_capacity(cron_args):
-    """창 커널은 종목당 1초 81ms 다 — 8종목은 초당 650ms 라 못 따라간다.
+def test_cron_uses_the_incremental_kernel_not_the_window_one(cron_args):
+    """창 재계산 커널은 초당 55~129ms 라 매매 프로세스 안에서 못 돈다(09-16~18 에 수집까지 갉아먹었다).
 
-    2026-09-18·21 실측: 8종목에서 프레임 115,547 / 76,005 건을 버리고 기록이 0건이었다.
+    core 0.5.1 의 증분 커널(v2)은 실측 **초당 75µs**(1,000배 빠름)이고 배치와 불일치 0열이다.
+    그래서 종목 수를 다시 올릴 수 있다 — 20종목이면 초당 1.5ms.
     """
-    assert cron_args.rl_codes <= 4, "창 커널이 못 따라가는 종목 수다"
-
-
-def test_cron_rl_codes_matches_measured_kernel_cost(cron_args):
-    """실측: 상위 종목 창 커널 55~129ms/초. 3종목(초당 300ms)에서도 프레임을 버렸다(09-22, 34,034건).
-
-    산술 여유가 있어도 이벤트 루프와 GIL 을 나눠 쓰면 못 따라간다. 운용은 1종목.
-    """
-    assert cron_args.rl_codes == 1
+    assert cron_args.rl_kernel == "auto", "window 로 두면 다시 초당 100ms 가 된다"
+    assert 1 <= cron_args.rl_codes <= 40

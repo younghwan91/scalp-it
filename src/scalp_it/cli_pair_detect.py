@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import inspect
 import os
 import signal
 import sys
@@ -1652,7 +1653,12 @@ def _build_rl_shadow(args: argparse.Namespace, trade_date: date) -> tuple[Any, s
             def stream_cls(code: str = "", _day=trade_date.isoformat()):
                 return _WindowAdapter(WindowKernelStream(code or "?", day=_day))
         else:
-            stream_cls = getattr(lob, "SecondFeatureStreamV2", lob.SecondFeatureStream)
+            v2 = getattr(lob, "SecondFeatureStreamV2", None)
+            if v2 is not None:
+                def stream_cls(code: str = "", _cls=v2):
+                    return _V2Adapter(_cls())
+            else:
+                stream_cls = lob.SecondFeatureStream
         log_path = Path(args.rl_shadow_log)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1714,6 +1720,27 @@ class _WindowAdapter:
 
     def update(self, **_agg: float) -> dict[str, float]:
         return self.inner.update(self.sec) if self.sec >= 0 else {}
+
+
+class _V2Adapter:
+    """core 증분 커널(SecondFeatureStreamV2)을 RLShadow 의 스트림 규약에 맞춘다.
+
+    그림자는 집계값(buy/sell/cnt)과 체결 배열을 함께 넘긴다. v2 는 체결 배열만 받으므로
+    **받는 인자만 골라 넘긴다** — 이름을 손으로 나열하면 core 가 시그니처를 바꿀 때 조용히 깨진다.
+    창 재계산 커널(초당 55~129ms)과 달리 증분이라 매매 프로세스 안에서 돌 수 있다.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.sec = -1
+        self._ok = set(inspect.signature(inner.update).parameters)
+
+    def update(self, **kw: Any) -> dict[str, float]:
+        if "bidqty1" in kw and "bidqty1_raw" not in kw:
+            kw["bidqty1_raw"] = kw["bidqty1"]          # core 규약: *_raw 는 그 초의 마지막 스냅샷
+        if "askqty1" in kw and "askqty1_raw" not in kw:
+            kw["askqty1_raw"] = kw["askqty1"]
+        return self.inner.update(**{k: v for k, v in kw.items() if k in self._ok})
 
 
 def _feed_rl_shadow(worker: Any, codes: set[str], ticks: list[dict], quotes: list[dict]) -> None:

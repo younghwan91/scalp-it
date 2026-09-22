@@ -394,3 +394,142 @@ def test_disabling_is_announced_immediately_not_at_shutdown():
     off = [r for r in rows if r["event"] == "disabled"]
     assert off and "f" in off[0]["reason"]
     assert len(off) == 1, "매 초 반복해서 남기면 로그가 덮인다"
+
+
+# ── v2 증분 커널은 그 초의 체결 배열을 요구한다 ───────────────────────────────
+# 창 재계산 커널은 초당 55~129ms 라 매매 프로세스 안에서 못 돈다(09-16~18 에 수집까지 갉아먹었다).
+# core 0.5.1 의 SecondFeatureStreamV2 는 증분이라 훨씬 싸지만, 집계값이 아니라 **그 초의 체결**을 받는다.
+def test_shadow_passes_this_seconds_trades_to_the_stream():
+    from datetime import datetime
+
+    import numpy as np
+
+    from scalp_it.realtime.rl_shadow import PolicyWeights, RLShadow
+
+    seen = []
+
+    class Stream:
+        def __init__(self, code=None):
+            self.sec = 0
+
+        def update(self, **kw):
+            seen.append({k: list(v) if k in ("price", "volume", "side") else v
+                         for k, v in kw.items() if k in ("price", "volume", "side")})
+            return {"f": 1.0}
+
+    pol = PolicyWeights(features=["f"], layers=[(np.zeros((4, 5), np.float32), np.zeros(4, np.float32))],
+                        mu=np.zeros(1), sd=np.ones(1), lo=np.full(1, -1e9), hi=np.full(1, 1e9))
+    sh = RLShadow(pol, stream_factory=Stream, sink=lambda r: None, codes={"A"},
+                  extra_features=lambda c, s: {})
+    t = datetime(2026, 9, 23, 9, 10, 0)
+    sh.on_quote("A", t, bid1=1000, ask1=1010, bidqty1=5, askqty1=5)
+    sh.on_tick("A", t, 1005, volume=3, side=1)
+    sh.on_tick("A", t, 1006, volume=4, side=-1)
+    sh.on_tick("A", t.replace(second=1), 1007, volume=5, side=1)   # 초가 넘어가며 0초 마감
+    assert seen, "스트림이 안 불렸다"
+    first = seen[0]
+    assert first["price"] == [1005.0, 1006.0], first
+    assert first["volume"] == [3.0, 4.0], first
+    assert first["side"] == [1, -1], first
+
+
+def test_this_seconds_trades_reset_each_second():
+    from datetime import datetime
+
+    import numpy as np
+
+    from scalp_it.realtime.rl_shadow import PolicyWeights, RLShadow
+
+    seen = []
+
+    class Stream:
+        def __init__(self, code=None):
+            self.sec = 0
+
+        def update(self, **kw):
+            seen.append(list(kw.get("price", ())))
+            return {"f": 1.0}
+
+    pol = PolicyWeights(features=["f"], layers=[(np.zeros((4, 5), np.float32), np.zeros(4, np.float32))],
+                        mu=np.zeros(1), sd=np.ones(1), lo=np.full(1, -1e9), hi=np.full(1, 1e9))
+    sh = RLShadow(pol, stream_factory=Stream, sink=lambda r: None, codes={"A"},
+                  extra_features=lambda c, s: {})
+    t = datetime(2026, 9, 23, 9, 10, 0)
+    for s, px in ((0, 1000.0), (1, 1001.0), (2, 1002.0)):
+        sh.on_quote("A", t.replace(second=s), bid1=1000, ask1=1010, bidqty1=5, askqty1=5)
+        sh.on_tick("A", t.replace(second=s), px, volume=1, side=1)
+    sh.on_quote("A", t.replace(second=3), bid1=1000, ask1=1010, bidqty1=5, askqty1=5)
+    assert seen[:3] == [[1000.0], [1001.0], [1002.0]], f"초마다 비워지지 않았다: {seen[:3]}"
+
+
+# ── 커널 입력은 "그 초에 실제로 온 값"이어야 한다 ─────────────────────────────
+# 배치(aggregate_seconds_v2)는 호가가 없는 초에 NaN 을 넣는다(069500/09-22 에서 22,800초 중 3,881초).
+# 그림자가 직전 값을 물고 넘기면 값이 달라져 패리티가 무의미해진다. 반면 체결 판정·평가손익은
+# 직전 호가를 써야 한다 — 두 용도를 분리한다.
+def test_kernel_gets_nan_for_fields_that_did_not_arrive_this_second():
+    from datetime import datetime
+
+    import numpy as np
+
+    from scalp_it.realtime.rl_shadow import PolicyWeights, RLShadow
+
+    seen = []
+
+    class Stream:
+        def __init__(self, code=None):
+            self.sec = 0
+
+        def update(self, **kw):
+            seen.append({k: kw.get(k) for k in ("bid", "ask", "bidqty1", "strength")})
+            return {"f": 1.0}
+
+    pol = PolicyWeights(features=["f"], layers=[(np.zeros((4, 5), np.float32), np.zeros(4, np.float32))],
+                        mu=np.zeros(1), sd=np.ones(1), lo=np.full(1, -1e9), hi=np.full(1, 1e9))
+    sh = RLShadow(pol, stream_factory=Stream, sink=lambda r: None, codes={"A"},
+                  extra_features=lambda c, s: {})
+    t = datetime(2026, 9, 23, 9, 10, 0)
+    sh.on_quote("A", t, bid1=1000, ask1=1010, bidqty1=7, askqty1=8)
+    sh.on_tick("A", t, 1005, volume=1, side=1, strength=120.0)
+    # 1초: 체결만 있고 호가는 없다
+    sh.on_tick("A", t.replace(second=1), 1006, volume=1, side=1)
+    # 2초: 아무것도 없다 → 1초 마감이 일어나게 호가 하나
+    sh.on_quote("A", t.replace(second=2), bid1=1000, ask1=1010, bidqty1=9, askqty1=9)
+
+    assert seen[0]["bid"] == 1000.0 and seen[0]["bidqty1"] == 7.0
+    assert seen[0]["strength"] == 120.0
+    s1 = seen[1]
+    assert np.isnan(s1["bid"]) and np.isnan(s1["ask"]), f"호가 없는 초에 직전 값을 넘겼다: {s1}"
+    assert np.isnan(s1["bidqty1"]), s1
+    assert np.isnan(s1["strength"]), "체결강도도 그 초에 온 것만 넘겨야 한다"
+
+
+def test_fill_logic_still_uses_the_last_known_quote():
+    """커널 입력은 NaN 이어도 체결·평가손익은 직전 호가로 계속 돌아야 한다."""
+    from datetime import datetime
+
+    import numpy as np
+
+    from scalp_it.realtime.rl_shadow import PolicyWeights, RLShadow
+
+    rows = []
+    w = np.zeros((4, 5), np.float32)
+    w[1] = 1.0                                     # 시장가 매수
+
+    class Stream:
+        def __init__(self, code=None):
+            self.sec = 0
+
+        def update(self, **kw):
+            return {"f": 1.0}
+
+    pol = PolicyWeights(features=["f"], layers=[(w, np.zeros(4, np.float32))],
+                        mu=np.zeros(1), sd=np.ones(1), lo=np.full(1, -1e9), hi=np.full(1, 1e9))
+    sh = RLShadow(pol, stream_factory=Stream, sink=rows.append, codes={"A"},
+                  extra_features=lambda c, s: {})
+    t = datetime(2026, 9, 23, 9, 10, 0)
+    sh.on_quote("A", t, bid1=1000, ask1=1010, bidqty1=5, askqty1=5)
+    sh.on_tick("A", t, 1005, volume=1, side=1)
+    sh.on_tick("A", t.replace(second=1), 1006, volume=1, side=1)   # 호가 없는 초
+    sh.on_tick("A", t.replace(second=2), 1007, volume=1, side=1)
+    buys = [r for r in rows if r["event"] == "buy"]
+    assert buys and buys[0]["price"] == 1010.0, f"직전 매도1호가로 체결돼야 한다: {rows}"
