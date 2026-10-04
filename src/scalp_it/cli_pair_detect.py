@@ -1254,7 +1254,7 @@ def build_poslog(args: argparse.Namespace, guard: RiskGuard | None) -> PositionL
     if guard is None or args.dry_run:
         return None
     poslog = PositionLogSink(args.position_log, basis=args.fill_basis)
-    guard.set_close_callback(poslog.log_close)
+    guard.attach_sink(poslog)
     return poslog
 
 
