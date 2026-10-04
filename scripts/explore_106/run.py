@@ -53,7 +53,7 @@ from krx_quant_core.stats.matched_null import (
 from krx_quant_core.stats.trials import record_trial
 
 VI_RULE = {"gap_sec": [V.GAP_MIN, V.GAP_MAX], "jump_min": V.JUMP_MIN,
-           "pre_move": [V.PRE_WIN, V.PRE_MOVE_MIN], "quote_max_after_grace": [V.QUOTE_GRACE, V.QUOTE_MAX],
+           "pre_move": [V.PRE_WIN, V.PRE_MOVE_MIN], "quote_min_rate_after_grace": [V.QUOTE_GRACE, V.QUOTE_MIN_RATE],
            "market_min_rate": V.MARKET_MIN_RATE}
 
 

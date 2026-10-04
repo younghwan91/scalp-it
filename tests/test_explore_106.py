@@ -48,14 +48,14 @@ def test_gap_with_jump_and_frozen_quotes_is_vi():
     secs = np.concatenate([pre, post])
     prices = np.concatenate([np.full(len(pre), 10000.0), np.full(len(post), 10200.0)])
     tk = pd.concat([_ticks("A", secs, prices), _liquid_background()], ignore_index=True)
-    qt = _quotes("A", np.concatenate([pre, post]))          # 공백 중 호가 갱신 없음
+    qt = _quotes("A", np.arange(T9 + 3000, T9 + 3600 + 430))   # 단일가 접수 중에도 매초 호가 갱신
     ev = V.reconstruct(tk, qt)
     ev = ev[ev.code == "A"]
     assert len(ev) == 1
     r = ev.iloc[0]
     assert r.sec_prev == T9 + 3599 and r.sec_resume == T9 + 3730 and r.gap == 131
     assert abs(r.jump - 0.02) < 1e-9
-    assert r.n_quote_gap == 0 and r.keep and r.direction == 1
+    assert r.n_quote_gap == 129 and r.keep and r.direction == 1
 
 
 def test_short_gap_is_not_vi():
@@ -74,22 +74,23 @@ def test_gap_without_price_move_is_liquidity_gap():
     secs = np.concatenate([pre, post])
     prices = np.full(len(secs), 10000.0)                      # 변화 0
     tk = pd.concat([_ticks("A", secs, prices), _liquid_background()], ignore_index=True)
-    ev = V.reconstruct(tk, _quotes("A", secs))
+    ev = V.reconstruct(tk, _quotes("A", np.arange(T9 + 3000, T9 + 3600 + 430)))
     a = ev[ev.code == "A"]
     assert len(a) == 1 and not a.iloc[0].keep and "가격" in a.iloc[0].reason
 
 
-def test_gap_with_quote_updates_is_rejected():
+def test_gap_with_frozen_quotes_is_liquidity_gap():
+    # 가격이 뛰어도 공백 중 호가가 안 움직였으면 단일가 접수가 아니라 그냥 조용했던 것이다
     pre = np.arange(T9 + 3000, T9 + 3600)
     post = np.arange(T9 + 3600 + 130, T9 + 3600 + 430)
     secs = np.concatenate([pre, post])
     prices = np.concatenate([np.full(len(pre), 10000.0), np.full(len(post), 10200.0)])
     tk = pd.concat([_ticks("A", secs, prices), _liquid_background()], ignore_index=True)
-    qt = _quotes("A", np.arange(T9 + 3000, T9 + 3600 + 430))   # 공백 중에도 매초 호가 갱신
+    qt = _quotes("A", np.concatenate([pre, [T9 + 3600, T9 + 3650], post]))   # 공백 중 2번
     ev = V.reconstruct(tk, qt)
     a = ev[ev.code == "A"]
-    assert len(a) == 1 and not a.iloc[0].keep and "호가" in a.iloc[0].reason
-    assert a.iloc[0].n_quote_gap > 100
+    assert len(a) == 1 and not a.iloc[0].keep and "호가 정지" in a.iloc[0].reason
+    assert a.iloc[0].n_quote_gap == 1                      # 시작 2초 안의 1건은 안 센다
 
 
 def test_premove_alone_qualifies():
@@ -101,7 +102,7 @@ def test_premove_alone_qualifies():
     prices = np.concatenate([np.full(len(pre_a), 10000.0), np.full(len(pre_b), 10350.0),
                              np.full(len(post), 10350.0)])
     tk = pd.concat([_ticks("A", secs, prices), _liquid_background()], ignore_index=True)
-    ev = V.reconstruct(tk, _quotes("A", secs))
+    ev = V.reconstruct(tk, _quotes("A", np.arange(T9 + 3000, T9 + 3600 + 425)))
     a = ev[ev.code == "A"]
     assert len(a) == 1 and a.iloc[0].keep and abs(a.iloc[0].pre_move - 0.035) < 1e-9
 

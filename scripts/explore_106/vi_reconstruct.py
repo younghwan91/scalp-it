@@ -6,8 +6,10 @@
    (VI 는 2분 단일가 + 최대 30초 무작위 연장. 10분 넘는 공백은 저유동 종목의 잠잠함이다.)
 2. 가격 조건: 재개 첫 체결가 / 공백 직전 체결가 − 1 의 절댓값 ≥ 1%, **또는** 공백 직전 60초 변동 ≥ ±3%.
    (정적 VI 10% · 동적 VI 2~3% 조건의 근사. 35번이 보였듯 공백 길이만으로는 유동성 공백과 못 가른다.)
-3. 호가 조건: 공백 중 호가 갱신이 멈췄어야 한다(단일가 접수 중엔 체결 호가가 안 바뀐다).
-   공백 시작 2초 안의 잔여 갱신은 봐준다.
+3. 호가 조건: 공백 중 호가 갱신이 **계속 흘러야** 한다(공백 시작 2초 뒤부터 초당 0.5건 이상).
+   처음 가정은 반대("단일가 중 호가가 멈춘다")였는데 2026-08-24 실측이 뒤집었다 — 진짜 VI(001210 09:06,
+   014990 14:55, 950160 09:08)는 공백 130초 동안 호가가 128~134번 바뀌고(단일가 접수 중 예상체결 호가),
+   유동성 공백(216080 12:36 등)은 225초에 65번·대부분 2~40번이며 호가 자체가 그대로다.
 4. 시장 조건: 공백 구간의 **전 종목** 초당 틱 수가 그날 중앙값의 20% 이상이어야 한다.
    (모든 종목이 같이 멈췄으면 수집 중단이지 VI 가 아니다 — bad_days 에 없는 부분 수집일도 걸린다.)
 
@@ -21,7 +23,7 @@ import pandas as pd
 GAP_MIN, GAP_MAX = 110, 600
 JUMP_MIN = 0.01
 PRE_WIN, PRE_MOVE_MIN = 60, 0.03
-QUOTE_GRACE, QUOTE_MAX = 2, 0           # 공백 시작 뒤 2초를 지나서 온 호가 갱신 허용 개수
+QUOTE_GRACE, QUOTE_MIN_RATE = 2, 0.5    # 공백 시작 2초 뒤부터의 호가 갱신 초당 하한
 MARKET_MIN_RATE = 0.2
 SESSION_LO, SESSION_HI = 9 * 3600, 15 * 3600 + 20 * 60     # [09:00:00, 15:20:00)
 
@@ -62,8 +64,8 @@ def reconstruct(tk: pd.DataFrame, qt: pd.DataFrame) -> pd.DataFrame:
             reasons = []
             if not (abs(jump) >= JUMP_MIN or (np.isfinite(pre_move) and abs(pre_move) >= PRE_MOVE_MIN)):
                 reasons.append("가격 조건 미달")
-            if nq > QUOTE_MAX:
-                reasons.append("공백 중 호가 갱신")
+            if nq < QUOTE_MIN_RATE * (s1 - s0 - QUOTE_GRACE):
+                reasons.append("공백 중 호가 정지(유동성 공백)")
             if not (rate >= MARKET_MIN_RATE):
                 reasons.append("시장 전체 틱 중단")
             direction = int(np.sign(jump)) if abs(jump) >= JUMP_MIN / 2 else (
