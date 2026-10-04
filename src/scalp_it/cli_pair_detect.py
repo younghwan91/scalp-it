@@ -1254,7 +1254,7 @@ def build_poslog(args: argparse.Namespace, guard: RiskGuard | None) -> PositionL
     if guard is None or args.dry_run:
         return None
     poslog = PositionLogSink(args.position_log, basis=args.fill_basis)
-    guard.attach_sink(poslog)   # 청산 콜백 + 코어 KillSwitch 그림자 불일치 기록
+    guard.attach_sink(poslog)
     return poslog
 
 

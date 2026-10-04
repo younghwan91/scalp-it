@@ -1,11 +1,12 @@
 # ruff: noqa: DTZ001 — 테스트 datetime 은 KST naive(프로젝트 표준)
-"""RiskGuard 킬 판정 ≡ 코어 ``KillSwitch`` 판정 — 그림자 대조 테스트.
+"""RiskGuard 킬 판정 ≡ 코어 ``KillSwitch`` 판정 — 위임 경로 시나리오 회귀.
 
-RiskGuard 가 코어 ``krx_quant_core.risk.KillSwitch`` 를 그림자로 같이 굴린다. 알림·틱·
-청산·분할·정지파일·날짜변경·이익반납 시나리오(``test_pair_risk_guard.py``·
-``test_profit_giveback.py`` 의 킬 케이스를 그대로 재사용)를 돌리며 **매 단계**
-(killed, kill_reason) 과 실현손익·정점·연속손절이 같은지, 그리고 ``kill_mismatch``
-이벤트가 한 번도 안 남는지 고정한다. 여기서 어긋나면 코어로 위임할 수 없다.
+1단계(그림자)에서 RiskGuard 자체 판정과 코어 ``krx_quant_core.risk.KillSwitch`` 를 나란히
+굴려 매 단계 일치를 확인했고, 2단계에서 RiskGuard 의 킬 상태가 KillSwitch 를 비추는
+프로퍼티가 됐다. 이 파일은 그 시나리오(알림·틱·청산·분할·정지파일·날짜변경·이익반납 —
+``test_pair_risk_guard.py``·``test_profit_giveback.py`` 의 킬 케이스 재사용)를 그대로 돌려
+**매 단계** 가드가 외부에 보이는 상태와 KillSwitch 내부 상태가 같고, 킬 시점·사유가
+원본 RiskGuard 규칙 그대로인지 고정한다. 코어 KillSwitch 의 의미가 바뀌면 여기서 먼저 깨진다.
 """
 
 import json
@@ -51,14 +52,15 @@ def _guard(**kw) -> RiskGuard:
 
 
 def _same(g: RiskGuard) -> None:
-    """가드와 그림자 KillSwitch 가 같은 상태인지 — 한 단계 뒤마다 부른다."""
+    """가드가 보이는 킬 상태와 KillSwitch 내부 상태가 같은지 — 한 단계 뒤마다 부른다."""
     ks: KillSwitch = g.killswitch
     assert (g.killed, g.kill_reason) == (ks.killed, ks.kill_reason)
     assert abs(g.realized_krw - ks.realized_krw) < 1e-6
     assert abs(g.peak_realized_krw - ks.peak_realized_krw) < 1e-6
     assert g.consecutive_losses == ks.consecutive_losses
     assert g.day == ks.day
-    assert g.kill_mismatches == 0
+    # 승패 집계는 가드가 따로 세지만 같은 is_loss 규칙이라 코어 집계와도 같아야 한다.
+    assert (g.wins, g.losses) == (ks.wins, ks.losses)
 
 
 def _loss(g: RiskGuard, secs: float, follower: str = FOL, days: int = 0) -> None:
@@ -361,8 +363,8 @@ def test_giveback_via_partial_parity():
 
 # --------------------------------------------------------------- 긴 하루 + 로그
 
-def test_long_session_never_logs_kill_mismatch(tmp_path):
-    """sink 를 붙이고 여러 날을 굴려도 ``kill_mismatch`` 는 한 줄도 안 나와야 한다."""
+def test_long_session_stays_in_sync(tmp_path):
+    """sink 를 붙이고 여러 날을 굴려도 매 단계 일치 + 로그 이벤트 종류가 그대로."""
     log = tmp_path / "positions.log"
     stop = tmp_path / "STOP"
     sink = PositionLogSink(log, basis="through")
@@ -397,23 +399,18 @@ def test_long_session_never_logs_kill_mismatch(tmp_path):
     assert g.kill_reason == KILL_DAILY_LOSS
     g.flush_expired(BASE + timedelta(days=4)); _same(g)
     events = [json.loads(x)["event"] for x in log.read_text(encoding="utf-8").splitlines()]
-    assert "kill_mismatch" not in events
     # open/killswitch 는 CLI 가 쓴다 — 가드가 직접 남기는 건 청산·분할·미체결뿐.
     assert {"close", "partial"} <= set(events) <= {"close", "partial", "unfilled"}
-    assert g.kill_mismatches == 0
 
 
-def test_mismatch_is_logged_when_states_diverge(tmp_path):
-    """대조 장치 자체가 동작하는지 — 그림자를 일부러 어긋내면 이벤트가 남고 효력은 가드 쪽."""
-    log = tmp_path / "positions.log"
-    g = _guard(max_consecutive_losses=1)
-    g.attach_sink(PositionLogSink(log, basis="through"))
-    g.on_alert(_alert(0))
-    g.killswitch.force_stop()                      # 가드는 모르는 그림자 킬
-    d = g.on_alert(_alert(1, follower="000003"))
-    assert d.allowed is True                       # 효력은 RiskGuard 판정
-    recs = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
-    mm = [r for r in recs if r["event"] == "kill_mismatch"]
-    assert len(mm) == 1 and g.kill_mismatches == 1
-    assert mm[0]["core_reason"] == KILL_MANUAL and mm[0]["guard_killed"] is False
-    assert mm[0]["ts"].startswith("2026-08-24")
+def test_direct_state_assignment_drives_core():
+    """``g.realized_krw = …`` + ``_refresh_kill()`` 관례(test_profit_giveback)가 코어까지 간다."""
+    g = _guard(profit_giveback_ratio=0.5, profit_giveback_min_krw=10_000)
+    g.realized_krw = 100_000
+    g._refresh_kill(); _same(g)
+    assert g.killswitch.peak_realized_krw == 100_000 and g.day is None
+    g.realized_krw = 50_000
+    g._refresh_kill(); _same(g)
+    assert g.kill_reason == KILL_GIVEBACK
+    # 그 뒤 첫 날짜 관측은 리셋이 아니다 — 킬이 살아 있어야 한다.
+    assert g.on_alert(_alert(0)).killed; _same(g)
