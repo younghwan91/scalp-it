@@ -66,6 +66,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from krx_quant_core.backtest.fills import limit_buy_filled
+from krx_quant_core.risk import KillSwitch, KillSwitchConfig
 
 from ..ticksize import tick_size
 
@@ -378,6 +379,14 @@ class RiskGuard:
         self.killed: bool = False
         self.kill_reason: str = ""
         self._banner_shown: bool = False
+        # 코어 ``KillSwitch`` 를 **그림자**로 같이 굴린다(1단계). 모든 이벤트를 거울처럼
+        # 먹이고, 판정 뒤마다 (killed, kill_reason) 을 대조한다. 어긋나면
+        # ``kill_mismatch`` 이벤트를 남기되 **효력은 RiskGuard 판정**이다 — 실주문 경로의
+        # 킬 시점은 이 단계에서 한 틱도 바뀌지 않는다.
+        self.killswitch = KillSwitch(self._killswitch_config())
+        self.kill_mismatches: int = 0
+        self._sink: PositionLogSink | None = None
+        self._last_seen: datetime | None = None
         self.open_positions: list[Position] = []
         self.closed_positions: list[Position] = []
         # 반대 체결 가정의 그림자 — 로그·집계 전용. 회계(realized_krw·연속손절·킬·상한)에
@@ -438,10 +447,47 @@ class RiskGuard:
         """포지션 청산 때 호출할 콜백(로깅 sink 연결용)."""
         self._on_close = fn
 
+    def attach_sink(self, sink: PositionLogSink) -> None:
+        """포지션 로그 sink 를 붙인다 — 청산 콜백 + 킬 판정 불일치(``kill_mismatch``) 기록."""
+        self._sink = sink
+        self.set_close_callback(sink.log_close)
+
+    def _killswitch_config(self) -> KillSwitchConfig:
+        """RiskGuardConfig → 코어 KillSwitchConfig **명시 매핑**.
+
+        기본값이 다르다(코어는 전부 끔, 여기는 5만원·3회·``data/pair_STOP``) — 이름이
+        같아도 값은 반드시 이쪽 설정에서 넘긴다. 정지 파일은 scalp-it 규약대로 고정형.
+        """
+        cfg = self.config
+        return KillSwitchConfig(
+            daily_loss_limit_krw=cfg.daily_loss_limit,
+            daily_loss_limit_pct=cfg.daily_loss_limit_pct,
+            daily_capital=cfg.daily_capital,
+            max_consecutive_losses=int(cfg.max_consecutive_losses or 0),
+            profit_giveback_ratio=float(cfg.profit_giveback_ratio or 0.0),
+            profit_giveback_min_krw=float(cfg.profit_giveback_min_krw or 0.0),
+            stop_file=cfg.stop_file,
+            sticky_stop_file=True,
+        )
+
+    def _check_parity(self) -> None:
+        """RiskGuard 판정과 그림자 KillSwitch 판정을 대조한다. 효력은 RiskGuard 쪽."""
+        ks = self.killswitch
+        if (self.killed, self.kill_reason) == (ks.killed, ks.kill_reason):
+            return
+        self.kill_mismatches += 1
+        if self._sink is not None:
+            self._sink.log_kill_mismatch(
+                self._last_seen, guard_killed=self.killed, guard_reason=self.kill_reason,
+                core_killed=ks.killed, core_reason=ks.kill_reason,
+                realized_krw=self.realized_krw, core_realized_krw=ks.realized_krw)
+
     # ----- 일일 리셋 ----------------------------------------------------------
 
     def _observe_date(self, when: datetime) -> None:
         d = when.date()
+        self._last_seen = when
+        self.killswitch.observe(d)
         if self.day is None:
             self.day = d
             return
@@ -470,6 +516,10 @@ class RiskGuard:
 
     def _refresh_kill(self) -> None:
         """현재 상태로 킬 여부·이익절제 갱신(수동 정지·손실한도·연속손절·이익목표)."""
+        self._refresh_kill_local()
+        self._check_parity()
+
+    def _refresh_kill_local(self) -> None:
         cfg = self.config
         # 이익 목표는 **킬이 아니다** — 매매를 멈추지 않고 비중만 줄인다(§9-6).
         if cfg.daily_profit_target > 0 and self.realized_krw >= cfg.daily_profit_target:
@@ -522,6 +572,7 @@ class RiskGuard:
     def on_alert(self, alert: Alert) -> Decision:
         """알림 하나를 가드에 태운다. 통과 시 가상 포지션 등록, 막히면 억제 결정."""
         self._observe_date(alert.ts)
+        self.killswitch.check(alert.ts.date())
         self._refresh_kill()
         if self.killed:
             return Decision(allowed=False, reason=self.kill_reason,
@@ -714,6 +765,8 @@ class RiskGuard:
         pos.remaining = 1.0 - ratio
         if not pos.shadow:
             self.realized_krw += pos.partial_pnl_krw
+            # 그림자 KillSwitch: 1차 분할은 승패 없는 실현손익(record_realized).
+            self.killswitch.record_realized(pos.partial_pnl_krw, self._kill_day(ts))
             self._refresh_kill()
         if self._on_close is not None:
             self._on_close(pos)   # status 는 아직 open — sink 가 event='partial' 로 쓴다
@@ -737,12 +790,16 @@ class RiskGuard:
                 # 승패는 그 포지션이 최종적으로 남긴 **합계**로 가른다 — 1차 익절 후
                 # 잔량이 살짝 밀린 건을 '손절'로 세면 연속손절 킬이 과민해진다.
                 outcome = (pos.partial_pnl_krw + pos.pnl_krw) if pos.partial_done else pos.pnl
-                if outcome < -_EPS:
+                is_loss = outcome < -_EPS
+                if is_loss:
                     self.losses += 1
                     self.consecutive_losses += 1
                 else:
                     self.wins += 1
                     self.consecutive_losses = 0
+                # 그림자 KillSwitch: 원 손익은 잔량 몫, 승패는 위와 **같은** 규칙으로 명시.
+                self.killswitch.record_trade(pos.pnl_krw, on=self._kill_day(ts),
+                                             is_loss=is_loss)
                 self._refresh_kill()
         (self.closed_shadows if pos.shadow else self.closed_positions).append(pos)
         if self._on_close is not None:
@@ -829,6 +886,12 @@ class RiskGuard:
     def force_stop(self) -> None:
         """수동 킬스위치(파일 없이 즉시)."""
         self._trigger_kill(KILL_MANUAL)
+        self.killswitch.force_stop()
+        self._check_parity()
+
+    def _kill_day(self, ts: datetime) -> date:
+        """그림자 KillSwitch 에 넘길 날짜 — 가드가 관측 중인 날(없으면 이벤트 날짜)."""
+        return self.day if self.day is not None else ts.date()
 
     def flush_expired(self, now: datetime) -> None:
         """청산시각이 지난 열린 포지션을 마지막 상태로 정리(장 마감·틱 공백 대비)."""
@@ -868,7 +931,9 @@ class PositionLogSink:
     """가상 포지션 이벤트를 ``data/pair_positions.log`` 에 JSON 한 줄씩 append.
 
     감사 요구: 매 알림·가상체결의 MAE·지연·체결여부·손익을 남겨 나중에 실측 분석.
-    ``event`` = ``open``(등록) | ``close``(청산) | ``killswitch``(발동).
+    ``event`` = ``open``(등록) | ``close``(청산) | ``partial``(1차 분할) |
+    ``unfilled``(미체결) | ``killswitch``(발동) | ``kill_mismatch``(코어 KillSwitch 그림자
+    판정과 불일치 — 생기면 안 되는 이벤트, 코어 유지자에게 보고).
     """
 
     def __init__(self, path: str | Path = "data/pair_positions.log", *,
@@ -917,4 +982,19 @@ class PositionLogSink:
             "event": "killswitch",
             "reason": reason,
             "realized_krw": round(realized_krw, 2),
+        })
+
+    def log_kill_mismatch(self, when: datetime | None, *, guard_killed: bool,
+                          guard_reason: str, core_killed: bool, core_reason: str,
+                          realized_krw: float, core_realized_krw: float) -> None:
+        """RiskGuard 판정 ≠ 코어 KillSwitch 그림자 판정. 효력은 guard 쪽이다."""
+        self._write({
+            "ts": when.isoformat(sep=" ", timespec="seconds") if when is not None else "",
+            "event": "kill_mismatch",
+            "guard_killed": guard_killed,
+            "guard_reason": guard_reason,
+            "core_killed": core_killed,
+            "core_reason": core_reason,
+            "realized_krw": round(realized_krw, 2),
+            "core_realized_krw": round(core_realized_krw, 2),
         })
