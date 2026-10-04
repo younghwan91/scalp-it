@@ -170,7 +170,8 @@ def summarize(trades: pd.DataFrame, pool: pd.DataFrame) -> dict:
                                 "control_mean": a.control_mean, "n_trades": a.n_trades,
                                 "n_controls": a.n_controls, "n_unmatched": a.n_unmatched}
         out["horizons"][str(h)] = rec
-    closed = all(out["horizons"][str(h)][m].get("ci_low", 0) <= 0
+    # CI 가 없으면(표본 0·날짜 1) 양수 증거가 없는 것이므로 닫힌 쪽으로 센다
+    closed = all(not (out["horizons"][str(h)][m].get("ci_low", np.nan) > 0)
                  for h in HORIZONS for m in ("taker", "maker"))
     out["rejection"] = {"rule": "세 지평 모두 테이커·메이커 사전확정 수익의 날짜 클러스터 95% CI 하한 ≤ 0",
                         "closed": bool(closed)}
