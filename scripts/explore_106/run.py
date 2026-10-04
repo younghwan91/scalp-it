@@ -42,7 +42,9 @@ def _load(name: str, path: Path):
 
 V = _load("explore106_vi", HERE / "vi_reconstruct.py")
 L = _load("explore106_labels", HERE / "labels.py")
-F = _load("flow83_features", ROOT / "scripts" / "flow_83" / "features.py")          # build_code · N · T0
+# flow_83 의 numba 캐시가 모듈 이름 `features` 로 묶여 있어 같은 이름으로 들여온다 — build_code · N · T0
+sys.path.insert(0, str(ROOT / "scripts" / "flow_83"))
+F = _load("features", ROOT / "scripts" / "flow_83" / "features.py")
 VM = _load("ceiling95_vol_matched", ROOT / "scripts" / "ceiling_95" / "vol_matched.py")  # pre_entry_rv
 
 from krx_quant_core.stats.matched_null import (
