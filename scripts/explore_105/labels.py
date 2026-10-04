@@ -50,6 +50,27 @@ def prior_day_features(daily: pd.DataFrame) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
+def day_last_close(minute_eod: pd.DataFrame) -> pd.DataFrame:
+    """장 막판 분봉(≤15:30) → (code, date) 당 **원주가** 종가(15:30 단일가 행, 없으면 그 전 마지막 행).
+
+    왜: `daily_bars.close` 는 분할 소급 수정주가이고 분봉은 원주가다. 분할 종목 31개에서 10배·5배·2배 어긋나
+    거짓 ±90% 갭이 된다(107 번에서 셀 하나가 −151bp 로 찍힘). 분봉끼리 비교해야 같은 단위다.
+    """
+    m = minute_eod.copy()
+    m["ts"] = pd.to_datetime(m["ts"])
+    m = m[m["ts"].dt.time <= pd.Timestamp("15:30").time()].sort_values(["code", "ts"])
+    m["date"] = m["ts"].dt.normalize()
+    out = m.groupby(["code", "date"], sort=False)["close"].last().rename("close_raw").reset_index()
+    return out
+
+
+def attach_raw_prev_close(feats: pd.DataFrame, last_closes: pd.DataFrame) -> pd.DataFrame:
+    """전일(p_date)의 원주가 종가를 p_close_raw 로 붙인다. 전일 분봉이 없으면 그 행은 없다."""
+    lc = last_closes.rename(columns={"date": "p_date", "close_raw": "p_close_raw"})
+    lc = lc.assign(p_date=pd.to_datetime(lc["p_date"]))
+    return feats.merge(lc[["code", "p_date", "p_close_raw"]], on=["code", "p_date"], how="inner")
+
+
 def _q4(s: pd.Series) -> pd.Series:
     """날짜 안 4분위(0~3). 동률은 순위로 깨서 빈 분위가 안 생기게 한다."""
     r = s.rank(method="first")
@@ -60,8 +81,10 @@ def build_universe(feats: pd.DataFrame) -> pd.DataFrame:
     """전일 종가 ≥ 1,000 · 전일 거래대금 상위 1,300. 그 안에서 전일 수익률 분위(판정 셀)와 매칭 층을 붙인다.
 
     ret_cell: 'top10' / 'bot10' / 'mid'. vol_q·tv_q: 날짜 안 4분위(매치드 널 층). 전부 전일 값으로만 만든다.
+    1,000원 필터는 원주가(p_close_raw)로 — 수정주가는 분할 종목에서 단위가 다르다. 수익률·고가=종가·거래대금은
+    일봉 내부 비율이라 수정주가끼리 써도 된다.
     """
-    u = feats[feats["p_close"] >= MIN_PRICE].copy()
+    u = feats[feats["p_close_raw"] >= MIN_PRICE].copy()
     u["v_rank"] = u.groupby("date")["p_tv"].rank(ascending=False, method="first")
     u = u[u["v_rank"] <= TOP_VALUE].copy()
     u = u.dropna(subset=["p_ret", "p_vol20"])     # 변동성 층이 없으면 널 대조도 없다 — 상장 10일 미만은 뺀다
@@ -94,19 +117,19 @@ def horizon_closes(minute: pd.DataFrame) -> pd.DataFrame:
 
 
 def label(events: pd.DataFrame) -> pd.DataFrame:
-    """r{h} = c{h}/open0 − 1 − 비용(종목별, 한 번). gap 은 보고용(진입 조건 아님)."""
+    """r{h} = c{h}/open0 − 1 − 비용(종목별, 한 번). gap 은 보고용(진입 조건 아님), 원주가끼리(분봉/분봉)."""
     e = events.copy()
     c = e["cost_bp"] / 1e4
     for h in HOLDS:
         e[f"r{h}"] = e[f"c{h}"] / e["open0"] - 1 - c
-    e["gap"] = e["open0"] / e["p_close"] - 1
+    e["gap"] = e["open0"] / e["p_close_raw"] - 1
     return e
 
 
 def build_events(daily: pd.DataFrame, minute: pd.DataFrame, markets: pd.DataFrame,
-                 bad_days: set[str] | None = None) -> pd.DataFrame:
-    """일봉 + 분봉 + 시장 → 라벨 붙은 사건 목록(유니버스 전체 = 매치드 널의 풀)."""
-    u = build_universe(prior_day_features(daily))
+                 minute_eod: pd.DataFrame, bad_days: set[str] | None = None) -> pd.DataFrame:
+    """일봉 + 개장 분봉 + 마감 분봉 + 시장 → 라벨 붙은 사건 목록(유니버스 전체 = 매치드 널의 풀)."""
+    u = build_universe(attach_raw_prev_close(prior_day_features(daily), day_last_close(minute_eod)))
     hc = horizon_closes(minute)
     e = u.merge(hc, on=["code", "date"], how="inner")
     e = e.merge(markets[["code", "market"]], on="code", how="inner")

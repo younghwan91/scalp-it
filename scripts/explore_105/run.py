@@ -39,7 +39,7 @@ def bad_days() -> set[str]:
         return set()
 
 
-def load(conn) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def load(conn) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     # 20일 변동성에 앞 거래일 ~30개가 필요하다 → 일봉은 START 보다 45일 앞부터.
     lo = (pd.Timestamp(START) - pd.Timedelta(days=45)).date().isoformat()
     daily = pd.read_sql(
@@ -49,8 +49,13 @@ def load(conn) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         "select code, ts, open, close from minute_bars "
         "where ts >= %s and ts < %s and ts::time >= '09:00' and ts::time <= '09:15'",
         conn, params=(START, (pd.Timestamp(END) + pd.Timedelta(days=1)).date().isoformat()))
+    # 전일 원주가 종가용 마감 분봉(15:19~15:30). daily_bars.close 는 수정주가라 분봉 09:00 open 과 단위가 다르다.
+    minute_eod = pd.read_sql(
+        "select code, ts, close from minute_bars "
+        "where ts >= %s and ts < %s and ts::time >= '15:19' and ts::time <= '15:30'",
+        conn, params=((pd.Timestamp(START) - pd.Timedelta(days=10)).date().isoformat(), END))
     markets = pd.read_sql("select code, market from stocks where market in ('거래소','코스닥')", conn)
-    return daily, minute, markets
+    return daily, minute, markets, minute_eod
 
 
 def summarize(r: np.ndarray) -> dict:
@@ -101,9 +106,9 @@ def main() -> int:
     import psycopg2
 
     conn = psycopg2.connect(os.environ["KR_QUANT_DB"])
-    daily, minute, markets = load(conn)
+    daily, minute, markets, minute_eod = load(conn)
     bad = bad_days()
-    ev = L.build_events(daily, minute, markets, bad_days=bad)
+    ev = L.build_events(daily, minute, markets, minute_eod, bad_days=bad)
     ev.to_pickle(out / "events.pkl")
     print(f"사건 {len(ev):,}건 · {ev.date.min().date()}~{ev.date.max().date()} · 거래일 {ev.date.nunique()} "
           f"· 종목 {ev.code.nunique():,} · 제외일 {len(bad)} · 평균 비용 {ev.cost_bp.mean():.1f}bp")
@@ -112,6 +117,8 @@ def main() -> int:
     # ── 판정 셀 6개 ──────────────────────────────────────────────────────────────
     config_base = {"start": START, "end": END, "top_value": L.TOP_VALUE, "min_price": L.MIN_PRICE,
                    "ret_tail": L.RET_TAIL, "strata": list(STRATA), "n_boot": N_BOOT, "seed": SEED,
+                   # 1차 실행(원장에 남음)은 전일 종가를 daily_bars(수정주가)로 썼다 — 폐기. 2차는 분봉 15:30.
+                   "prev_close_source": "minute_1530",
                    "cost": {"tax": L.TAX_BP, "fee": L.FEE_BP, "open_spread": L.OPEN_SPREAD_BP,
                             "cont_spread": L.CONT_SPREAD_BP}, "bad_days": sorted(bad)}
     results = []

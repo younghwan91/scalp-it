@@ -38,7 +38,7 @@ def test_label_is_0900_open_to_horizon_close_minus_cost_once():
     hc = L.horizon_closes(_minute("A", "2026-01-05", closes, open0=10000.0))
     assert len(hc) == 1
     assert hc.open0[0] == 10000.0 and hc.c1[0] == 10020 and hc.c5[0] == 10060 and hc.c15[0] == 10160
-    ev = hc.assign(p_close=9900.0, cost_bp=40.0)
+    ev = hc.assign(p_close_raw=9900.0, cost_bp=40.0)
     lab = L.label(ev)
     assert lab.r5[0] == pytest.approx(10060 / 10000 - 1 - 0.0040)
     assert lab.r15[0] == pytest.approx(10160 / 10000 - 1 - 0.0040)
@@ -120,13 +120,14 @@ def test_universe_ranks_by_previous_day_value_and_cells_by_previous_return():
     day = pd.Timestamp("2026-01-05")
     feats = pd.DataFrame({
         "code": [f"S{i:04d}" for i in range(n)], "date": day, "p_date": day - pd.Timedelta(days=1),
-        "p_close": np.where(np.arange(n) < 10, 500.0, 5000.0),     # 앞 10개는 1,000원 미만
+        "p_close": 5000.0,
+        "p_close_raw": np.where(np.arange(n) < 10, 500.0, 5000.0),  # 앞 10개는 원주가 1,000원 미만
         "p_high": 5000.0, "p_tv": np.arange(n, dtype=float),        # 거래대금은 뒤로 갈수록 크다
         "p_ret": np.linspace(-0.1, 0.1, n), "p_vol20": np.linspace(0.01, 0.05, n),
     })
     u = L.build_universe(feats)
     assert len(u) == L.TOP_VALUE
-    assert u.p_close.min() >= L.MIN_PRICE
+    assert u.p_close_raw.min() >= L.MIN_PRICE
     assert u.p_tv.min() == n - L.TOP_VALUE                          # 전일 거래대금 상위 1,300
     assert (u.ret_cell == "top10").sum() == 130 and (u.ret_cell == "bot10").sum() == 130
     assert u[u.ret_cell == "top10"].p_ret.min() > u[u.ret_cell == "mid"].p_ret.max()
@@ -138,7 +139,7 @@ def test_limit_up_flag_requires_close_at_high_and_28pct():
     day = pd.Timestamp("2026-01-05")
     feats = pd.DataFrame({
         "code": list("ABCD") + [f"X{i}" for i in range(20)], "date": day,
-        "p_date": day - pd.Timedelta(days=1), "p_close": 1300.0,
+        "p_date": day - pd.Timedelta(days=1), "p_close": 1300.0, "p_close_raw": 1300.0,
         "p_high": [1300, 1310, 1300, 1300] + [1400] * 20, "p_tv": np.arange(24, dtype=float),
         "p_ret": [0.30, 0.30, 0.27, 0.299] + [0.0] * 20, "p_vol20": 0.02,
     })
@@ -154,8 +155,34 @@ def test_build_events_uses_minute_open_not_daily_open_and_excludes_bad_days():
     parts = [_minute(c, day, [20000.0] * 16, open0=10000.0) for c in d.code.unique()]
     m = pd.concat(parts)
     mk = pd.DataFrame({"code": d.code.unique(), "market": "거래소"})
-    ev = L.build_events(d, m, mk)
+    # 전일(11-28) 마감 분봉: 15:30 종가 8000 — 일봉 종가(수정주가)와 다르게 둬서 어느 쪽을 쓰는지 드러낸다.
+    eod = pd.DataFrame([{"code": c, "ts": pd.Timestamp("2025-11-28 15:30"), "close": 8000.0}
+                        for c in d.code.unique()])
+    ev = L.build_events(d, m, mk, eod)
     assert (ev.date == pd.Timestamp(day)).all() and len(ev) == 12
     assert (ev.open0 == 10000.0).all()
     assert ev.r5.iloc[0] == pytest.approx(1.0 - 39.55 / 1e4)
-    assert L.build_events(d, m, mk, bad_days={day}).empty
+    assert ev.gap.to_numpy() == pytest.approx(10000 / 8000 - 1)       # 갭은 원주가(분봉)끼리
+    assert L.build_events(d, m, mk, eod, bad_days={day}).empty
+
+
+def test_day_last_close_prefers_1530_and_ignores_after_hours():
+    rows = [{"code": "A", "ts": pd.Timestamp("2026-01-05 15:19"), "close": 100.0},
+            {"code": "A", "ts": pd.Timestamp("2026-01-05 15:30"), "close": 110.0},
+            {"code": "A", "ts": pd.Timestamp("2026-01-05 15:35"), "close": 999.0},   # 시간외 — 안 쓴다
+            {"code": "B", "ts": pd.Timestamp("2026-01-05 15:19"), "close": 200.0}]   # 15:30 행 없음
+    lc = L.day_last_close(pd.DataFrame(rows)).set_index("code")
+    assert lc.loc["A", "close_raw"] == 110.0 and lc.loc["B", "close_raw"] == 200.0
+
+
+def test_raw_prev_close_comes_from_previous_day_minute_not_daily():
+    """분할 종목: 일봉 종가 1,593(수정) vs 분봉 15,930(원주가). 1,000원 필터·갭은 분봉 쪽이어야 한다."""
+    d = _daily(codes=("A",))
+    day = pd.Timestamp("2025-12-01")
+    feats = L.prior_day_features(d)
+    prev_day = feats.loc[feats.date == day, "p_date"].iloc[0]
+    eod = pd.DataFrame([{"code": "A", "ts": prev_day + pd.Timedelta(hours=15, minutes=30), "close": 15930.0},
+                        {"code": "A", "ts": day + pd.Timedelta(hours=15, minutes=30), "close": 1.0}])
+    f = L.attach_raw_prev_close(feats, L.day_last_close(eod)).set_index("date")
+    assert f.loc[day, "p_close_raw"] == 15930.0 and f.loc[day, "p_close"] != 15930.0
+    assert set(f.index) == {day, day + pd.Timedelta(days=1)}          # 분봉 종가가 있는 전일만 남는다
