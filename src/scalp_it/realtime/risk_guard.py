@@ -553,7 +553,7 @@ class RiskGuard:
         if self.day is not None:
             self.killswitch.check(self.day)
         else:
-            self.killswitch._refresh()   # 코어에 날짜 없는 공개 refresh 가 없다
+            self.killswitch.refresh()    # 날짜 관측 없이 재판정(코어 0.6.2 공개 API)
 
     def _banner(self) -> str | None:
         if self._banner_shown:
