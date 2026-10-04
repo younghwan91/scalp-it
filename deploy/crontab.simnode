@@ -55,3 +55,8 @@
 # 크론으로 고정한다. 15:40 에 trader 감지기가 내려간 뒤 도는 것이 중요하다 —
 # 키움 앱키는 1세션 제약이라 장중에 같은 키로 붙으면 매매 쪽 소켓을 밀어낸다.
 45 15 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && nice -n 15 .venv/bin/python -m scalp_it.cli_intraday --universe-top 1400 --pages 6 >> data/intraday_minute.cron.log 2>&1
+
+# 수집 건강 점검 — 하루 분커버를 재고 문턱(90%) 아래면 research/bad_days.json 에 자동 등록한다.
+# 09-28~10-02 의 커버리지 붕괴(37~52%)를 12일 뒤에 알았다. 사람이 안 보면 아무도 안 본다.
+# 16:10 — 수집이 끝난 뒤, 전진 판정(16:30~) 전에 돈다.
+10 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && nice -n 15 /home/young/of80/.rlvenv/bin/python -W ignore scripts/collect_health.py $(date +\%Y-\%m-\%d) >> data/collect_health.cron.log 2>&1

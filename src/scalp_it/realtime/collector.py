@@ -455,7 +455,7 @@ class KiwoomRealtimeCollector:
         trade_date: date | None = None,
         on_frame: Callable[[dict], None] | None = None,
         reg_limit: int = REG_LIMIT,
-        max_backoff: float = 30.0,
+        max_backoff: float = 5.0,
         log: Callable[[str], None] | None = None,
         spool_dir: str | Path | None = None,
         quote_events: bool | None = None,
@@ -563,7 +563,11 @@ class KiwoomRealtimeCollector:
         """websockets 로 연결한다. 지연 임포트라 파싱 테스트는 websockets 불필요."""
         import websockets
 
-        return await websockets.connect(self._url, ping_interval=None, max_size=None)
+        # ping_interval=None: 키움 WS 는 자체 PING(trnm) 을 쓴다 — 라이브러리 핑을 켜면 끊긴다.
+        # open_timeout: 기본 10초를 그대로 쓰면 죽은 엔드포인트에 매번 10초를 버린다.
+        #   2026-10-02 에 핸드셰이크 타임아웃 27회 + 백오프 30초가 겹쳐 2~7분 공백이 85개 생겼다.
+        return await websockets.connect(self._url, ping_interval=None, max_size=None,
+                                        open_timeout=5.0)
 
     async def _connection_loop(self, idx: int, codes: list[str]) -> None:
         grp_no = str(idx + 1)
@@ -680,16 +684,38 @@ class KiwoomRealtimeCollector:
         self._log(f"[conn{grp_no}] 장중 구독 해제 {len(drop)}종목: {', '.join(drop)}")
         return drop
 
+    @staticmethod
+    async def _recv_reply(ws, *, timeout: float = 10.0) -> dict:
+        """``return_code`` 가 실린 응답이 올 때까지 받는다. **중간에 오는 PING 은 되돌려준다.**
+
+        2026-10-02 로그에 `REG 실패: {'trnm': 'PING'}` 이 찍혔다 — 핸드셰이크 응답을 recv() 한 번으로
+        받던 탓에 그 사이 도착한 키움 PING 을 응답으로 오인해 끊고 재연결하고 다시 REG 했다.
+        재연결마다 REG 를 하므로 이 오인이 끊김을 증폭시킨다(그날 끊김 185회 · 분커버 52%).
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise RuntimeError("핸드셰이크 응답 시한 초과")
+            raw = await asyncio.wait_for(ws.recv(), timeout=left)
+            msg = json.loads(raw)
+            if msg.get("trnm") == "PING":
+                await ws.send(raw if isinstance(raw, str) else json.dumps(msg))
+                continue
+            if "return_code" in msg:
+                return msg
+            # REAL 등 다른 프레임은 아직 처리할 상태가 아니다 — 버리고 응답을 더 기다린다.
+
     async def _login_and_reg(self, ws, grp_no: str, codes: list[str]) -> None:
         await ws.send(json.dumps(build_login_message(self._token)))
-        login = json.loads(await ws.recv())
+        login = await self._recv_reply(ws)
         if int(login.get("return_code", -1)) != 0:
             raise RuntimeError(f"LOGIN 실패: {login}")
         if not codes:
             self._log(f"[conn{grp_no}] LOGIN ok · 0종목 — 장중 추가 대기")
             return
         await ws.send(json.dumps(build_reg_message(codes, self._types, grp_no)))
-        reg = json.loads(await ws.recv())
+        reg = await self._recv_reply(ws)
         if int(reg.get("return_code", -1)) != 0:
             raise RuntimeError(f"REG 실패: {reg}")
         self._log(f"[conn{grp_no}] LOGIN·REG ok · {len(codes)}종목 × {self._types}")
