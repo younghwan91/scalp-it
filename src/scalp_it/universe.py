@@ -448,7 +448,7 @@ def fetch_bars(
     cur.execute(sql, tuple(params))
     rows = cur.fetchall()
     cur.close()
-    return [
+    return _rescale_to_intraday(conn, [
         Bar(
             code=str(r[0]),
             # sqlite 는 date 를 문자열로 돌려준다 — 여기서 한 번에 date 로 맞춘다.
@@ -464,7 +464,58 @@ def fetch_bars(
             market=str(r[10] or ""),
         )
         for r in rows
-    ]
+    ], days[-1])
+
+
+def _rescale_to_intraday(conn: Any, bars: list[Bar], last_day: date | str) -> list[Bar]:
+    """일봉 종가가 **그날 분봉 15:30 종가**와 20% 넘게 어긋나면 그 종목 전체를 분봉 쪽 배수로 맞춘다.
+
+    2026-10-05 발견(quant-airflow 정정 포함): 분봉은 키움 수정주가(`upd_stkpc_tp="1"`)로 재수집되므로 **기업행동
+    (병합·분할) 뒤 재수집된 구간은 그 뒤 실시간 체결가와 같은 기준**이고, 일봉은 수집 당시 원주가라 기준이 어긋난다
+    (006050 10:1 병합 뒤 3월 일봉 1,593 vs 분봉 15,930). 이 모듈은 전일종가×1.3 으로 상한가를 근사하므로 기준이
+    어긋난 종목은 상한가가 10배 틀린다. 그래서 **테이블 이름을 믿지 않고 실측(분봉)에 맞춘다.** 종목의 모든 봉에
+    같은 배수를 곱해 창 안 비율(등락률·레인지)은 보존된다. 기업행동 **당일**은 어느 테이블도 못 잡는다(둘 다 행동 전
+    원주가) — 그때는 키움 기준가(cur_prc − pred_pre)가 정답이고 후속 과제다. minute_bars 가 없거나 못 읽으면 그대로
+    돌려준다 — 가드가 매매를 멈추면 안 된다.
+    """
+    if not bars:
+        return bars
+    # sqlite 는 trading_days 가 문자열을 돌려준다 — Bar.day(date)와 비교하려면 여기서 맞춘다.
+    ld = last_day if isinstance(last_day, date) else date.fromisoformat(str(last_day))
+    day = ld.isoformat()
+    ph = _ph(conn)
+    try:
+        cur = conn.cursor()
+        cur.execute(f"select code, close from minute_bars where ts >= {ph} and ts < {ph}",
+                    (f"{day} 15:30:00", f"{day} 15:31:00"))
+        intraday = {str(c): float(v) for c, v in cur.fetchall() if v}
+        cur.close()
+    except Exception:  # noqa: BLE001 — 테이블 없음·권한 등. 가드는 보조이지 필수가 아니다.
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return bars
+    if not intraday:
+        return bars
+    factor: dict[str, float] = {}
+    for b in bars:
+        m = intraday.get(b.code)
+        if b.day == ld and m and b.close > 0:
+            r = b.close / m
+            if r < 0.8 or r > 1.25:
+                factor[b.code] = m / b.close
+    if not factor:
+        return bars
+    out = []
+    for b in bars:
+        f = factor.get(b.code)
+        if f is None:
+            out.append(b)
+            continue
+        out.append(replace(b, open=int(round(b.open * f)), high=int(round(b.high * f)),
+                           low=int(round(b.low * f)), close=int(round(b.close * f))))
+    return out
 
 
 def build_universe(

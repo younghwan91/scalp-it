@@ -416,3 +416,38 @@ def test_ipo_day_avoid_is_off_without_listings():
     from scalp_it.universe import ipo_day_avoid
 
     assert ipo_day_avoid({}, {"100000": {"sector": "전기/전자"}}) == set()
+
+
+# ----------------------------------------------------------------- 원주가 자가치유 가드
+# 2026-10-05 발견: daily_bars 가 수정주가(분할 소급)로 들어와 있는 종목이 31개 있다(006050 2026-03-27
+# daily 1,593 vs 분봉 15:30 15,930). 이 모듈은 daily_bars 를 원주가로 믿고 전일종가×1.3 으로 상한가를 근사하므로,
+# 그 종목에서는 상한가가 10배 틀린다. 어느 테이블이 원주가인지는 적재 쪽 사정으로 바뀔 수 있으니,
+# 테이블 이름을 믿지 말고 **그날 분봉 15:30 종가와 대조해 어긋나면 분봉 쪽으로 맞춘다.**
+
+def _add_minute_close(conn: sqlite3.Connection, code: str, day: str, close: float) -> None:
+    conn.execute("create table if not exists minute_bars (code text, ts text, open real, high real, "
+                 "low real, close real, volume int, trade_value real)")
+    conn.execute("insert into minute_bars values (?,?,?,?,?,?,?,?)",
+                 (code, f"{day} 15:30:00", close, close, close, close, 1, close))
+    conn.commit()
+
+
+def test_fetch_bars_rescales_a_code_whose_daily_close_disagrees_with_intraday() -> None:
+    conn = _make_db()
+    day = ASOF.isoformat()
+    raw_before = {b.code: b for b in fetch_bars(conn, day, UniverseConfig(lookback_days=5)) if b.day == ASOF}
+    _add_minute_close(conn, "111111", day, raw_before["111111"].close * 10)      # 분봉이 10배 = 분할 미반영 원주가
+    _add_minute_close(conn, "222222", day, raw_before["222222"].close * 1.01)   # 1% 차이는 정상 범위
+    bars = fetch_bars(conn, day, UniverseConfig(lookback_days=5))
+    last = {b.code: b for b in bars if b.day == ASOF}
+    assert last["111111"].close == raw_before["111111"].close * 10, "분봉과 10배 어긋나면 분봉 쪽으로 맞춰야 한다"
+    assert last["222222"].close == raw_before["222222"].close, "1% 차이는 건드리면 안 된다"
+    # 같은 종목의 **과거 봉도 같은 배수**로 — 창 안 비율(등락률·레인지)이 보존돼야 한다
+    old = sorted((b for b in bars if b.code == "111111"), key=lambda b: b.day)
+    assert old[0].open == 8_000 * 10 and old[0].close == 9_200 * 10     # _make_db: open 8,000 → close ×1.15
+
+
+def test_fetch_bars_is_unchanged_when_minute_table_is_missing() -> None:
+    conn = _make_db()
+    a = [(b.code, b.day, b.close) for b in fetch_bars(conn, ASOF.isoformat(), UniverseConfig(lookback_days=5))]
+    assert a and all(c > 0 for _, _, c in a)
