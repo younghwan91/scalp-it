@@ -84,7 +84,8 @@ def cell(df: pd.DataFrame, leg: str, bucket: str) -> dict:
     raw = float((trades[y] + cost).mean())
     config = {"leg": leg, "entry": c.ENTRY_A if leg == "a" else c.ENTRY_B, "exit": c.EXIT_A if leg == "a" else "15:30",
               "cond": f"09:00→{c.COND_AT}", "bucket": bucket, "tail": c.TAIL, "top_n": c.TOP_N,
-              "cost": c.COST_A if leg == "a" else c.COST_B, "strata": STRATA, "n_per": N_PER, "seed": SEED}
+              "cost": c.COST_A if leg == "a" else c.COST_B, "strata": STRATA, "n_per": N_PER, "seed": SEED,
+              "price_src": "minute_bars 09:00 open / 15:30 close"}   # 첫 실행(일봉 open/close)은 자릿수 사고로 폐기
     fp = record_trial(LABEL, config, logs_dir=ROOT / "research" / "logs", note="탐색 6셀")
     return {"leg": leg, "bucket": bucket, "n": int(len(trades)), "days": int(trades.date.nunique()),
             "mean": float(trades[y].mean()), "median": float(trades[y].median()), "pos": float((trades[y] > 0).mean()),
@@ -97,7 +98,9 @@ def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     days = df.date.nunique()
     head = [f"표본: {len(df):,}행 · {days}거래일 · {df.date.min()}~{df.date.max()} · 종목 {df.code.nunique():,}",
-            f"결측(5분 안 체결 없음): 14:50 {df['14:50'].isna().mean():.1%} · 15:20 {df['15:20'].isna().mean():.1%}"]
+            f"결측(5분 안 체결 없음): 14:50 {df['14:50'].isna().mean():.1%} · 15:20 {df['15:20'].isna().mean():.1%}",
+            f"일봉 open/close 가 분봉과 1% 이상 어긋나는 행: {df.daily_mismatch.mean():.2%} "
+            f"(종목 {df.loc[df.daily_mismatch, 'code'].nunique()}개)"]
     print("\n".join(head))
     t1, lines1 = breakdown(df)
     print("\n".join(lines1))

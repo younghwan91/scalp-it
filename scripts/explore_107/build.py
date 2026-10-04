@@ -14,6 +14,7 @@ import pickle
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,12 +50,24 @@ def build_day(conn, day: str, feats: pd.DataFrame, market: pd.Series) -> pd.Data
     mb = pd.read_sql(
         "select code, ts, close from minute_bars where ts = any(%s::timestamp[]) and code = any(%s)",
         conn, params=(window_timestamps(day), codes))
+    # 09:00 = 09:00 분봉 open(개장 단일가), 15:30 = 15:30 분봉 close(마감 단일가 체결). 일봉 open/close 를 쓰지
+    # 않는 이유: 일부 종목(006050·008040·002780·083660 등)의 daily_bars 가격이 분봉과 **10배·2배** 어긋나
+    # 있었다(첫 실행에서 −9,000bp 꼬리로 드러남). 같은 표(분봉) 안에서만 비교해야 자릿수 사고가 안 섞인다.
+    auction = pd.read_sql(
+        "select code, ts, open, close from minute_bars where ts in (%s::timestamp, %s::timestamp) and code = any(%s)",
+        conn, params=(f"{day} 09:00", f"{day} 15:30", codes))
     daily = pd.read_sql("select code, open, close from daily_bars where date = %s and code = any(%s)",
                         conn, params=(day, codes))
-    if mb.empty or daily.empty:
+    if mb.empty or auction.empty or daily.empty:
         return pd.DataFrame()
-    px = c.assemble_day(c.price_at_bounds(mb), daily)
+    a = auction.assign(t=pd.to_datetime(auction.ts).dt.strftime("%H:%M")).pivot(index="code", columns="t")
+    src = pd.DataFrame({"code": a.index, "open": a[("open", "09:00")].to_numpy() if ("open", "09:00") in a else np.nan,
+                        "close": a[("close", "15:30")].to_numpy() if ("close", "15:30") in a else np.nan}).dropna()
+    px = c.assemble_day(c.price_at_bounds(mb), src)
     out = px.join(uni.set_index("code")[["p_ret1", "p_vol20", "p_tv"]], how="inner")
+    # 일봉과의 불일치 비율(보고용) — 자릿수 사고 종목이 얼마나 되는지.
+    dd = daily.set_index("code").reindex(out.index)
+    out["daily_mismatch"] = ((dd.close / out["15:30"] - 1).abs() > 0.01) | ((dd.open / out["09:00"] - 1).abs() > 0.01)
     out["market"] = market.reindex(out.index)
     out["date"] = day
     return out.reset_index(names="code")
