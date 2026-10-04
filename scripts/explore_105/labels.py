@@ -53,8 +53,9 @@ def prior_day_features(daily: pd.DataFrame) -> pd.DataFrame:
 def day_last_close(minute_eod: pd.DataFrame) -> pd.DataFrame:
     """장 막판 분봉(≤15:30) → (code, date) 당 **원주가** 종가(15:30 단일가 행, 없으면 그 전 마지막 행).
 
-    왜: `daily_bars.close` 는 분할 소급 수정주가이고 분봉은 원주가다. 분할 종목 31개에서 10배·5배·2배 어긋나
-    거짓 ±90% 갭이 된다(107 번에서 셀 하나가 −151bp 로 찍힘). 분봉끼리 비교해야 같은 단위다.
+    왜: 일봉과 분봉이 기업행동(병합·분할) 뒤 **다른 재수집 창**에서 키움 수정주가로 덮여 서로 2·5·10배 어긋난다
+    (006050 10:1 병합, 104 §데이터 결함). 09:00 open 과 같은 테이블·같은 재수집 창인 분봉 15:30 만 자기일관적이다.
+    일봉으로 쓰면 거짓 ±90% 갭이 된다(107 번에서 셀 하나가 −151bp 로 찍힘).
     """
     m = minute_eod.copy()
     m["ts"] = pd.to_datetime(m["ts"])
@@ -81,8 +82,8 @@ def build_universe(feats: pd.DataFrame) -> pd.DataFrame:
     """전일 종가 ≥ 1,000 · 전일 거래대금 상위 1,300. 그 안에서 전일 수익률 분위(판정 셀)와 매칭 층을 붙인다.
 
     ret_cell: 'top10' / 'bot10' / 'mid'. vol_q·tv_q: 날짜 안 4분위(매치드 널 층). 전부 전일 값으로만 만든다.
-    1,000원 필터는 원주가(p_close_raw)로 — 수정주가는 분할 종목에서 단위가 다르다. 수익률·고가=종가·거래대금은
-    일봉 내부 비율이라 수정주가끼리 써도 된다.
+    1,000원 필터는 분봉 15:30 종가(p_close_raw)로 근사한다 — "그날 실제 호가 단위"는 틱만 믿을 수 있지만 틱은
+    2026-08-24 이후뿐이다. 수익률·고가=종가·거래대금은 일봉 내부 비율이라 그대로 써도 된다.
     """
     u = feats[feats["p_close_raw"] >= MIN_PRICE].copy()
     u["v_rank"] = u.groupby("date")["p_tv"].rank(ascending=False, method="first")
