@@ -268,6 +268,14 @@ def main() -> None:
     import psycopg2
 
     spec = STUDIES[a.study]
+    final_lock = ROOT / "research" / "runs" / a.study / "FINAL.lock"
+    if final_lock.exists():
+        # 전진 판정은 한 번뿐이다. 이미 잠겼으면 매일 RunRefused 로 터지는 대신 조용히 끝낸다.
+        # (2026-10-01~05 사이 9개 연구가 잠긴 뒤 크론 로그가 날마다 트레이스백으로 찼다.)
+        print(f"# {a.study} 전진 — 이미 최종 판정됨({final_lock.name}, "
+              f"{json.loads(final_lock.read_text()).get('ts', '')[:10]}). 건너뜀. "
+              f"결과: scripts/forward_verdicts.py")
+        return
     report = ROOT / "data" / f"{a.study}_forward.md"
     final_mark = ROOT / "research" / "runs" / a.study / "FINAL"
     conn = psycopg2.connect(os.environ["KR_QUANT_DB"])

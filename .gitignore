@@ -34,3 +34,5 @@ data/bigkinds/
 .claude/
 # graphify 산출물 — 커밋마다 훅이 다시 만들어 작업 트리를 더럽히고 simnode 동기화(pull)를 막는다. 전부 로컬 재생성물로 둔다.
 graphify-out/
+# 전진 최종 판정(한 번뿐) 기록은 남겨야 한다 — *.jsonl 일괄 무시의 예외
+!research/runs/*/RUNS.jsonl

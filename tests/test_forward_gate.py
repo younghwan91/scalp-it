@@ -31,3 +31,12 @@ def test_scaler_lookup_falls_back_instead_of_branching_on_name():
     src = (ROOT / "scripts" / "forward_gate.py").read_text(encoding="utf-8")
     assert 'getattr(R, "Scaler", None)' in src
     assert 'study in ("rl87", "rl96")' not in src, "이름 분기가 남아 있다"
+
+
+def test_gate_skips_quietly_once_final_lock_exists():
+    """판정은 한 번뿐 — 잠긴 뒤 크론이 매일 트레이스백을 찍어서는 안 된다(10-01~05 실측)."""
+    src = (ROOT / "scripts" / "forward_gate.py").read_text(encoding="utf-8")
+    assert "FINAL.lock" in src and "이미 최종 판정됨" in src
+    i = src.index("final_lock.exists()")
+    j = src.index("start_run(a.study")
+    assert i < j, "FINAL 확인이 start_run 보다 먼저여야 RunRefused 를 피한다"
