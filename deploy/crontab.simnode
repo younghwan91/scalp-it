@@ -2,14 +2,45 @@
 # 매일 07:50 동기화(pull-all --ci-gate → cron-install)가 origin/main 기준으로 반영한다.
 # 크론을 바꾸려면 crontab -e 가 아니라 이 파일을 고쳐 커밋·푸시할 것 — 손으로 고친 건 다음 설치에 덮인다.
 
+# ===== 장중 라이브 — 2026-10-07 trader(N100) 처분으로 이 호스트로 옮겼다 =====
+# 아래는 옛 deploy/crontab.trader 를 그대로 옮긴 것이다. 감지기·틱 수집이 쓰는 data/pair_*.log ·
+# rl_shadow_rl92.jsonl 과 이 호스트가 만드는 tiger86_prevq.json 이 이제 같은 data/ 에 있으므로
+# 두 호스트 사이 rsync 3줄은 없앴다. DB(KR_QUANT_DB)는 그대로 192.168.45.9:5433(자기 자신).
+
+# 틱 수집 헬스체크 — 평일 09:10(조기 경보) + 10:00(안정화 후). 최근 20분 검사, 리포트는 data/tick_health.log (CLI 자체 기록)
+10 9 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run scalp-tick-health --minutes 20 >> data/tick_health.cron.log 2>&1
+0 10 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run scalp-tick-health --minutes 20 >> data/tick_health.cron.log 2>&1
+10 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -E "^(KR_QUANT_DB|KIWOOM_APP_(KEY|SECRET))=" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run scalp-theme-snapshot --sleep 0.3 >> data/theme_snapshot.log 2>&1
+
+# 틱 스캘핑 1차 sanity — 평일 16:00(수집 15:40 종료 후). 그날 ticks 로 트리거 vs 비트리거 forward 수익. 결과 data/tick_sanity_YYYYMMDD.md (사전등록 docs/research/manju/28)
+0 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run --extra pg python scripts/tick_sanity.py --date today >> data/tick_sanity.log 2>&1
+
+# db_guard.sh 는 크론에 넣지 않는다 — 옛 PRIMARY 컨테이너를 되살려 split-brain 을 만든다(64fd022).
+# 개장 전 점검(읽기 전용) — 아래 08:55 런처가 요구하는 전제를 미리 확인한다.
+#   09-11 레포 이동 이후 9건이 조용히 깨졌고 장이 열린 뒤에야 드러났다. 그 창을
+#   개장 전으로 옮기는 자리다. FAIL 이면 종료코드 1 — 로그 끝줄만 봐도 된다.
+45 8 * * 1-5 /home/young/git/scalp-it/scripts/preopen_check.sh >> /home/young/git/scalp-it/data/preopen_check.log 2>&1
+
+55 8 * * 1-5 /home/young/git/scalp-it/scripts/pair_detect_daily.sh >> /home/young/git/scalp-it/data/pair_detect_cron.log 2>&1
+40 15 * * 1-5 pkill -f 'scalp-tick-collect'; pkill -f 'scalp-pair-detect'; pkill -f pair_detect_daily
+
+# 만쥬 §2-1 재료 — DART 공시를 매일 최신화한다(유니버스 선정의 세 번째 요건).
+# 뉴스 크롤러는 정책상 금지(ToS·저작권, docs/research/manju/17) — 공시가 현실 경로다.
+40 8 * * 1-5 cd /home/young/git/scalp-it && export $(grep -E "^DART_API_KEY" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run scalp-dart --start $(date -d "7 days ago" +\%Y\%m\%d) --db data/dart.db >> data/dart_daily.log 2>&1
+# 만쥬 §6 돌발 재료 — 장중 DART 를 10분마다 갱신한다. 감지기가 이걸 읽어
+# 새 재료 종목을 구독에 추가한다(뉴스 크롤러는 정책상 금지, 공시가 현실 경로).
+*/10 9-15 * * 1-5 cd /home/young/git/scalp-it && export $(grep -E "^DART_API_KEY" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run scalp-dart --start $(date +\%Y\%m\%d) --db data/dart.db >> data/dart_intraday.log 2>&1
+
+# 아침 리포트 — 만쥬 체인이 도는지 한 장으로. 로그 다섯 군데를 아침마다 여는 걸 대신한다.
+# 지표는 하나다: 방아쇠 구간(상한가 3호가 이내·미잠김)에 틱이 들어온 종목 수.
+# 장 마감 뒤 그날치를 쓰고, 다음 날 08:30 에 전 거래일치를 latest.md 로 다시 쓴다.
+45 15 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run scalp-morning --date today --out data/morning/$(date +\%Y-\%m-\%d).md >> data/morning_report.log 2>&1
+30 8 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run scalp-morning --date yesterday --out data/morning/latest.md >> data/morning_report.log 2>&1
+
 # --- scalp-it 분석 배치 (원래 trader crontab 30/32/53/63/64행) ---
 # 15:25~15:27 배치 셋(pair_daily_summary·pair_journal·filter_counterfactual)은
-# data/pair_*.log 를 읽는데, 이 로그는 trader 의 감지기가 쓴다. 09-11 호스트 분리 뒤로 아무도
-# 옮겨주지 않아 여기 사본이 09-10 에 멈춰 있었고, 09-11 일지는 trader 에 섀도 포지션 3건·
-# 알림 82건이 있는데도 "진입 0건"으로 나왔다(2026-09-13 확인). 감지기가 15:20 에 스스로
-# 끝나므로 15:24 에 trader 정본을 당겨온다. 여기 사본은 trader 파일의 바이트 접두사였음을
-# 확인했다 — 덮어써도 잃는 게 없다. --delete 없음(파일 단위 동기화만).
-24 15 * * 1-5 rsync -t -e "ssh -o BatchMode=yes -o ConnectTimeout=20" trader-local:git/scalp-it/data/pair_alerts.log trader-local:git/scalp-it/data/pair_positions.log trader-local:git/scalp-it/data/pair_detect.log trader-local:git/scalp-it/data/pair_orders.log /home/young/git/scalp-it/data/ >> /home/young/git/scalp-it/data/pull_trader_logs.cron.log 2>&1 || echo "[$(date '+\%F \%T')] rsync 실패 — 15:25 배치가 낡은 로그를 읽는다" >> /home/young/git/scalp-it/data/pull_trader_logs.cron.log
+# data/pair_*.log 를 읽는다. 감지기가 15:20 에 스스로 끝난 뒤라 파일이 완성돼 있다.
+# (2026-09-13~10-06 엔 trader 에서 15:24 에 rsync 로 당겨왔다 — 같은 호스트가 되며 없앴다.)
 25 15 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v '^#' ../quant-airflow/.env | xargs) && python3 scripts/pair_daily_summary.py >> /home/young/git/scalp-it/data/pair_daily_summary.cron.log 2>&1
 # 만쥬식 매매일지(문서 44 §10-2) — 로그를 사람이 복기할 글로 바꾼다. 집계 직후.
 26 15 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run --extra pg python scripts/pair_journal.py --out data/journal/$(date +\%Y-\%m-\%d).md >> data/pair_journal.cron.log 2>&1
@@ -33,8 +64,8 @@
 50 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl85 >> data/forward_rl85.cron.log 2>&1
 55 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study tiger86 >> data/forward_tiger86.cron.log 2>&1
 58 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl87 >> data/forward_rl87.cron.log 2>&1
-# 86번 실시간 호랑이 그림자용 전일 문턱 — 17:00 계산(16:30 83번 캐시 뒤) → trader 로 보냄. 감지기가 다음 날 09:35 전 문턱으로 쓴다.
-0 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/tiger_86/prevq.py >> data/tiger86_prevq.cron.log 2>&1 && rsync -t -e "ssh -o BatchMode=yes -o ConnectTimeout=20" data/tiger86_prevq.json trader-local:git/scalp-it/data/ >> data/tiger86_prevq.cron.log 2>&1
+# 86번 실시간 호랑이 그림자용 전일 문턱 — 17:00 계산(16:30 83번 캐시 뒤). 감지기가 다음 날 09:35 전 문턱으로 같은 data/ 에서 읽는다.
+0 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/tiger_86/prevq.py >> data/tiger86_prevq.cron.log 2>&1
 # 88번 뉴럴 밴딧 전진(온라인 학습 계속) — 17:05(16:5x 캐시 뒤)
 5 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study bandit88 >> data/forward_bandit88.cron.log 2>&1
 10 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study bandit89 >> data/forward_bandit89.cron.log 2>&1
@@ -44,15 +75,15 @@
 25 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl93 >> data/forward_rl93.cron.log 2>&1
 30 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl94 >> data/forward_rl94.cron.log 2>&1
 35 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl96 >> data/forward_rl96.cron.log 2>&1
-# 의사결정 패리티(승격 9번) — 17:40. 트레이더의 RL 그림자 기록을 당겨와 배치 재현과 **일치율만** 본다.
+# 의사결정 패리티(승격 9번) — 17:40. 감지기의 RL 그림자 기록(data/rl_shadow_rl92.jsonl)을 배치 재현과 **일치율만** 본다.
 # 수익 수치는 전진 최종 평가 때 한 번만 계산한다(OOS 잠금).
-40 17 * * 1-5 cd /home/young/git/scalp-it && rsync -t -e "ssh -o BatchMode=yes -o ConnectTimeout=20" trader-local:git/scalp-it/data/rl_shadow_rl92.jsonl data/ >> data/parity_rl92.log 2>&1; deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/parity/decision_parity.py --study rl92 --agreement-only >> data/parity_rl92.log 2>&1
+40 17 * * 1-5 cd /home/young/git/scalp-it && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/parity/decision_parity.py --study rl92 --agreement-only >> data/parity_rl92.log 2>&1
 # 짝꿍 파라미터 스윕 등 nightly job(research/nightly.toml) — 17:45(17:20~17:30 RL 전진·17:40 패리티 뒤).
 # kqc nightly 가 job 마다 격리·timeout 을 건다. 스윕은 krx-quant-core run_sweep(시행 원장 research/runs/).
 45 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/.local/bin/uv run kqc nightly . >> data/nightly.cron.log 2>&1
 
 # 분봉 수집 — 2026-09-17 에 수동 루프가 끊겨 1,300종목 → 452종목으로 떨어졌다(09-22 발견).
-# 크론으로 고정한다. 15:40 에 trader 감지기가 내려간 뒤 도는 것이 중요하다 —
+# 크론으로 고정한다. 15:40 에 감지기가 내려간 뒤 도는 것이 중요하다 —
 # 키움 앱키는 1세션 제약이라 장중에 같은 키로 붙으면 매매 쪽 소켓을 밀어낸다.
 45 15 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && nice -n 15 .venv/bin/python -m scalp_it.cli_intraday --universe-top 1400 --pages 6 >> data/intraday_minute.cron.log 2>&1
 
