@@ -56,29 +56,19 @@
 # 매일 리포트만 갱신한다(data/etf81_report.md). 판정은 OOS 10거래일·30거래 이후에만 난다.
 20 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/.local/bin/uv run --extra pg python scripts/etf_strength_81.py >> data/etf81.cron.log 2>&1
 
-# 83·84·85 전진 판정 — 평일 16:30/16:40/16:50. 매일은 캐시·거래 건수만(수익 수치 없음),
-# 전진 10거래일·30거래가 차면 같은 명령이 start_run(final=True)로 한 번만 판정하고 research/runs/<study> 에 잠근다.
-# 전용 venv(~/of80/.rlvenv)·학습 산출물(~/of80/*_model, rl85)은 simnode 에만 있다.
-30 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study flow83 >> data/forward_flow83.cron.log 2>&1
-40 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study flow84 >> data/forward_flow84.cron.log 2>&1
-50 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl85 >> data/forward_rl85.cron.log 2>&1
-55 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study tiger86 >> data/forward_tiger86.cron.log 2>&1
-58 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl87 >> data/forward_rl87.cron.log 2>&1
-# 86번 실시간 호랑이 그림자용 전일 문턱 — 17:00 계산(16:30 83번 캐시 뒤). 감지기가 다음 날 09:35 전 문턱으로 같은 data/ 에서 읽는다.
+# 전진 판정 크론 정리(2026-10-08, 사용자 "더 이상 의미 없는 크론은 지워") — 12줄을 뺐다:
+#   · 최종 판정이 잠긴 8개(flow83·flow84·rl85·tiger86·rl87·bandit88·bandit89·rl92, research/runs/<study>/FINAL.lock
+#     2026-10-01) — 매일 "이미 최종 판정됨, 건너뜀" 만 찍고 끝났다(캐시 빌드 전에 빠져나가 다른 잡에 영향 없음).
+#   · rl92 의사결정 패리티(17:40) — 감지기 그림자 기록이 한 줄도 없어 매일 "기록 없음" 이었다.
+#   · rl93·rl94(학습이 22M 에서 끊겨 prep.pkl 없음)·rl96(모델 미학습) — 3주째 "대기" 만 찍었다.
+#   재학습하면 같은 명령(`scripts/forward_gate.py --study <id>`)을 이 자리에 되살린다(git 이력에 원본 줄).
+# 남은 전진: bandit91(아직 판정 전). 결과 조회는 scripts/forward_verdicts.py.
+# 전용 venv(~/of80/.rlvenv)·학습 산출물(~/of80/*)은 simnode 에만 있다.
+# 86번 실시간 호랑이 그림자용 전일 문턱 — 17:00 계산(83번 캐시가 없으면 스스로 짓는다). 감지기가 다음 날 09:35 전 문턱으로 같은 data/ 에서 읽는다.
 0 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/tiger_86/prevq.py >> data/tiger86_prevq.cron.log 2>&1
-# 88번 뉴럴 밴딧 전진(온라인 학습 계속) — 17:05(16:5x 캐시 뒤)
-5 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study bandit88 >> data/forward_bandit88.cron.log 2>&1
-10 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study bandit89 >> data/forward_bandit89.cron.log 2>&1
+# 91번 밴딧 전진(온라인 학습 계속) — 17:15
 15 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study bandit91 >> data/forward_bandit91.cron.log 2>&1
-# 92·93·94 RL 전진(고정값 없는 정책들) — 17:20/17:25/17:30
-20 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl92 >> data/forward_rl92.cron.log 2>&1
-25 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl93 >> data/forward_rl93.cron.log 2>&1
-30 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl94 >> data/forward_rl94.cron.log 2>&1
-35 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study rl96 >> data/forward_rl96.cron.log 2>&1
-# 의사결정 패리티(승격 9번) — 17:40. 감지기의 RL 그림자 기록(data/rl_shadow_rl92.jsonl)을 배치 재현과 **일치율만** 본다.
-# 수익 수치는 전진 최종 평가 때 한 번만 계산한다(OOS 잠금).
-40 17 * * 1-5 cd /home/young/git/scalp-it && deploy/research_run.sh /home/young/of80/.rlvenv/bin/python -W ignore scripts/parity/decision_parity.py --study rl92 --agreement-only >> data/parity_rl92.log 2>&1
-# 짝꿍 파라미터 스윕 등 nightly job(research/nightly.toml) — 17:45(17:20~17:30 RL 전진·17:40 패리티 뒤).
+# 짝꿍 파라미터 스윕 등 nightly job(research/nightly.toml) — 17:45(17:15 밴딧 전진 뒤).
 # kqc nightly 가 job 마다 격리·timeout 을 건다. 스윕은 krx-quant-core run_sweep(시행 원장 research/runs/).
 45 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/.local/bin/uv run kqc nightly . >> data/nightly.cron.log 2>&1
 
