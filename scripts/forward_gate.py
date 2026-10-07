@@ -55,6 +55,14 @@ STUDIES = {
 MIN_DAYS, MIN_TRADES = 10, 30
 
 
+def _missing_prep(model: Path) -> Path | None:
+    """RL 연구(selected.json)가 고른 시드의 prep.pkl 이 없으면 그 경로를, 아니면 None."""
+    if model.name != "selected.json":
+        return None
+    prep = model.parent / f"seed{json.loads(model.read_text())['seed']}" / "prep.pkl"
+    return None if prep.exists() else prep
+
+
 def forward_days(conn) -> list[str]:
     cur = conn.cursor()
     cur.execute("select distinct ts::date from ticks where ts >= %s order by 1", (FORWARD_START,))
@@ -287,6 +295,11 @@ def main() -> None:
         lines += ["- **최종 판정 완료** — research/runs 기록 참조. 다시 평가하지 않는다."]
     elif not days or not spec["model"].exists():
         lines += ["- 전진 데이터 또는 모델 없음 — 대기"]
+    elif (prep := _missing_prep(spec["model"])) is not None:
+        # rl93·rl94 는 학습이 22M 체크포인트에서 끊겨(2026-09-17) 끝에서 쓰는 prep.pkl(스케일러)이
+        # 없다. 매일 FileNotFoundError 로 죽던 것을 대기로 바꾼다 — 스케일러를 지어내 채우면 학습 때와
+        # 다른 정규화로 평가하게 되니, 재학습(또는 같은 학습 구간으로 prep 재생성) 전까지는 평가하지 않는다.
+        lines += [f"- 학습 산출물 없음({prep}) — 학습이 끝나지 않았다. 재학습 전까지 대기"]
     else:
         # 건수는 정책 거래 수만 본다. 수익 수치는 최종 평가 전까지 계산·기록하지 않는다(OOS 잠금).
         t = trades_for(a.study, days)
