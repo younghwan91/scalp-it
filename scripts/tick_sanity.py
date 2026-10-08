@@ -48,7 +48,7 @@ N_BOOT = 1000
 # ============================================================ 순수 계산 함수
 
 
-def trailing_features(
+def _trailing_features_py(
     ts_sec: np.ndarray,
     side: np.ndarray,
     volume: np.ndarray,
@@ -153,7 +153,7 @@ def forward_label(
     return fmax / entry - 1.0, flast / entry - 1.0
 
 
-def forward_labels_all(
+def _forward_labels_all_py(
     ts_sec: np.ndarray, price: np.ndarray, horizon: int
 ) -> tuple[np.ndarray, np.ndarray]:
     """모든 틱 i 에 대한 (MFE, 종가수익) 배열 — ``forward_label`` 의 벡터화판.
@@ -184,6 +184,69 @@ def forward_labels_all(
             close[i] = price[last_idx] / entry - 1.0
             if dq:
                 mfe[i] = price[dq[0]] / entry - 1.0
+    return mfe, close
+
+
+# ------------------------------------------------------------ 코어 커널 경유(값 동일)
+#
+# 위 두 파이썬 루프는 하루 233종목에 ~10초를 썼다(2026-10-07 실측 19초 중). 같은 알고리즘·같은
+# 덧셈 순서를 numba 로 옮긴 krx_quant_core.backtest.ticktime 으로 보낸다 — 원본과 비트 단위로
+# 같다(코어의 원본 대조 테스트 + tests/test_tick_sanity.py 의 _py 대조). 시각이 정렬·유한이 아니거나
+# 창이 0 이하인 입력은 예전 파이썬 루프 그대로 돈다(그 경우의 동작까지 바꾸지 않는다).
+
+
+def _kernel_ok(ts_sec: np.ndarray, span: float) -> bool:
+    if span <= 0 or ts_sec.ndim != 1:
+        return False
+    t = np.asarray(ts_sec, dtype=np.float64)
+    if not np.isfinite(t).all():
+        return False
+    return bool(t.shape[0] < 2 or (np.diff(t) >= 0).all())
+
+
+def trailing_features(
+    ts_sec: np.ndarray,
+    side: np.ndarray,
+    volume: np.ndarray,
+    strength: np.ndarray,
+    window: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """각 틱 i 로 끝나는 직전 ``window`` 초의 (평균 체결강도, 매수비율, 건수). 값은 _trailing_features_py 와 같다."""
+    if not _kernel_ok(ts_sec, window):
+        return _trailing_features_py(ts_sec, side, volume, strength, window)
+    from krx_quant_core.backtest.ticktime import trailing_sums
+
+    vol = np.asarray(volume, dtype=np.float64)
+    buy_vol = np.where(side > 0, volume, 0).astype(np.float64)
+    (s_sum, v_sum, bv_sum), count = trailing_sums(
+        ts_sec, np.asarray(strength, dtype=np.float64), vol, buy_vol, window=window
+    )
+    mean_strength = np.full(count.shape[0], np.nan)
+    pos = count > 0
+    mean_strength[pos] = s_sum[pos] / count[pos]
+    buy_ratio = np.full(count.shape[0], np.nan)
+    has = v_sum > 0
+    buy_ratio[has] = bv_sum[has] / v_sum[has]
+    return mean_strength, buy_ratio, count
+
+
+def forward_labels_all(
+    ts_sec: np.ndarray, price: np.ndarray, horizon: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """모든 틱 i 의 (t, t+horizon] (MFE, 종가수익). 값은 _forward_labels_all_py 와 같다."""
+    if not _kernel_ok(ts_sec, horizon + 1):  # 음수 horizon 만 예전 경로(0 은 빈 창, 커널도 같다)
+        return _forward_labels_all_py(ts_sec, price, horizon)
+    from krx_quant_core.backtest.ticktime import forward_max_last
+
+    p = np.asarray(price, dtype=np.float64)
+    fmax, last = forward_max_last(ts_sec, p, horizon)
+    n = p.shape[0]
+    mfe = np.full(n, np.nan)
+    close = np.full(n, np.nan)
+    ok = (p > 0) & (last >= 0)
+    close[ok] = p[last[ok]] / p[ok] - 1.0
+    m = ok & ~np.isnan(fmax)
+    mfe[m] = fmax[m] / p[m] - 1.0
     return mfe, close
 
 

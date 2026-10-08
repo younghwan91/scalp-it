@@ -242,3 +242,52 @@ def test_load_code_day_ts_is_seconds(tick_db):
 
     ts_sec, *_ = ts_mod._load_code_day(tick_db, "005930", "2026-08-25")
     assert list(np.diff(ts_sec)) == [30, 30]
+
+
+# ---- 코어 커널 경유판 == 예전 파이썬 루프(_py) — 결측·동점·같은 초 다수·폴백 경로까지 ----------
+
+
+def _random_day(seed, n=3000):
+    rng = np.random.default_rng(seed)
+    ts = np.sort(rng.integers(1_787_000_000, 1_787_000_000 + 23_000, n)).astype(np.int64)
+    price = (10000 + np.cumsum(rng.integers(-1, 2, n)) * 10).astype(float)
+    side = rng.choice([-1, 0, 1], n)
+    vol = rng.integers(0, 3000, n).astype(float)
+    stg = rng.uniform(30, 250, n)
+    if seed % 2:
+        price[rng.random(n) < 0.02] = np.nan
+        stg[rng.random(n) < 0.02] = np.nan
+        price[rng.random(n) < 0.01] = 0.0
+    return ts, price, side, vol, stg
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("w", [1, 10, 30, 60, 120, 600])
+def test_kernel_trailing_matches_python_loop(seed, w):
+    ts, _price, side, vol, stg = _random_day(seed)
+    got = ts_mod.trailing_features(ts, side, vol, stg, w)
+    want = ts_mod._trailing_features_py(ts, side, vol, stg, w)
+    for g, x in zip(got, want, strict=True):
+        np.testing.assert_array_equal(g, x)
+        assert g.dtype == x.dtype
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("h", [0, 1, 5, 30, 60, 120, 300])
+def test_kernel_forward_matches_python_loop(seed, h):
+    ts, price, *_ = _random_day(seed)
+    got = ts_mod.forward_labels_all(ts, price, h)
+    want = ts_mod._forward_labels_all_py(ts, price, h)
+    for g, x in zip(got, want, strict=True):
+        np.testing.assert_array_equal(g, x)
+
+
+def test_unsorted_or_bad_window_uses_python_loop(monkeypatch):
+    ts, _price, side, vol, stg = _random_day(0, n=50)
+    calls = []
+    real = ts_mod._trailing_features_py
+    monkeypatch.setattr(ts_mod, "_trailing_features_py", lambda *a: calls.append(1) or real(*a))
+    ts_mod.trailing_features(ts[::-1].copy(), side, vol, stg, 10)  # 정렬 안 됨
+    with pytest.raises(IndexError):  # 예전 루프의 창 0 동작(끝에서 인덱스 초과) 그대로
+        ts_mod.trailing_features(ts, side, vol, stg, 0)
+    assert len(calls) == 2
