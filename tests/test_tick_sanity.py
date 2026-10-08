@@ -242,3 +242,88 @@ def test_load_code_day_ts_is_seconds(tick_db):
 
     ts_sec, *_ = ts_mod._load_code_day(tick_db, "005930", "2026-08-25")
     assert list(np.diff(ts_sec)) == [30, 30]
+
+
+# ---- 코어 커널 경유판 == 예전 파이썬 루프(_py) — 결측·동점·같은 초 다수·폴백 경로까지 ----------
+
+
+def _random_day(seed, n=3000):
+    rng = np.random.default_rng(seed)
+    ts = np.sort(rng.integers(1_787_000_000, 1_787_000_000 + 23_000, n)).astype(np.int64)
+    price = (10000 + np.cumsum(rng.integers(-1, 2, n)) * 10).astype(float)
+    side = rng.choice([-1, 0, 1], n)
+    vol = rng.integers(0, 3000, n).astype(float)
+    stg = rng.uniform(30, 250, n)
+    if seed % 2:
+        price[rng.random(n) < 0.02] = np.nan
+        stg[rng.random(n) < 0.02] = np.nan
+        price[rng.random(n) < 0.01] = 0.0
+    return ts, price, side, vol, stg
+
+
+def _same_bits(got, want):
+    for g, x in zip(got, want, strict=True):
+        assert g.dtype == x.dtype and g.shape == x.shape
+        assert g.tobytes() == x.tobytes()  # NaN 부호·±0 까지
+
+
+@pytest.fixture
+def kernel_calls(monkeypatch):
+    import krx_quant_core.backtest.ticktime as tt
+
+    calls = []
+    for name in ("trailing_sums", "forward_max_last"):
+        real = getattr(tt, name)
+        monkeypatch.setattr(tt, name, lambda *a, _r=real, _n=name, **k: calls.append(_n) or _r(*a, **k))
+    return calls
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("w", [1, 10, 30, 60, 120, 600])
+def test_kernel_trailing_matches_python_loop(seed, w, kernel_calls):
+    ts, _price, side, vol, stg = _random_day(seed)
+    got = ts_mod.trailing_features(ts, side, vol, stg, w)
+    assert kernel_calls == ["trailing_sums"]  # 커널 경로를 실제로 탔다
+    _same_bits(got, ts_mod._trailing_features_py(ts, side, vol, stg, w))
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("h", [0, 1, 5, 30, 60, 120, 300])
+def test_kernel_forward_matches_python_loop(seed, h, kernel_calls):
+    ts, price, *_ = _random_day(seed)
+    got = ts_mod.forward_labels_all(ts, price, h)
+    assert kernel_calls == ["forward_max_last"]
+    _same_bits(got, ts_mod._forward_labels_all_py(ts, price, h))
+
+
+@pytest.mark.parametrize("n", [0, 1, 2])
+def test_tiny_inputs_match(n, kernel_calls):
+    ts, price, side, vol, stg = _random_day(1, n=max(n, 1))
+    ts, price, side, vol, stg = ts[:n], price[:n], side[:n], vol[:n], stg[:n]
+    _same_bits(ts_mod.trailing_features(ts, side, vol, stg, 30),
+               ts_mod._trailing_features_py(ts, side, vol, stg, 30))  # fmt: skip
+    _same_bits(ts_mod.forward_labels_all(ts, price, 30), ts_mod._forward_labels_all_py(ts, price, 30))
+
+
+def test_inputs_outside_kernel_contract_take_python_loop(kernel_calls):
+    ts, price, side, vol, stg = _random_day(0, n=200)
+    for h in (float("nan"), -0.5):  # NaN·음의 소수 지평 — 예전 루프 결과 그대로
+        _same_bits(ts_mod.forward_labels_all(ts, price, h), ts_mod._forward_labels_all_py(ts, price, h))
+    p32 = price.astype(np.float32)  # 예전 루프는 float32 로 나눈다
+    _same_bits(ts_mod.forward_labels_all(ts, p32, 30), ts_mod._forward_labels_all_py(ts, p32, 30))
+    _same_bits(ts_mod.trailing_features(ts, side, vol, stg, float("nan")),
+               ts_mod._trailing_features_py(ts, side, vol, stg, float("nan")))  # fmt: skip
+    with pytest.raises(TypeError):  # object 배열의 None 은 예전처럼 TypeError
+        ts_mod.trailing_features(ts, side, vol, np.array([None] * len(ts), dtype=object), 30)
+    assert kernel_calls == []
+
+
+def test_unsorted_or_bad_window_uses_python_loop(monkeypatch):
+    ts, _price, side, vol, stg = _random_day(0, n=50)
+    calls = []
+    real = ts_mod._trailing_features_py
+    monkeypatch.setattr(ts_mod, "_trailing_features_py", lambda *a: calls.append(1) or real(*a))
+    ts_mod.trailing_features(ts[::-1].copy(), side, vol, stg, 10)  # 정렬 안 됨
+    with pytest.raises(IndexError):  # 예전 루프의 창 0 동작(끝에서 인덱스 초과) 그대로
+        ts_mod.trailing_features(ts, side, vol, stg, 0)
+    assert len(calls) == 2
