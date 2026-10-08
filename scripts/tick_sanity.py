@@ -195,13 +195,25 @@ def _forward_labels_all_py(
 # 창이 0 이하인 입력은 예전 파이썬 루프 그대로 돈다(그 경우의 동작까지 바꾸지 않는다).
 
 
-def _kernel_ok(ts_sec: np.ndarray, span: float) -> bool:
-    if span <= 0 or ts_sec.ndim != 1:
+def _kernel_ok(ts_sec: np.ndarray, span: float, *arrays: np.ndarray) -> bool:
+    """커널로 보내도 예전 루프와 비트 단위로 같은 입력인가 — 아니면 예전 루프로.
+
+    시각: 1차원·정수 또는 float64·유한·비감소. 값 배열: 숫자형(object 아님)·시각과 같은 길이.
+    창: 양수(NaN 제외).
+    """
+    if not (span > 0) or np.ndim(ts_sec) != 1:
         return False
-    t = np.asarray(ts_sec, dtype=np.float64)
-    if not np.isfinite(t).all():
+    t = np.asarray(ts_sec)
+    if not (t.dtype.kind in "iu" or t.dtype == np.float64):
         return False
-    return bool(t.shape[0] < 2 or (np.diff(t) >= 0).all())
+    for a in arrays:
+        a = np.asarray(a)
+        if a.dtype.kind not in "iuf" or a.shape != t.shape:
+            return False
+    tf = t.astype(np.float64)
+    if not np.isfinite(tf).all() or (t.dtype.kind in "iu" and len(t) and np.abs(t).max() > 2**53):
+        return False
+    return bool(t.shape[0] < 2 or (np.diff(tf) >= 0).all())
 
 
 def trailing_features(
@@ -212,7 +224,7 @@ def trailing_features(
     window: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """각 틱 i 로 끝나는 직전 ``window`` 초의 (평균 체결강도, 매수비율, 건수). 값은 _trailing_features_py 와 같다."""
-    if not _kernel_ok(ts_sec, window):
+    if not _kernel_ok(ts_sec, window, side, volume, strength):
         return _trailing_features_py(ts_sec, side, volume, strength, window)
     from krx_quant_core.backtest.ticktime import trailing_sums
 
@@ -234,7 +246,11 @@ def forward_labels_all(
     ts_sec: np.ndarray, price: np.ndarray, horizon: int
 ) -> tuple[np.ndarray, np.ndarray]:
     """모든 틱 i 의 (t, t+horizon] (MFE, 종가수익). 값은 _forward_labels_all_py 와 같다."""
-    if not _kernel_ok(ts_sec, horizon + 1):  # 음수 horizon 만 예전 경로(0 은 빈 창, 커널도 같다)
+    # 가격은 정수 또는 float64 만 — 예전 루프는 float32 가격을 float32 로 나눈다(NumPy 2 규칙).
+    p_in = np.asarray(price)
+    if not (horizon >= 0) or not (p_in.dtype.kind in "iu" or p_in.dtype == np.float64) or not (
+        _kernel_ok(ts_sec, 1.0, p_in)
+    ):
         return _forward_labels_all_py(ts_sec, price, horizon)
     from krx_quant_core.backtest.ticktime import forward_max_last
 
