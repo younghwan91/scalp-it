@@ -20,7 +20,8 @@ import httpx
 # 추론 난이도가 낮다 (스펙 §8).
 DEFAULT_MODELS: dict[str, str] = {
     "gemini": "gemini-2.5-flash-lite",
-    "anthropic": "claude-haiku-4-5-20251001",
+    # 2026-10-12 부터 Haiku 5.5 만 쓴다(4.5 결과는 data/legacy/ 에 보관).
+    "anthropic": "claude-haiku-5-5",
     # openai 는 기본값을 두지 않는다. 등급 이름이 자주 바뀌어 낡은 상수가
     # 조용히 비싼 모델을 부르는 사고를 막는다. SWING_LLM_MODEL 로 명시하라.
 }
@@ -140,19 +141,27 @@ def _anthropic_request(model: str, api_key: str, system: str, user: str) -> _Req
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
+    # Haiku 5.5 기준 요청 모양 — swing-it news/judge.py 와 같다.
+    # - temperature 없음: 5.5 는 기본값이 아닌 값을 400 으로 거절한다.
+    # - thinking 끔: 5.5 는 기본으로 생각하고, 출력 상한(300)을 생각이 다 먹는다
+    #   (swing-it 파일럿 2026-10-08: 400 토큰 상한에서 500건 중 320건 빈 응답).
+    #   기본 effort(medium)에서는 disabled 가 허용된다.
+    # - system 은 cache_control 블록: 텍스트는 평문과 같다. 최소 캐시 접두가
+    #   512 토큰이라 그보다 짧은 system 은 캐시만 안 될 뿐 오류는 없다.
     body = {
         "model": model,
-        "system": system,
-        "temperature": 0,
+        "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         "max_tokens": _MAX_OUTPUT_TOKENS,
+        "thinking": {"type": "disabled"},
         "messages": [{"role": "user", "content": user}],
     }
     return url, headers, body
 
 
 def _anthropic_extract(payload: dict) -> str:
+    # thinking 블록이 앞에 올 수 있다 — 첫 text 블록만 본다.
     for block in payload["content"]:
-        if block.get("type") == "text":
+        if isinstance(block, dict) and block.get("type") == "text":
             return block["text"]
     raise KeyError("text 블록이 없다")
 

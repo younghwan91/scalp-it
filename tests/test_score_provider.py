@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -83,12 +85,35 @@ def test_anthropic_request_shape_and_extraction():
     def handler(request: httpx.Request) -> httpx.Response:
         seen["key"] = request.headers.get("x-api-key")
         seen["version"] = request.headers.get("anthropic-version")
-        return httpx.Response(200, json={"content": [{"type": "text", "text": _JSON}]})
+        seen["body"] = json.loads(request.read())
+        # Haiku 5.5 는 thinking 블록을 앞에 둘 수 있다 — 첫 text 블록을 골라야 한다.
+        return httpx.Response(
+            200,
+            json={
+                "content": [
+                    {"type": "thinking", "thinking": "", "signature": "x"},
+                    {"type": "text", "text": _JSON},
+                ]
+            },
+        )
 
     provider = HttpProvider("anthropic", "haiku-test", "KEY123", client=_client(handler))
     assert provider.complete("시스템", "사용자") == _JSON
     assert seen["key"] == "KEY123"
     assert seen["version"] == "2023-06-01"
+    body = seen["body"]
+    assert "temperature" not in body  # Haiku 5.5 는 기본값 외 temperature 를 400 으로 거절
+    assert body["thinking"] == {"type": "disabled"}
+    assert body["system"] == [
+        {"type": "text", "text": "시스템", "cache_control": {"type": "ephemeral"}}
+    ]
+    assert body["messages"] == [{"role": "user", "content": "사용자"}]
+
+
+def test_anthropic_default_model_is_haiku_5_5():
+    provider = provider_from_env({"SWING_LLM_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "K"})
+    assert provider.model == "claude-haiku-5-5"
+    assert DEFAULT_MODELS["anthropic"] == "claude-haiku-5-5"
 
 
 def test_http_error_becomes_provider_error():
