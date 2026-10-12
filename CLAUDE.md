@@ -14,7 +14,7 @@
 
 ## 명령
 ```bash
-uv sync --extra dev
+uv sync --all-extras                  # uv sync는 안 준 extra를 지운다. --extra dev만 주면 numba(features)가 빠진다
 uv run pytest -q                      # 약 1,600개, 45초. scalp-it에는 CI 테스트가 없어서 푸시 전에 직접 돌린다
 uv run ruff check <바꾼 파일>          # 레포 전체에는 기존 위반이 수백 건 있다. 대량 자동 수정 금지
 uv run python scripts/forward_verdicts.py           # 전진 최종 판정 모아보기 (읽기 전용)
@@ -25,16 +25,19 @@ deploy/research_run.sh uv run python <학습·대규모 스크립트>  # 무거�
 - RL·밴딧 연구 스크립트(`forward_gate.py`, `tiger_86/`, `collect_health.py`)는 전용 venv `~/of80/.rlvenv/bin/python`으로
   돈다. 학습 산출물은 `~/of80/*`에 있다.
 - **워크트리는 `~/git/<이름>`처럼 `quant-airflow`의 형제 위치에 만든다.** `scripts/_envload.py`가
-  `../quant-airflow/.env`를 import 시점에 읽기 때문이다. `.claude/worktrees/`나 다른 깊이에 만들면 pytest 22건이
-  `FileNotFoundError: quant-airflow/.env`로 실패한다(실패 21, 수집 오류 1). 위치 탓이지 내가 바꾼 코드 탓이 아니다.
+  `../quant-airflow/.env`를 import 시점에 읽기 때문이다. `.claude/worktrees/`나 다른 깊이에 만들면 `uv run pytest -q`가
+  `FileNotFoundError: quant-airflow/.env` 수집 오류로 0건에서 중단된다(`--continue-on-collection-errors`로 돌리면 실패 21,
+  수집 오류 1). 위치 탓이지 내가 바꾼 코드 탓이 아니다.
 
 ## 라이브 운영: 이 PC(simnode)가 장중 라이브 호스트다 (2026-10-07부터)
-- 평일 08:40~15:45에는 크론이 `~/git/scalp-it` 체크아웃으로 감지기·수집·DART를 돌린다. 그 시간에는 이 체크아웃에서
-  브랜치 전환, pull, `uv sync`, `.venv` 변경을 하지 않는다. 작업은 워크트리에서 한다.
+- 평일 08:30~18:30에는 크론이 `~/git/scalp-it` 체크아웃으로 감지기(08:55~15:20)·수집·DART·리포트·`kqc nightly`를 돌린다.
+  그 시간에는 이 체크아웃에서 브랜치 전환, pull, `uv sync`, `.venv` 변경을 하지 않는다. 작업은 워크트리에서 한다.
+- 이 체크아웃은 늘 main·깨끗한 상태로 둔다. 07:50 `pull-all --ci-gate`는 fast-forward만 하고 더러운 트리는 건너뛰며,
+  다른 브랜치에 있으면 그 브랜치 코드가 그날 장중에 돈다. 반대로 main에 푸시한 것은 다음 날 07:50에 그대로 라이브가 된다.
 - 키움 App key 1개는 WebSocket 세션 1개다. 장중에 `scalp-pair-detect`, `scalp-tick-collect`, `scalp-intraday`처럼
   키움을 쓰는 명령을 손으로 띄우지 않는다. 같은 키로 붙으면 라이브 소켓이 밀려나고, 틱은 소급 수집이 불가능하다.
-- 감지기는 2026-09-16부터 dry-run이다(`--confirm-real` 없음). `--confirm-real`을 다시 넣는 일은 PROMOTION_CHECKLIST를
-  통과하고 사용자가 승인한 뒤에만 한다.
+- 감지기는 2026-09-16부터 dry-run이다(실행줄에 `--confirm-real` 없음. 스크립트 30줄의 "켜짐" 주석은 낡았다).
+  `--confirm-real`을 다시 넣는 일은 PROMOTION_CHECKLIST를 통과하고 사용자가 승인한 뒤에만 한다.
 - 크론을 바꿀 때는 `deploy/crontab.simnode`를 고쳐 커밋한다. 07:50 동기화가 이 파일로 설치하므로 `crontab -e`로 고친 내용은 덮인다.
 - `pair_detect_daily.sh`의 플래그는 테스트가 고정한다(`tests/conftest.py`, `test_profit_giveback.py`,
   `test_cli_pair_detect_wiring.py`). 연속손절 킬 `2`는 만쥬 지시서 §5의 값이므로 표본을 늘리려고 완화하지 않는다.
