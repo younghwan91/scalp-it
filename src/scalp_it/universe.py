@@ -13,7 +13,8 @@
 
 선정 근거 — 만쥬의 주도주 3대 요건(§2-1):
 
-1. **풍부한 거래대금** (최우선) — 등급 A. `daily_bars.trade_value`(백만원)로 그대로 쓴다.
+1. **풍부한 거래대금** (최우선) — 등급 A. `daily_bars.trade_value`(백만원). 2026-09-14 이후는
+   애프터마켓 거래대금이 섞여 분봉 정규장 집계로 바꾼다(:func:`_regularize`).
 2. **하루 10%~상한가 수준의 변동성** — 등급 A. 거래대금이 커도 변동성이 미미한 대형주는
    배제한다(그래서 삼성전자·SK하이닉스는 거래대금 1·2위여도 걸러진다).
 3. **명확한 재료·스토리** — 등급 C, 자동화 불가. 여기서는 쓰지 않는다.
@@ -29,8 +30,12 @@
 "섹터당 최소 2종목"을 먼저 채우고 남은 슬롯을 전체 점수순으로 메운다
 (:func:`select_universe`).
 
-가격은 **원주가(`daily_bars`)** 로 읽는다. 상한가·등락률 판정은 분할이 반영된
-`daily_bars_adjusted` 로 하면 비율이 왜곡된다(`adapters/db.py` 의 같은 주석 참고).
+가격은 `daily_bars` 로 읽는다. 이 표는 이름과 달리 원주가가 아니다 — 뒤의 액면분할·병합이
+소급 반영돼 있다(005930 2017-03-31 41,200 vs 실제 2,060,000). 그래서 마지막 날 종가를 그날
+분봉 15:30 과 대조해 배수를 맞추고(:func:`_rescale_to_intraday`), **2026-09-14 이후 봉은
+정규장 값으로 바꾼다**(:func:`_regularize`). 애프터마켓(16:00~20:00) 체결이 일봉 고가·저가·
+종가·거래대금에 섞였기 때문이다. 감지기에 주는 전일종가(`prev_close`)는 가격제한폭 기준가이고
+정문 :func:`scalp_it.regular_session.base_prices` 로만 구한다.
 
 DB 커넥션은 **주입받는다**. 쿼리는 SELECT 뿐이다.
 """
@@ -47,6 +52,14 @@ from pathlib import Path
 from typing import Any
 
 from .adapters.db import _placeholder as _ph
+from .regular_session import (
+    AFTERMARKET_START,
+    base_prices,
+    limitup_codes,
+    next_session,
+    regular_closes,
+    regular_session_bars,
+)
 
 __all__ = [
     "Bar",
@@ -418,7 +431,10 @@ def fetch_bars(
     asof: date | str,
     config: UniverseConfig | None = None,
 ) -> list[Bar]:
-    """`asof` 기준 lookback 구간의 일봉을 읽는다(원주가, 분할 미반영).
+    """`asof` 기준 lookback 구간의 일봉을 읽는다.
+
+    `daily_bars` 는 분할 소급 반영본이라 마지막 날 분봉 배수로 맞추고(:func:`_rescale_to_intraday`),
+    2026-09-14 이후 봉은 정규장 값으로 바꾼다(:func:`_regularize`).
 
     `pinned` 종목은 시장 필터를 우회해야 하므로 SQL 의 market 조건에 OR 로 붙인다.
     """
@@ -448,7 +464,7 @@ def fetch_bars(
     cur.execute(sql, tuple(params))
     rows = cur.fetchall()
     cur.close()
-    return _rescale_to_intraday(conn, [
+    return _regularize(conn, _rescale_to_intraday(conn, [
         Bar(
             code=str(r[0]),
             # sqlite 는 date 를 문자열로 돌려준다 — 여기서 한 번에 date 로 맞춘다.
@@ -464,7 +480,47 @@ def fetch_bars(
             market=str(r[10] or ""),
         )
         for r in rows
-    ], days[-1])
+    ], days[-1]))
+
+
+def _regularize(conn: Any, bars: list[Bar]) -> list[Bar]:
+    """애프터마켓(2026-09-14~) 봉을 **정규장** 값으로 바꾼다. 그 전 봉은 그대로다.
+
+    * 종가 = :func:`regular_session.regular_closes` (분봉 15:30 → 다음 거래일 수급표 기준가).
+      모르면 그 봉을 **버린다** — 오염된 일봉 종가로 메우면 등락률·상한가 이력·전일종가가 다시 틀린다.
+    * 고가·저가·거래량·거래대금 = 분봉 09:00~15:32 집계. 분봉이 없는 종목(``minute_bars`` 는 거래대금
+      상위 ~1,400종목만 덮는다)은 정규장 값을 알 수 없어 **일봉 값을 그대로 둔다** — 애프터마켓 고저가
+      섞인 채라 레인지가 약간 부풀 수 있다. 거래대금 100억 문턱을 넘는 후보는 거의 다 분봉이 있다.
+    * 시가는 일봉이 정상이다(애프터마켓은 시가에 영향이 없다).
+    """
+    post_days = sorted({b.day for b in bars if b.day >= AFTERMARKET_START})
+    if not post_days:
+        return bars
+    codes = sorted({b.code for b in bars})
+    closes = {d: regular_closes(conn, d, codes) for d in post_days}
+    sessions = {d: regular_session_bars(conn, d, codes) for d in post_days}
+    out: list[Bar] = []
+    for b in bars:
+        if b.day < AFTERMARKET_START:
+            out.append(b)
+            continue
+        close = closes[b.day].get(b.code)
+        if close is None:
+            continue
+        rb = sessions[b.day].get(b.code)
+        if rb is None:
+            out.append(replace(b, close=close))
+            continue
+        edges = [close] + ([b.open] if b.open > 0 else [])
+        out.append(replace(
+            b,
+            high=max(round(rb.high), *edges),
+            low=min(round(rb.low), *edges),
+            close=close,
+            volume=rb.volume,
+            trade_value=round(rb.trade_value),
+        ))
+    return out
 
 
 def _rescale_to_intraday(conn: Any, bars: list[Bar], last_day: date | str) -> list[Bar]:
@@ -535,6 +591,11 @@ def build_universe(
     if bars:
         asof_date = max(b.day for b in bars)
     cands = build_candidates(bars, asof_date, cfg)
+    # 감지기의 전일종가 = 다음 세션의 가격제한폭 기준가. 정문으로만 구한다 — 일봉 종가를 직접 쓰면
+    # 2026-09-14 이후 애프터마켓 종가로 상한가가 틀린다. 기준가를 모르는 종목은 뺀다(상한가 판정 불가).
+    target = next_session(conn, asof_date) or asof_date + timedelta(days=1)
+    bases = base_prices(conn, target, [c.code for c in cands])
+    cands = [replace(c, prev_close=bases[c.code]) for c in cands if c.code in bases]
     ranked = rank_candidates(cands, cfg, materials, material_scores)
     return select_universe(ranked, asof_date, cfg)
 
@@ -599,31 +660,24 @@ def fetch_sector_limitups(conn: Any, asof: date | str, *, days: int = 10,
                           market: str = KOSDAQ) -> dict[str, int]:
     """최근 ``days`` 영업일 섹터별 상한가 발생 횟수(만쥬 §5-5 신선도 대용치).
 
-    상한가 근사는 전일종가 대비 +29.5% 이상. ``daily_bars.close`` 가 **정수형**이라
-    ``::float`` 캐스팅이 없으면 정수 나눗셈이 되어 거의 안 걸린다 — 실제로 그 함정에
-    빠져 1년 2,313건을 5건으로 셌던 적이 있다.
+    상한가 근사는 정규장 종가가 기준가 대비 +29.5% 이상(:func:`regular_session.limitup_codes`).
+    예전에는 ``daily_bars`` 종가의 ``lag`` 비율로 셌는데 2026-09-14 이후 분자·분모가 둘 다
+    애프터마켓 종가라 틀린다. (그 전에는 ``::float`` 캐스팅 없는 정수 나눗셈으로 1년 2,313건을
+    5건으로 센 적도 있다 — 지금은 파이썬에서 나눈다.)
     """
     sessions = trading_days(conn, asof, days + 1)
     if len(sessions) < 2:
         return {}
     ph = _ph(conn)
     cur = conn.cursor()
-    cur.execute(
-        f"""
-        with d as (
-          select b.code, b.date, cast(b.close as float) c,
-                 lag(cast(b.close as float)) over (partition by b.code order by b.date) pc
-          from daily_bars b join stocks s on s.code = b.code
-          where s.market = {ph} and b.date >= {ph} and b.date <= {ph}
-        )
-        select s.sector, count(*)
-        from d join stocks s on s.code = d.code
-        where d.pc > 0 and d.c / d.pc >= 1.295 and d.date >= {ph}
-        group by 1
-        """,
-        [market, sessions[0], sessions[-1], sessions[1]],
-    )
-    return {str(sec or UNSECTORED): int(n) for sec, n in cur.fetchall()}
+    cur.execute(f"select code, sector from stocks where market = {ph}", [market])
+    sector_by_code = {str(c): str(sec or UNSECTORED) for c, sec in cur.fetchall()}
+    cur.close()
+    out: dict[str, int] = defaultdict(int)
+    for day in sessions[1:]:
+        for code in limitup_codes(conn, day, sector_by_code):
+            out[sector_by_code[code]] += 1
+    return dict(out)
 
 # ------------------------------------------------ 만쥬 §2-1 재료 — DART 공시 기반
 

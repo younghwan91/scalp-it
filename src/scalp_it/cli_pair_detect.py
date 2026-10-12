@@ -547,18 +547,12 @@ def _breaking_meta(args: argparse.Namespace, codes: list[str]) -> dict[str, Any]
         cur = conn.cursor()
         cur.execute(f"select code, sector from stocks where code in ({marks})", codes)
         sectors = {str(c): str(s) for c, s in cur.fetchall() if s}
-        cur.execute(
-            f"select code, max(date) from daily_bars where code in ({marks}) group by code",
-            codes)
-        last = dict(cur.fetchall())
-        prev: dict[str, float] = {}
-        for code, day in last.items():
-            cur.execute(
-                f"select close from daily_bars where code = {ph} and date = {ph}",
-                [code, day])
-            row = cur.fetchone()
-            if row and row[0]:
-                prev[str(code)] = float(row[0])
+        # 전일종가 = 오늘 세션의 가격제한폭 기준가(전일 **정규장** 종가). 일봉 종가를 직접 읽으면
+        # 2026-09-14 이후 애프터마켓 종가라 상한가가 틀린다 — 정문 함수로만 구한다.
+        from .regular_session import base_prices
+
+        today = datetime.now().date()  # noqa: DTZ005 — KST naive(프로젝트 표준)
+        prev: dict[str, float] = {c: float(p) for c, p in base_prices(conn, today, codes).items()}
         # 실전 테마도 같이 넣는다 — 장중에 붙은 종목이 테마 무리에 안 들어가면
         # 감지기가 27종 섹터로만 짝꿍을 고르게 되어 규칙이 갈린다.
         themes = {c: t for c, t in _fetch_themes(conn).items() if c in set(codes)}
@@ -921,6 +915,9 @@ async def _watch_collect_fill(
     try:
         cur = conn.cursor()
         ph = _placeholder(conn)          # postgres·sqlite 둘 다 돈다
+        # 순위만 쓰므로 일봉 거래대금을 그대로 둔다. 2026-09-14 이후에는 애프터마켓 거래대금이
+        # 섞여 순위가 조금 흔들리지만, 이건 틱 수집 후보 풀(넉넉한 상위 N)이라 정규장 재집계
+        # (분봉 ~1,400종목만 덮음)로 바꾸면 분봉 밖 종목이 풀에서 아예 빠진다.
         cur.execute(
             "select code from daily_bars where date = (select max(date) from daily_bars)"
             f" and trade_value > 0 order by trade_value desc limit {ph}",
@@ -1710,6 +1707,7 @@ def _build_rl_shadow(args: argparse.Namespace, trade_date: date) -> tuple[Any, s
         try:
             cur = conn.cursor()
             n = int(getattr(args, "rl_codes", 8) or 8)
+            # 상위 N 순위만 쓴다 — 애프터마켓 거래대금이 섞여도(2026-09-14~) 상위권 구성은 거의 같다.
             cur.execute("select code from daily_bars where date = (select max(date) from daily_bars) "
                         f"and trade_value > 0 order by trade_value desc limit {n}")
             codes = {r[0] for r in cur.fetchall()}

@@ -20,6 +20,7 @@ from typing import Any
 
 from .realtime.coverage import (
     Coverage,
+    count_session_codes,
     fetch_first_ticks,
     fetch_names,
     fetch_surge_rows,
@@ -42,6 +43,7 @@ def run_day(conn: Any, *, day: str, market: str, min_rates: list[float],
     느리기만 하고 답은 같다.
     """
     rows = fetch_surge_rows(conn, day=day, market=market)
+    n_unknown = max(count_session_codes(conn, day=day, market=market) - len(rows), 0)
     first = fetch_first_ticks(conn, day=day)
     out: list[dict] = []
     for rate in min_rates:
@@ -49,7 +51,7 @@ def run_day(conn: Any, *, day: str, market: str, min_rates: list[float],
         cov = measure_coverage(events, first, before=before)
         out.append({
             "day": day, "market": market, "min_rate": rate, "before": before,
-            "n_bars": len(rows),
+            "n_bars": len(rows), "n_unknown": n_unknown,
             "n_events": cov.n_events, "n_covered": cov.n_covered,
             "rate": cov.rate, "n_subscribed": len(first),
             "covered": cov.covered, "missed": cov.missed,
@@ -90,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         cov = Coverage(n_events=row["n_events"], n_covered=row["n_covered"],
                        covered=row["covered"], missed=row["missed"])
         print(format_report(cov, day=day, min_rate=row["min_rate"], names=names,
-                            n_bars=row["n_bars"]))
+                            n_bars=row["n_bars"], n_unknown=row.get("n_unknown", 0)))
         print()
     if args.jsonl:
         with open(args.jsonl, "a", encoding="utf-8") as fh:

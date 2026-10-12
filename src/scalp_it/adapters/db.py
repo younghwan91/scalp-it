@@ -1,7 +1,10 @@
 """DB 읽기 어댑터 — SQL 은 이 파일에만 존재한다.
 
 읽기 전용이다. scalp-it 은 어떤 테이블에도 쓰지 않는다.
-가격은 반드시 ``daily_bars_adjusted`` 에서 읽는다. ``daily_bars`` 는 분할 미반영이다.
+가격은 반드시 ``daily_bars_adjusted`` 에서 읽는다. ``daily_bars`` 는 이름과 달리 **원주가가 아니다** —
+뒤의 액면분할·병합이 소급 반영돼 있고(005930 2017-03-31 41,200 vs 실제 2,060,000), 2026-09-14
+이후 고가·저가·종가·거래량에는 애프터마켓(16:00~20:00) 체결이 섞였다(시가만 정상). 그날의
+정규장 종가·가격제한폭 기준가는 :mod:`scalp_it.regular_session` 이 정문이다.
 
 swing-it(``storage.py``, 구 kr-quant)·krx-signal-engine(``quant_airflow_db_client.py``)도
 같은 TimescaleDB 를 읽는 자기 클라이언트를 따로 갖고 있다 — 이건 사고가
@@ -71,10 +74,12 @@ def load_prices(conn: Any, start: str, end: str) -> pd.DataFrame:
 
 
 def load_daily_bars_raw(conn: Any, start: str, end: str) -> pd.DataFrame:
-    """``daily_bars`` 에서 원주가(분할 미반영)를 읽는다.
+    """``daily_bars`` 의 시가·종가를 읽는다.
 
-    PEAD 진입일 상한가 판정(익일 시가 / 전일 종가 >= 1.29)은 원주가로만 옳다.
-    수정주가는 분할이 반영돼 상한가 비율이 왜곡된다.
+    (정정 2026-10-12) 예전 설명은 "원주가(분할 미반영)"였지만 틀렸다 — ``daily_bars`` 도 뒤의
+    분할·병합이 소급 반영돼 있다. 그리고 2026-09-14 이후 종가는 애프터마켓 종가다. PEAD 진입일
+    상한가 판정(익일 시가 / 전일 종가 >= 1.29)처럼 기준가가 필요한 계산은 09-14 이후 날짜에
+    :func:`scalp_it.regular_session.base_prices` 를 써야 한다. 이 함수는 기존 연구 재현용으로 둔다.
     """
     ph = _placeholder(conn)
     sql = (

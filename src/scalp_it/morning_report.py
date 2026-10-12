@@ -20,6 +20,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from .realtime.pair_detector import limit_up_price
+from .regular_session import base_prices
 from .ticksize import tick_size
 
 
@@ -63,14 +64,17 @@ def collect(conn: Any, day: date, *, ticks: int = 3) -> dict[str, Any]:
         return out
 
     # 방아쇠 구간 — 그날 틱의 최고가가 상한가 3호가 이내이면서 상한가 미만인 종목.
-    rows = _rows(
+    # 상한가의 기준은 그날 가격제한폭 기준가(전일 정규장 종가)다. 전일 일봉 종가를 직접 쓰면
+    # 2026-09-14 이후 애프터마켓 종가라 상한가가 틀린다 — 정문 함수로만 구한다.
+    highs = _rows(
         conn,
-        "select t.code, max(t.price::numeric), d.close::numeric"
-        " from ticks t join daily_bars d on d.code = t.code and d.date = %s"
-        " where t.ts::date = %s and d.close > 0 group by t.code, d.close",
-        (prev_day, day))
-    zone = [(c, float(hi), float(pc)) for c, hi, pc in rows
-            if in_trigger_zone(price=float(hi), prev_close=float(pc), ticks=ticks)]
+        "select code, max(price::numeric) from ticks where ts::date = %s group by code",
+        (day,))
+    bases = base_prices(conn, day, [str(c) for c, _ in highs])
+    rows = [(str(c), float(hi), float(bases[str(c)])) for c, hi in highs
+            if hi is not None and str(c) in bases]
+    zone = [(c, hi, pc) for c, hi, pc in rows
+            if in_trigger_zone(price=hi, prev_close=pc, ticks=ticks)]
     out["zone_codes"] = len(zone)
     out["zone_list"] = sorted(c for c, _, _ in zone)
     out["subscribed_touched_limit"] = sum(

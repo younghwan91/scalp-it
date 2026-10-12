@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..adapters.db import _placeholder as _ph
+from ..regular_session import base_prices, regular_closes
 
 #: 등락률 경계의 부동소수점 허용오차. 호가 단위가 원 단위라 1e-9 면 충분하다.
 _EPS = 1e-9
@@ -106,27 +107,42 @@ def measure_coverage(events: Sequence[SurgeEvent],
                     covered=covered, missed=missed)
 
 
-def fetch_surge_rows(conn: Any, *, day: str, market: str) -> list[tuple]:
-    """그날 ``(code, close, prev_close)`` — ``prev_close`` 는 **직전 거래일** 종가.
+def count_session_codes(conn: Any, *, day: str, market: str) -> int:
+    """그날 일봉이 있는 ``market`` 종목 수. :func:`fetch_surge_rows` 와의 차이 = 정규장 값을 모르는 종목."""
+    ph = _ph(conn)
+    cur = conn.cursor()
+    cur.execute(
+        f"select count(*) from daily_bars b join stocks s on s.code = b.code "
+        f"where s.market = {ph} and b.date = {ph}",
+        [market, day],
+    )
+    row = cur.fetchone()
+    cur.close()
+    return int(row[0]) if row and row[0] else 0
 
-    달력 하루 전을 빼면 월요일마다 전부 구멍이 난다(주말·휴장). ``lag`` 로 그
-    종목의 직전 행을 쓴다.
+
+def fetch_surge_rows(conn: Any, *, day: str, market: str) -> list[tuple]:
+    """그날 ``(code, close, prev_close)`` — 둘 다 **정규장** 값이다.
+
+    ``close`` 는 그날 정규장 종가, ``prev_close`` 는 그날 가격제한폭 기준가(직전 거래일 정규장 종가)다.
+    정문 :mod:`scalp_it.regular_session` 으로 구한다. ``daily_bars`` 종가를 ``lag`` 로 쓰면
+    2026-09-14 이후 둘 다 애프터마켓 종가라 등락률이 틀리고, 달력 하루 전을 빼면 월요일마다 구멍이
+    난다(주말·휴장). 정규장 종가나 기준가를 모르는 종목은 행이 없다.
     """
     ph = _ph(conn)
     cur = conn.cursor()
     cur.execute(
-        f"""
-        with x as (
-          select b.code, b.date, b.close c,
-                 lag(b.close) over (partition by b.code order by b.date) pc
-          from daily_bars b join stocks s on s.code = b.code
-          where s.market = {ph} and b.date <= {ph}
-        )
-        select code, c, pc from x where date = {ph} and pc is not null
-        """,
-        [market, day, day],
+        f"select b.code from daily_bars b join stocks s on s.code = b.code "
+        f"where s.market = {ph} and b.date = {ph}",
+        [market, day],
     )
-    return list(cur.fetchall())
+    codes = [str(r[0]) for r in cur.fetchall()]
+    cur.close()
+    if not codes:
+        return []
+    closes = regular_closes(conn, day, codes)
+    bases = base_prices(conn, day, list(closes))
+    return [(c, closes[c], bases[c]) for c in codes if c in closes and c in bases]
 
 
 def fetch_first_ticks(conn: Any, *, day: str) -> dict[str, str]:
@@ -151,7 +167,8 @@ def fetch_first_ticks(conn: Any, *, day: str) -> dict[str, str]:
 
 def format_report(cov: Coverage, *, day: str, min_rate: float,
                   names: Mapping[str, str] | None = None,
-                  n_bars: int | None = None, top: int = 10) -> str:
+                  n_bars: int | None = None, top: int = 10,
+                  n_unknown: int = 0) -> str:
     """사람이 읽는 한 화면. 놓친 종목을 **이름으로** 적는다.
 
     비율만 적으면 다음 행동이 안 나온다. 어떤 종목을 놓쳤는지 보여야 "얘는 왜
@@ -172,6 +189,11 @@ def format_report(cov: Coverage, *, day: str, min_rate: float,
         (f"이벤트 {cov.n_events}건 중 본 것 {cov.n_covered}건 "
          f"({cov.n_covered}/{cov.n_events}) — **{pct}**"),
     ]
+    if n_unknown > 0:
+        # 2026-09-14 이후 일봉 종가는 애프터마켓 값이라 못 쓴다. 분봉 수집(~1,400종목) 밖 종목의
+        # 그날 정규장 종가는 다음 거래일 수급표(16:00 적재)가 들어와야 안다 — 그 전에는 이벤트가 덜 잡힌다.
+        lines += ["", (f"(정규장 종가 미상 {n_unknown}종목 — 이벤트가 덜 잡혔을 수 있다. "
+                       "다음 거래일 16:00 뒤 다시 재면 채워진다)")]
     if cov.missed:
         lines += ["", f"## 놓친 {len(cov.missed)}건"]
         lines += [f"- {c}{f' {names[c]}' if c in names else ''}"

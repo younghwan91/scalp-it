@@ -36,16 +36,28 @@ def _day_bounds(start: str, end: str) -> tuple[str, str]:
     return lo.strftime(fmt), hi.strftime(fmt)
 
 
+#: 정규장 분봉 창 — 09:00 개장 ~ 15:30 종가 동시호가 봉(일부는 15:31·15:32 에 찍힌다). 끝은 미포함.
+REGULAR_START = "09:00:00"
+REGULAR_END = "15:33:00"
+
+
 def load_minute_bars(
-    conn: Any, start: str, end: str, codes: list[str] | None = None
+    conn: Any, start: str, end: str, codes: list[str] | None = None,
+    *, regular_only: bool = False,
 ) -> pd.DataFrame:
     """``[start, end]`` 구간(양끝 포함, 일자 단위)의 분봉을 읽는다.
 
+    **기본값은 하루 전체 봉이다.** 2026-09-14 KRX 애프터마켓 시작 뒤로는 16:00~19:59 봉(정규장 밖
+    체결)과 15:35 전후 봉도 들어 있다. 정규장만 필요하면 ``regular_only=True`` 를 준다 — 기본값을
+    바꾸면 기존 연구 재현이 달라질 수 있어 옵션으로 뒀다. 그날 종가·기준가는 이 함수가 아니라
+    :mod:`scalp_it.regular_session` 이 정문이다.
+
     Args:
         conn: psycopg2 또는 sqlite3 연결.
-        start, end: ``YYYY-MM-DD``. ``end`` 는 그날 15:30 까지 포함한다.
+        start, end: ``YYYY-MM-DD``. ``end`` 는 그날 마지막 봉까지 포함한다(애프터마켓 19:59 포함).
         codes: 종목 목록. ``None`` 이면 전 종목. 아직 수집 안 된 종목은
             그냥 빠진 채로 돌아온다 (오류 아님).
+        regular_only: True 면 각 날짜의 09:00 ≤ ts < 15:33 봉만 남긴다.
 
     Returns:
         ``code, ts, open, high, low, close, volume, trade_value`` — ``code, ts`` 정렬.
@@ -76,6 +88,9 @@ def load_minute_bars(
     df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
     for col in _NUMERIC:
         df[col] = pd.to_numeric(df[col], errors="coerce")
+    if regular_only:
+        tod = df["ts"].dt.strftime("%H:%M:%S")
+        df = df[(tod >= REGULAR_START) & (tod < REGULAR_END)]
     return df.sort_values(["code", "ts"]).reset_index(drop=True)
 
 
