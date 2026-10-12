@@ -548,6 +548,16 @@ def test_scan_bases_convert_percent_rate_to_the_session_base():
     assert base_price_from_pct(13_000, None) is None
 
 
+def test_scan_bases_skip_listing_day_rates_beyond_the_price_limit():
+    """상장 당일 flu_rt 는 공모가 대비(±30% 밖 가능) — 역산하면 공모가가 기준가가 된다. 건너뛴다."""
+    import scalp_it.cli_pair_detect as cpd
+    from scalp_it.realtime.leader_scan import parse_scan_rows
+
+    rows = parse_scan_rows([{"stk_cd": "486510_AL", "cur_prc": "+52000", "flu_rt": "+160.00"},
+                            {"stk_cd": "043200_AL", "cur_prc": "+1331", "flu_rt": "+29.98"}])
+    assert cpd._scan_bases(rows) == {"043200": 1_024.0}
+
+
 def test_prev_day_movers_rank_by_regular_close_over_base(db):
     """cli_tick --auto 의 전일 급등주 — 일봉(수정) 종가 비율이 아니라 정규장 종가 / 기준가."""
     from scalp_it.realtime.store import _prev_day_movers

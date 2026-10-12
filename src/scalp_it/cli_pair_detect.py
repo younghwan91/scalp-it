@@ -271,10 +271,10 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
         # 크론) 최신 날짜와 대조한다 — 어긋나면 정문이 경고를 찍고, 기준가는 아래 session=today 로
         # 실제 직전 거래일 분봉 종가에서 구한다(지표는 일봉이 있는 날까지).
         try:
-            from .regular_session import previous_session as regular_previous_session
+            from .regular_session import _day, previous_session as regular_previous_session
 
             actual = regular_previous_session(conn, today)
-            if actual is not None and actual != prev:
+            if actual is not None and _day(actual) != _day(prev):
                 print(f"[경고] 일봉 기준 직전 영업일 {prev} ≠ 분봉 기준 {actual} — 유니버스 지표는 "
                       f"{prev} 일봉까지, 기준가는 {actual} 정규장 종가로 구한다", file=sys.stderr)
         except Exception as exc:  # noqa: BLE001 — 대조 실패로 기동을 막지 않는다
@@ -598,6 +598,10 @@ def _scan_bases(rows: Sequence[Any]) -> dict[str, float]:
     out: dict[str, float] = {}
     for r in rows:
         try:
+            # 가격제한폭 ±30% 를 넘는 등락률은 상장 당일(공모가 대비)뿐이다 — 역산하면 공모가가 기준가가
+            # 되어 거짓 상한가·후속주 순위 오염(+184%)이 난다. 그런 행은 기준가를 모르는 것으로 둔다.
+            if r.flu_rt is not None and abs(float(r.flu_rt)) > 30.0:
+                continue
             base = base_price_from_pct(r.price, r.flu_rt)
         except Exception:  # noqa: BLE001, S112 — 이상한 행 하나로 그 회차 편입을 날리지 않는다
             continue
