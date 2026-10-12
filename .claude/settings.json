@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(**/PREREG.lock)",
+      "Edit(**/FINAL.lock)",
+      "Edit(/research/runs/**/OOS.json)",
+      "Edit(/research/runs/**/RUNS.jsonl)",
+      "Edit(/research/**/TRIALS.jsonl)",
+      "Edit(/docs/research/manju/102-minute-largescale-preregistration.md)",
+      "Edit(/docs/research/manju/83-institutional-flow-turning-point-preregistration.md)",
+      "Edit(/docs/research/manju/84-feature-optimization-preregistration.md)",
+      "Edit(/docs/research/manju/85-rl-wave-riding-preregistration.md)",
+      "Edit(/docs/research/manju/86-tiger-limit-queue-preregistration.md)",
+      "Edit(/docs/research/manju/87-rl-limit-queue-preregistration.md)",
+      "Edit(/docs/research/manju/88-neural-bandit-preregistration.md)",
+      "Edit(/docs/research/manju/89-two-head-limit-bandit-preregistration.md)",
+      "Edit(/docs/research/manju/91-limit-bandit-30feat-preregistration.md)",
+      "Edit(/docs/research/manju/92-rl-fast-exit-preregistration.md)",
+      "Edit(/docs/research/manju/93-rl-end-to-end-preregistration.md)",
+      "Edit(/docs/research/manju/94-rl-full-universe-preregistration.md)",
+      "Edit(/docs/research/manju/96-minute-scale-limit-preregistration.md)"
+    ]
+  }
+}
