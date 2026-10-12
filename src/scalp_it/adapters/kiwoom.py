@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -405,6 +406,7 @@ class KiwoomClient:
         collected: list[dict[str, Any]] = []
         cont_yn: str | None = None
         next_key: str | None = None
+        blank_tm = 0
 
         for _ in range(max(0, int(pages))):
             rows, cont_yn, next_key = self.fetch_page(
@@ -414,6 +416,15 @@ class KiwoomClient:
                 break
             stop = False
             for row in rows:
+                # cntr_tm 이 빈 행은 건너뛰고 센다. 예전엔 parse_cntr_tm 이 던져서
+                # 그 종목 수집 전체가 날아갔다 — 008290·046070·084180·121850·006380
+                # 등이 몇 주째 매일 '체결시각을 읽을 수 없다: ''' 로 통째 실패했다
+                # (2026-10-12 데이터 감사). 시각 없는 행은 저장할 수 없으니 버리는 게
+                # 맞지만, 나머지 정상 행까지 버릴 이유는 없다. 길이가 틀린 **비어
+                # 있지 않은** 값은 여전히 던진다 — 그건 엉뚱한 시각으로 읽힐 위험이다.
+                if not str(row.get("cntr_tm") or "").strip():
+                    blank_tm += 1
+                    continue
                 item = normalize_row(code, row)
                 if floor is not None and item["ts"] < floor:
                     stop = True
@@ -424,6 +435,8 @@ class KiwoomClient:
                 collected.append(item)
             if stop or str(cont_yn or "").upper() != "Y" or not next_key:
                 break
+        if blank_tm:
+            print(f"  {code}: cntr_tm 빈 행 {blank_tm}개 건너뜀", file=sys.stderr)
         return collected
 
     # ------------------------------------------------------------------ 테마

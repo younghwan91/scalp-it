@@ -258,6 +258,40 @@ def test_stop_at_resumes_from_stored_latest_ts(monkeypatch):
     assert [r["ts"].minute for r in rows] == [30]
 
 
+def test_blank_cntr_tm_rows_are_skipped_not_fatal(monkeypatch, capsys):
+    """빈 ``cntr_tm`` 행은 건너뛰고 세기만 한다 — 그 종목 전체를 날리지 않는다.
+
+    2026-10-12 감사: 008290 등 6종목이 빈 체결시각 한 줄 때문에 몇 주째 통째 실패했다.
+    """
+    def fake_fetch_page(self, code, *, tic_scope="1", cont_yn=None, next_key=None):
+        rows = [
+            _row_at("14153000"),
+            dict(_ROW, cntr_tm=""),
+            dict(_ROW, cntr_tm=None),
+            _row_at("14152800"),
+        ]
+        return rows, "N", ""
+
+    monkeypatch.setattr(KiwoomClient, "fetch_page", fake_fetch_page)
+    client = _make(_router(lambda r: _rank([])))
+    rows = client.minute_chart("008290", pages=5)
+    assert [r["ts"].minute for r in rows] == [30, 28]
+    err = capsys.readouterr().err
+    assert err.count("008290: cntr_tm 빈 행 2개 건너뜀") == 1
+
+
+def test_malformed_nonblank_cntr_tm_still_raises(monkeypatch):
+    """비어 있지 않은데 길이가 틀린 값은 엉뚱한 시각이 될 수 있어 여전히 던진다."""
+    monkeypatch.setattr(
+        KiwoomClient, "fetch_page",
+        lambda self, code, *, tic_scope="1", cont_yn=None, next_key=None:
+            ([dict(_ROW, cntr_tm="2026081415")], "N", ""),
+    )
+    client = _make(_router(lambda r: _rank([])))
+    with pytest.raises(KiwoomError, match="체결시각"):
+        client.minute_chart("005930", pages=1)
+
+
 def test_empty_payload_is_not_an_error(monkeypatch):
     """신규 상장·거래정지 종목은 실제로 빈 배열이 온다."""
     monkeypatch.setattr(
