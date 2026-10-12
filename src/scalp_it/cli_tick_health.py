@@ -20,8 +20,9 @@
 4. **가격 정합** — tick price 가 그날(없으면 최근) daily_bars 고저 범위/스케일 안,
    best_bid ≤ best_ask (매도호가 0 = 상한가 소진은 역전으로 세지 않는다).
 5. **호가** — bid1<ask1, 총잔량>0, 10호가 채움, ts 갱신(1초 스냅샷), vi_flag 수신.
-6. **VI 이벤트** — vi_events 최근 N분 수신 건수. VI 는 드문 이벤트라 0 건도 실패가
-   아니다(장중이면 경고까지만).
+6. **VI 이벤트** — vi_events 최근 N분 수신 건수. 최근 N분 0 건은 정상(드문 이벤트)
+   이지만, **그날 틱은 들어오는데 VI 가 하루 통째 0 건**이면 경고다 — 구독 종목이
+   수십 개면 하루 VI 0 은 사실상 1h 미구독·FID 오매핑 신호다.
 
 이상 유형별 raw 원문 1건씩은 로그에 덤프한다(사후 FID 보정용).
 
@@ -280,6 +281,24 @@ def fetch_vi_count(conn: Any, cutoff: datetime) -> tuple[int, int, str | None]:
     return int(row[0] or 0), int(row[1] or 0), _fmt_ts(row[2])
 
 
+def fetch_day_presence(conn: Any, day_start: datetime) -> tuple[bool, int | None]:
+    """그날(``day_start`` 이후) 틱이 하나라도 있는지, 그날 vi_events 건수.
+
+    틱은 존재만 본다(``limit 1``) — 하루치 count 는 수백만 행이다. vi_events 가
+    없으면 건수는 ``None``.
+    """
+    ph = _placeholder(conn)
+    cut = _bind_ts(conn, day_start)
+    cur = conn.cursor()
+    try:
+        cur.execute(f"select 1 from ticks where ts >= {ph} limit 1", (cut,))
+        has_ticks = cur.fetchone() is not None
+    finally:
+        cur.close()
+    n_vi, _codes, _latest = fetch_vi_count(conn, day_start)
+    return has_ticks, n_vi
+
+
 def fetch_daily_ranges(
     conn: Any, trade_date: str | None
 ) -> tuple[dict[str, tuple[float, float]], str | None, bool]:
@@ -524,23 +543,32 @@ def judge_quotes(quote: QuoteStats, *, market: bool, now: datetime | None = None
     return Check(name, status, " · ".join(parts))
 
 
-def judge_vi(n_rows: int, n_codes: int, *, minutes: int, market: bool) -> Check:
-    """항목 6 — vi_events 최근 N분 수신 건수.
+def judge_vi(
+    n_rows: int, n_codes: int, *, minutes: int, market: bool,
+    day_has_ticks: bool = False, day_vi: int | None = None,
+) -> Check:
+    """항목 6 — vi_events 최근 N분 수신 건수 + 그날 전체 건수.
 
-    VI 는 드문 이벤트라 0 건도 실패가 아니다(경고까지만). 발동/해제가 잦은 날엔
-    수십 건, 잔잔한 날엔 0 건이 정상이다. 다만 장중이면 파이프라인 점검 차 경고로
-    눈에 띄게 남긴다.
+    최근 N분 0 건은 정상이다(VI 는 드문 이벤트, 매번 경고면 경보가 무의미해진다).
+    그러나 **그날 틱이 있는데 VI 가 하루 통째 0 건**이면 경고다. 2026-10-12 감사에서
+    vi_events 는 생긴 뒤로 한 번도 행이 없었는데 이 항목은 매일 OK 였다 — 실제
+    원인은 장중 데몬(pair-detect)이 1h 를 REG 조차 안 한 것이었다.
     """
     name = "6. VI 이벤트"
+    day_note = "" if day_vi is None else f" (오늘 {day_vi:,}건)"
     if n_rows > 0:
-        return Check(name, Status.OK, f"최근 {minutes}분 {n_rows:,}건 / {n_codes}종목")
+        return Check(name, Status.OK,
+                     f"최근 {minutes}분 {n_rows:,}건 / {n_codes}종목{day_note}")
+    if day_has_ticks and not day_vi:
+        return Check(
+            name, Status.WARN,
+            "오늘 틱은 들어오는데 VI 0건 — 1h 미구독(REG type 확인)·FID 오매핑 의심",
+        )
     if not market:
-        return Check(name, Status.OK, f"최근 {minutes}분 0건 — 장중 아님(정상)")
-    # 장중 0건도 정상(VI 는 드문 이벤트). WARN 을 매번 내면 경보가 무의미해지므로
-    # OK 로 두되, 1h 구독 자체가 살아있는지는 collector 로그로 별도 확인한다.
+        return Check(name, Status.OK, f"최근 {minutes}분 0건 — 장중 아님(정상){day_note}")
     return Check(
         name, Status.OK,
-        f"최근 {minutes}분 0건 — VI 는 드문 이벤트라 정상(발동 시 자동 기록)",
+        f"최근 {minutes}분 0건 — VI 는 드문 이벤트라 정상{day_note}",
     )
 
 
@@ -554,6 +582,8 @@ def run_checks(conn: Any, *, minutes: int, expected: int, now: datetime) -> list
     tick = fetch_tick_stats(conn, cutoff)
     quote = fetch_quote_stats(conn, cutoff)
     vi_rows, vi_codes, _vi_latest = fetch_vi_count(conn, cutoff)
+    day_has_ticks, day_vi = fetch_day_presence(
+        conn, now.replace(hour=0, minute=0, second=0, microsecond=0))
 
     trade_date = None
     latest_tick = _parse_ts(tick.latest_ts)
@@ -567,7 +597,8 @@ def run_checks(conn: Any, *, minutes: int, expected: int, now: datetime) -> list
         judge_strength(tick),
         judge_price(tick, ranges, ref_date, same_day),
         judge_quotes(quote, market=market, now=now),
-        judge_vi(vi_rows, vi_codes, minutes=minutes, market=market),
+        judge_vi(vi_rows, vi_codes, minutes=minutes, market=market,
+                 day_has_ticks=day_has_ticks, day_vi=day_vi),
     ]
 
     # 항목 6 — 이상(경고/실패) 유형별 raw 원문 1건씩 붙인다.

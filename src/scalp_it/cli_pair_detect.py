@@ -1370,6 +1370,9 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
     from .realtime.store import init_realtime_tables
 
     url = WS_URL_MOCK if args.mock else WS_URL
+    # ⚠️ 1h(VI) 는 REG 하지 않는다 — 이 데몬이 tick-collect 를 대체한 뒤로(2026-08-24~)
+    # vi_events 가 한 건도 안 쌓인 원인이다(2026-10-12 감사). 1h 를 넣으면 종목당 등록
+    # 3건이라 커넥션 정원이 50→33종목으로 준다 — 켤지는 정원과 맞바꾸는 결정이다.
     types = [TYPE_TRADE, TYPE_QUOTE]
     codes_all = sorted(detector.codes)
     store = not args.no_store and not args.dry_run

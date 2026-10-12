@@ -89,6 +89,8 @@ def _by_name(checks):
 
 def test_healthy_all_ok_and_exit_zero(conn):
     _healthy(conn)
+    # 오늘 아침 VI 한 건 — 하루 통째 VI 0 이면 항목 6 이 경고를 낸다.
+    insert_vi_events(conn, [_vi(3600)])
     checks = H.run_checks(conn, minutes=15, expected=1, now=NOW)
     named = _by_name(checks)
     assert named["1. 수집 여부"].status is H.Status.OK
@@ -266,20 +268,39 @@ def test_vi_events_reported(conn):
     assert "2건" in vi.detail
 
 
-def test_vi_absent_during_market_is_ok(conn):
-    # VI 0건은 장중이라도 정상(드문 이벤트). 매번 WARN 을 내면 경보가 무의미하다.
-    _healthy(conn, n=2)  # 틱·호가는 정상, VI 만 없음
+def test_vi_recent_absent_but_seen_today_is_ok(conn):
+    # 최근 N분 0건은 정상(드문 이벤트) — 오늘 이미 받은 적이 있으면 1h 구독은 살아 있다.
+    _healthy(conn, n=2)
+    insert_vi_events(conn, [_vi(3600)])  # 1시간 전
     checks = H.run_checks(conn, minutes=15, expected=1, now=NOW)
     vi = _by_name(checks)["6. VI 이벤트"]
     assert vi.status is H.Status.OK
-    assert H.worst_status(checks) is not H.Status.FAIL
+    assert "오늘 1건" in vi.detail
 
 
-def test_vi_absent_after_hours_is_ok(conn):
+def test_vi_zero_all_day_with_ticks_warns(conn):
+    """틱은 들어오는데 하루 통째 VI 0 → 경고 (2026-10-12 감사: 1h 미구독이 매일 OK 로 통과)."""
+    _healthy(conn, n=2)
+    checks = H.run_checks(conn, minutes=15, expected=1, now=NOW)
+    vi = _by_name(checks)["6. VI 이벤트"]
+    assert vi.status is H.Status.WARN
+    assert "1h 미구독" in vi.detail
+    assert H.worst_status(checks) is not H.Status.FAIL  # 종료코드는 안 바뀐다
+
+
+def test_vi_zero_all_day_warns_after_hours_too(conn):
     _healthy(conn, n=2)
     after = datetime(2026, 8, 24, 18, 0, 0)
     vi = _by_name(H.run_checks(conn, minutes=15, expected=1, now=after))["6. VI 이벤트"]
+    assert vi.status is H.Status.WARN
+
+
+def test_vi_absent_on_no_tick_day_is_ok(conn):
+    # 휴장일·수집 없는 날은 VI 0 이 당연하다 — 경고 대상이 아니다.
+    after = datetime(2026, 8, 24, 18, 0, 0)
+    vi = _by_name(H.run_checks(conn, minutes=15, expected=1, now=after))["6. VI 이벤트"]
     assert vi.status is H.Status.OK
+    assert "장중 아님" in vi.detail
 
 
 # --------------------------------------------------------------- main / 종료코드
