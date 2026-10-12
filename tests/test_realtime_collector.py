@@ -814,3 +814,22 @@ def test_quote_events_buffer_capped_during_db_outage(conn, monkeypatch):
         collector._handle_raw(None, json.dumps(_frame(("0D", _quote_values()))))
     collector._flush_quote_events(db_ok=False)
     assert [r["qseq"] for r in collector._qevent_buf] == [3, 4]  # 최신만 남긴다
+
+
+def test_reconnect_falls_back_to_env_dsn_when_no_dsn_given(tmp_path, monkeypatch):
+    # 2026-10-12: --dsn 없이(KR_QUANT_DB 로) 붙은 scalp-pair-detect 가 DB 10초 재시작 뒤
+    # 재연결을 한 번도 안 하고 15:20 까지 죽은 커넥션에 insert 했다.
+    import sqlite3
+
+    dead = sqlite3.connect(tmp_path / "old.db")
+    dead.close()
+    monkeypatch.setenv("KR_QUANT_DB", str(tmp_path / "new.db"))
+    logs = []
+    collector = KiwoomRealtimeCollector("tok", ["005930"], conn=dead, trade_date=TDAY, log=logs.append)
+    assert collector._reconnect_db() is True
+    assert collector._conn is not dead
+    collector._conn.execute("select 1")
+
+    monkeypatch.delenv("KR_QUANT_DB")
+    assert collector._reconnect_db() is False
+    assert any("재연결 불가" in m for m in logs)

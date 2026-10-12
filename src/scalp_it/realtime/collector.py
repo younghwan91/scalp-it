@@ -761,12 +761,22 @@ class KiwoomRealtimeCollector:
             self._flush()
 
     def _reconnect_db(self) -> bool:
-        """DB 순단 후 커넥션 재생성. 실패해도 예외를 삼키고 False."""
-        if not self._dsn:
+        """DB 순단 후 커넥션 재생성. 실패해도 예외를 삼키고 False.
+
+        ``dsn`` 을 안 받았으면 ``KR_QUANT_DB`` 로 붙는다 — 처음 접속과 같은 규칙이다.
+        예전엔 ``self._dsn`` 이 없으면 **조용히** False 였는데, 크론의 ``scalp-pair-detect`` 는
+        ``--dsn`` 없이 환경변수로 붙어서 재연결을 한 번도 안 했다: 2026-10-12 13:59:37 DB 가
+        OOM 으로 10초 재시작되자 15:20 종료까지 죽은 커넥션에 2,682번 insert 하다 실패했고,
+        틱·호가는 스풀에만, quote_events 는 메모리 상한에서 잘려 유실됐다.
+        """
+        target = self._dsn or os.environ.get("KR_QUANT_DB")
+        if not target:
+            if self._log:
+                self._log("DB 재연결 불가: dsn·KR_QUANT_DB 둘 다 없다")
             return False
         from .store import connect as _db_connect
         try:
-            self._conn = _db_connect(self._dsn)
+            self._conn = _db_connect(target)
             return True
         except Exception as exc:  # noqa: BLE001 — 재연결 실패는 다음 flush 에서 재시도
             if self._log:
