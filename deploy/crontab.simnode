@@ -62,12 +62,11 @@
 #   · rl92 의사결정 패리티(17:40) — 감지기 그림자 기록이 한 줄도 없어 매일 "기록 없음" 이었다.
 #   · rl93·rl94(학습이 22M 에서 끊겨 prep.pkl 없음)·rl96(모델 미학습) — 3주째 "대기" 만 찍었다.
 #   재학습하면 같은 명령(`scripts/forward_gate.py --study <id>`)을 이 자리에 되살린다(git 이력에 원본 줄).
-# 남은 전진: bandit91(아직 판정 전). 결과 조회는 scripts/forward_verdicts.py.
+# bandit91 도 2026-10-12 17:15 최종 판정 기각(FINAL.lock, 7게이트 중 6탈락) → 17:15 줄을 뺐다. 남은 전진 없음.
+# 결과 조회는 scripts/forward_verdicts.py.
 # 전용 venv(~/of80/.rlvenv)·학습 산출물(~/of80/*)은 simnode 에만 있다.
 # 86번 실시간 호랑이 그림자용 전일 문턱 — 17:00 계산(83번 캐시가 없으면 스스로 짓는다). 감지기가 다음 날 09:35 전 문턱으로 같은 data/ 에서 읽는다.
 0 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/tiger_86/prevq.py >> data/tiger86_prevq.cron.log 2>&1
-# 91번 밴딧 전진(온라인 학습 계속) — 17:15
-15 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/forward_gate.py --study bandit91 >> data/forward_bandit91.cron.log 2>&1
 # 짝꿍 파라미터 스윕 등 nightly job(research/nightly.toml) — 17:45(17:15 밴딧 전진 뒤).
 # kqc nightly 가 job 마다 격리·timeout 을 건다. 스윕은 krx-quant-core run_sweep(시행 원장 research/runs/).
 45 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/.local/bin/uv run kqc nightly . >> data/nightly.cron.log 2>&1
