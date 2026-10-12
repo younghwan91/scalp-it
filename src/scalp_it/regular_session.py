@@ -39,6 +39,7 @@ SQL 은 sqlite 에서도 돌아야 한다(테스트). 표가 없으면(테스트
 from __future__ import annotations
 
 import contextlib
+import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -53,9 +54,11 @@ __all__ = [
     "SOURCE_MINUTE",
     "SOURCE_SUPPLY",
     "RegularBar",
+    "base_price_from_pct",
     "base_price_from_supply",
     "base_price_sources",
     "base_prices",
+    "explain_missing_bases",
     "limitup_codes",
     "next_session",
     "previous_session",
@@ -90,14 +93,22 @@ def _codes(codes: Iterable[str] | None) -> list[str] | None:
 
 
 def _fetch(conn: Any, sql: str, params: Sequence[Any]) -> list[tuple] | None:
-    """SELECT 하나. 표가 없거나 실패하면 None(그 출처는 건너뛴다). postgres 는 트랜잭션을 되살린다."""
+    """SELECT 하나. 표가 없거나 실패하면 None(그 출처는 건너뛴다). postgres 는 트랜잭션을 되살린다.
+
+    삼키되 **조용히는 아니다** — stderr 에 한 줄 남긴다. 10-12 리뷰: 권한·연결 오류가 나도 기준가가
+    통째로 비는 이유가 로그에 안 남았다. 메시지는 첫 줄만(쿼리 원문·DSN 을 찍지 않는다).
+    """
     try:
         cur = conn.cursor()
         cur.execute(sql, tuple(params))
         rows = cur.fetchall()
         cur.close()
         return rows
-    except Exception:  # noqa: BLE001 — 출처 하나가 없다고 기준가 전체를 포기하지 않는다
+    except Exception as exc:  # noqa: BLE001 — 출처 하나가 없다고 기준가 전체를 포기하지 않는다
+        table = next((w for w in ("supply_demand", "minute_bars", "daily_bars") if w in sql), "?")
+        msg = str(exc).strip().splitlines()[0][:160] if str(exc).strip() else ""
+        print(f"[regular_session] {table} 조회 실패 — 그 출처를 건너뛴다: "
+              f"{type(exc).__name__}: {msg}", file=sys.stderr)
         with contextlib.suppress(Exception):
             conn.rollback()
         return None
@@ -110,11 +121,51 @@ def _code_clause(conn: Any, codes: list[str] | None, column: str = "code") -> tu
     return f" and {column} in ({', '.join([ph] * len(codes))})", list(codes)
 
 
-def previous_session(conn: Any, day: date | str) -> date | None:
-    """``day`` **미만**의 가장 최근 거래일(``daily_bars`` 기준). 장 전에는 그날 행이 없어도 된다."""
+#: 이미 찍은 (일봉 최신, 분봉 최신) 불일치 — 같은 경고를 프로세스에서 한 번만 찍는다.
+_WARNED_SESSIONS: set[tuple[date | None, date | None]] = set()
+
+#: 분봉 최신 날짜를 찾을 때 거슬러 볼 달력일. 추석·설 연휴(최장 ~10일)를 넘긴다.
+_MINUTE_LOOKBACK_DAYS = 14
+
+
+def _latest_minute_day(conn: Any, day: date) -> date | None:
+    """``day`` **미만**에서 ``minute_bars`` 가 있는 가장 늦은 날짜. 표가 없으면 None."""
     ph = _ph(conn)
-    rows = _fetch(conn, f"select max(date) from daily_bars where date < {ph}", [str(_day(day))])
-    return _day(rows[0][0]) if rows and rows[0][0] else None
+    lo = day.toordinal() - _MINUTE_LOOKBACK_DAYS
+    rows = _fetch(conn, f"select max(ts) from minute_bars where ts >= {ph} and ts < {ph}",
+                  [str(date.fromordinal(lo)), str(day)])
+    return _day(str(rows[0][0])[:10]) if rows and rows[0][0] else None
+
+
+def previous_session(conn: Any, day: date | str) -> date | None:
+    """``day`` **미만**의 가장 최근 거래일. 장 전에는 그날 행이 없어도 된다.
+
+    ``daily_bars`` 최신 날짜와 ``minute_bars``(15:45 크론) 최신 날짜를 둘 다 보고 **늦은 쪽**을 쓴다.
+    일봉 적재가 하루 밀리면 예전에는 이틀 전 종가를 기준가로 조용히 썼다(10-12 리뷰). 분봉은
+    거래일에만 생기므로 분봉이 더 늦으면 그 날이 실제 직전 거래일이다. 둘이 다르면 stderr 에 한 번
+    경고한다 — 일봉이 늦으면 일봉 적재 실패(또는 적재 전), 분봉이 늦으면 15:45 분봉 크론 실패다.
+    """
+    d = _day(day)
+    ph = _ph(conn)
+    rows = _fetch(conn, f"select max(date) from daily_bars where date < {ph}", [str(d)])
+    daily = _day(rows[0][0]) if rows and rows[0][0] else None
+    minute = _latest_minute_day(conn, d)
+    if daily is not None and minute is not None and daily != minute:
+        key = (daily, minute)
+        if key not in _WARNED_SESSIONS:
+            _WARNED_SESSIONS.add(key)
+            if minute > daily:
+                why = (f"일봉 최신 {daily} < 분봉 최신 {minute} — 일봉 적재 전이거나 실패. "
+                       f"직전 거래일을 {minute}(분봉)로 본다")
+            else:
+                why = (f"분봉 최신 {minute} < 일봉 최신 {daily} — 15:45 분봉 크론(cli_intraday) "
+                       f"실패 의심. {daily} 정규장 종가를 몰라 그날 기준가가 빈다")
+            print(f"[regular_session][경고] 직전 거래일 불일치: {why}", file=sys.stderr)
+    if daily is None:
+        return minute
+    if minute is None:
+        return daily
+    return max(daily, minute)
 
 
 def next_session(conn: Any, day: date | str) -> date | None:
@@ -141,6 +192,18 @@ def base_price_from_supply(close: float, flu_rt: float) -> int | None:
     if abs(snapped - raw) <= raw * 1e-4 + 0.5:
         return int(snapped)
     return round(raw)
+
+
+def base_price_from_pct(price: float, pct: float) -> int | None:
+    """현재가와 등락률(**%** 단위, 예 ``29.98``) → 그 세션 기준가.
+
+    키움 순위·시세 응답(``ka10027`` 의 ``cur_prc``·``flu_rt``)은 등락률을 % 로 준다. ``supply_demand.flu_rt``
+    는 ×100 이라 단위가 다르다 — 단위를 여기서 한 번만 맞춘다(:func:`base_price_from_supply` 로 위임).
+    같은 시점의 가격·등락률이라 장중 어느 때 받아도 항등식이 선다.
+    """
+    if pct is None:
+        return None
+    return base_price_from_supply(price, float(pct) * 100.0)
 
 
 def _supply_bases(conn: Any, day: date, codes: list[str] | None) -> dict[str, int]:
@@ -219,6 +282,33 @@ def base_prices(conn: Any, day: date | str, codes: Iterable[str] | None = None) 
     일봉 종가로 메우지 않는다(09-14 이후 79% 가 틀린 값이다).
     """
     return {c: p for c, (p, _) in base_price_sources(conn, day, codes).items()}
+
+
+def explain_missing_bases(conn: Any, day: date | str, missing: Iterable[str]) -> str:
+    """기준가를 못 구한 종목이 **왜** 비었는지 한 줄로. 경고 로그용(판정에는 쓰지 않는다).
+
+    장 전 기준가의 유일한 출처는 직전 거래일 분봉 종가 봉(15:45 크론)이다. 그래서 원인은 셋 중 하나다:
+    그 날 분봉이 통째로 없다(크론 실패), 그 종목만 분봉 수집 대상 밖이다(신규상장·순위 밖),
+    직전 거래일 자체를 못 찾았다.
+    """
+    d = _day(day)
+    miss = _codes(missing) or []
+    if not miss:
+        return ""
+    prev = previous_session(conn, d)
+    if prev is None:
+        return f"직전 거래일을 못 찾음(daily_bars·minute_bars 둘 다 {d} 이전 행 없음)"
+    ph = _ph(conn)
+    p = str(prev)
+    rows = _fetch(conn, f"select count(distinct code) from minute_bars where ts >= {ph} and ts < {ph}",
+                  [f"{p} {CLOSE_FROM}", f"{p} {REGULAR_END}"])
+    n_any = int(rows[0][0] or 0) if rows else 0
+    if n_any == 0:
+        return (f"직전 거래일 {prev} 분봉 종가 봉이 한 종목도 없다 — 15:45 분봉 크론(cli_intraday) "
+                f"실패 의심. 장 전 기준가 출처가 전부 비었다")
+    head = ", ".join(miss[:8]) + (" …" if len(miss) > 8 else "")
+    return (f"{prev} 분봉 종가 봉 {n_any}종목 중에 이 {len(miss)}종목은 없다 — 분봉 수집 대상 밖"
+            f"(신규상장·순위 밖): {head}")
 
 
 def regular_close_sources(conn: Any, day: date | str,

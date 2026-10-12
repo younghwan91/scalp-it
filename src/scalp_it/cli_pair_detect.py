@@ -34,7 +34,7 @@ import os
 import signal
 import sys
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime
 from datetime import time as dtime
 from pathlib import Path
@@ -267,6 +267,18 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
         if prev is None:
             print("[경고] 직전 영업일을 못 찾음 — 고정 쌍으로 폴백", file=sys.stderr)
             return {}
+        # 일봉 최신 날짜만 믿으면 전일 일봉 적재가 실패한 날 이틀 전 값을 조용히 쓴다. 분봉(15:45
+        # 크론) 최신 날짜와 대조한다 — 어긋나면 정문이 경고를 찍고, 기준가는 아래 session=today 로
+        # 실제 직전 거래일 분봉 종가에서 구한다(지표는 일봉이 있는 날까지).
+        try:
+            from .regular_session import previous_session as regular_previous_session
+
+            actual = regular_previous_session(conn, today)
+            if actual is not None and actual != prev:
+                print(f"[경고] 일봉 기준 직전 영업일 {prev} ≠ 분봉 기준 {actual} — 유니버스 지표는 "
+                      f"{prev} 일봉까지, 기준가는 {actual} 정규장 종가로 구한다", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001 — 대조 실패로 기동을 막지 않는다
+            print(f"[경고] 직전 영업일 대조 실패(계속): {exc}", file=sys.stderr)
         # 시황 게이트는 **판정만 하고 막지 않는다.** dry-run 은 만쥬가 쉬라고 한
         # 국면의 데이터도 필요하다(활황/침체 성과 차이를 실측할 재료). 실발주로
         # 갈 때 이 판정을 강제로 바꿔야 한다.
@@ -379,7 +391,7 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
         uni = build_universe(conn, prev,
                              UniverseConfig(limit=args.universe_size, pinned=pinned,
                                             weight_material=args.material_weight),
-                             materials, llm_materials or None)
+                             materials, llm_materials or None, session=today)
         if not uni.codes:
             print("[경고] 유니버스가 비었다 — 고정 쌍으로 폴백", file=sys.stderr)
             return {}
@@ -533,14 +545,23 @@ def _prev_rcept(rows: list[tuple[str, str, str]], rcept: str) -> str:
     return prev
 
 
-def _breaking_meta(args: argparse.Namespace, codes: list[str]) -> dict[str, Any]:
-    """장중 편입 종목의 섹터·전일종가를 읽어 온다. 실패하면 빈 dict(편입은 계속)."""
+def _breaking_meta(args: argparse.Namespace, codes: list[str],
+                   scan_bases: Mapping[str, float] | None = None) -> dict[str, Any]:
+    """장중 편입 종목의 섹터·전일종가를 읽어 온다. 실패하면 아는 것만(편입은 계속).
+
+    전일종가(= 오늘 가격제한폭 기준가)는 정문 :func:`regular_session.base_prices` 가 1순위다. 장 전
+    경로는 전일 분봉뿐이라 분봉 수집 대상 밖 종목(장중 대장 스캔 편입의 ~6%, 10-12 리뷰)은 빈다.
+    ``scan_bases`` 는 그 순간 순위 응답의 현재가·등락률로 역산한 기준가
+    (:func:`regular_session.base_price_from_pct`) — DB 가 모르는 종목만 이 값으로 메운다. DB 가
+    아예 안 열려도 이 값은 준다.
+    """
+    fallback = {str(c): float(v) for c, v in (scan_bases or {}).items() if v and c in set(codes)}
     try:
         from .intraday.store import connect
 
         conn = connect(args.dsn or os.environ.get("KR_QUANT_DB"))
     except Exception:  # noqa: BLE001 — 메타 조회 실패로 감시를 죽이지 않는다
-        return {}
+        return {"prev_close": fallback} if fallback else {}
     try:
         ph = _placeholder(conn)
         marks = ",".join([ph] * len(codes))
@@ -553,15 +574,36 @@ def _breaking_meta(args: argparse.Namespace, codes: list[str]) -> dict[str, Any]
 
         today = datetime.now().date()  # noqa: DTZ005 — KST naive(프로젝트 표준)
         prev: dict[str, float] = {c: float(p) for c, p in base_prices(conn, today, codes).items()}
+        for c, v in fallback.items():
+            prev.setdefault(c, v)
+        unknown = [c for c in codes if c not in prev]
+        if unknown:
+            print(f"[편입] 기준가 미상 {len(unknown)}/{len(codes)}종목(상한가 판정 꺼짐): "
+                  f"{', '.join(unknown[:8])}", file=sys.stderr)
         # 실전 테마도 같이 넣는다 — 장중에 붙은 종목이 테마 무리에 안 들어가면
         # 감지기가 27종 섹터로만 짝꿍을 고르게 되어 규칙이 갈린다.
         themes = {c: t for c, t in _fetch_themes(conn).items() if c in set(codes)}
         return {"sectors": sectors, "prev_close": prev, "themes": themes}
     except Exception:  # noqa: BLE001
-        return {}
+        return {"prev_close": fallback} if fallback else {}
     finally:
         with contextlib.suppress(Exception):
             conn.close()
+
+
+def _scan_bases(rows: Sequence[Any]) -> dict[str, float]:
+    """순위 응답 행(:class:`ScanRow`) → ``{code: 오늘 기준가}``. ``flu_rt`` 는 % 단위다."""
+    from .regular_session import base_price_from_pct
+
+    out: dict[str, float] = {}
+    for r in rows:
+        try:
+            base = base_price_from_pct(r.price, r.flu_rt)
+        except Exception:  # noqa: BLE001, S112 — 이상한 행 하나로 그 회차 편입을 날리지 않는다
+            continue
+        if base:
+            out[r.code] = float(base)
+    return out
 
 
 def codes_to_enter(wanted: Sequence[str], added: Sequence[str],
@@ -767,7 +809,8 @@ async def _watch_leader_scan(
             enter = codes_to_enter(fresh, added, rejected)
             already = [c for c in enter if c not in added]
             if enter:
-                det_added = detector.add_codes(enter, **_breaking_meta(args, enter))
+                det_added = detector.add_codes(
+                    enter, **_breaking_meta(args, enter, scan_bases=_scan_bases(scanned)))
                 # **주문 화이트리스트도 같이 넓힌다.** 안 그러면 감지기는 신호를
                 # 내는데 주문이 전부 차단된다 — 스캔을 붙여놓고 못 사는 상태다.
                 _allow_orders(executor, det_added)

@@ -43,6 +43,7 @@ DB 커넥션은 **주입받는다**. 쿼리는 SELECT 뿐이다.
 from __future__ import annotations
 
 import math
+import sys
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -54,7 +55,8 @@ from typing import Any
 from .adapters.db import _placeholder as _ph
 from .regular_session import (
     AFTERMARKET_START,
-    base_prices,
+    base_price_sources,
+    explain_missing_bases,
     limitup_codes,
     next_session,
     regular_closes,
@@ -406,7 +408,8 @@ def select_universe(
         asof=asof,
         codes=[c.code for c in chosen],
         sector_by_code={c.code: c.sector for c in chosen},
-        prev_close_by_code={c.code: c.prev_close for c in chosen},
+        # 기준가 미상(0)은 넣지 않는다 — 감지기는 전일종가가 없으면 상한가 판정을 건너뛴다.
+        prev_close_by_code={c.code: c.prev_close for c in chosen if c.prev_close > 0},
         candidates=chosen,
         pool=list(ranked),
     )
@@ -480,14 +483,18 @@ def fetch_bars(
             market=str(r[10] or ""),
         )
         for r in rows
-    ], days[-1]))
+    ], days[-1]), keep=set(pinned))
 
 
-def _regularize(conn: Any, bars: list[Bar]) -> list[Bar]:
+def _regularize(conn: Any, bars: list[Bar], *, keep: set[str] | None = None) -> list[Bar]:
     """애프터마켓(2026-09-14~) 봉을 **정규장** 값으로 바꾼다. 그 전 봉은 그대로다.
 
     * 종가 = :func:`regular_session.regular_closes` (분봉 15:30 → 다음 거래일 수급표 기준가).
       모르면 그 봉을 **버린다** — 오염된 일봉 종가로 메우면 등락률·상한가 이력·전일종가가 다시 틀린다.
+      예외는 ``keep``(``pinned`` — 신규상장 §4-5 등): 상장 당일 분봉은 다음 날 15:45 에야 들어올 수
+      있어, 버리면 상장 다음 날 고정 편입이 통째로 꺼진다(486510 09-29 상장, 10-12 리뷰). 그 봉은
+      일봉 값 그대로 두고(점수에만 쓰인다 — 고정 편입은 필터를 우회한다), 전일종가는
+      :func:`build_universe` 가 정문 기준가로 따로 정한다(모르면 없음).
     * 고가·저가·거래량·거래대금 = 분봉 09:00~15:32 집계. 분봉이 없는 종목(``minute_bars`` 는 거래대금
       상위 ~1,400종목만 덮는다)은 정규장 값을 알 수 없어 **일봉 값을 그대로 둔다** — 애프터마켓 고저가
       섞인 채라 레인지가 약간 부풀 수 있다. 거래대금 100억 문턱을 넘는 후보는 거의 다 분봉이 있다.
@@ -506,6 +513,8 @@ def _regularize(conn: Any, bars: list[Bar]) -> list[Bar]:
             continue
         close = closes[b.day].get(b.code)
         if close is None:
+            if keep and b.code in keep:
+                out.append(b)
             continue
         rb = sessions[b.day].get(b.code)
         if rb is None:
@@ -523,8 +532,50 @@ def _regularize(conn: Any, bars: list[Bar]) -> list[Bar]:
     return out
 
 
+#: 분할·병합을 의심하는 일봉/분봉 비율 문턱. 하루 ±30% 제한 안의 차이는 기업행동이 아니다.
+_RESCALE_LO, _RESCALE_HI = 0.8, 1.25
+
+
+def _intraday_reference(conn: Any, day: date) -> tuple[str, dict[str, float]] | None:
+    """배수 비교에 쓸 분봉 기준값 ``(일봉 열 이름, {code: 분봉 값})``. 못 읽으면 None.
+
+    * 2026-09-14 이전: 일봉 **종가** vs 분봉 15:30 봉 종가(예전 그대로).
+    * 2026-09-14 이후: 일봉 종가는 애프터마켓 종가라 정규장 15:30 과 20~36% 벌어지는 날이 흔하다
+      (087010 10-07, 486510 09-29, 201490 09-15 — 09-14 이후 문턱에 걸린 13건 대부분이 분할이 아니었다).
+      애프터마켓이 건드리지 않는 **시가**로 비교한다: 일봉 시가 vs 그날 분봉 첫 봉(09:00~09:10) 시가.
+    """
+    d = day.isoformat()
+    ph = _ph(conn)
+    after = day >= AFTERMARKET_START
+    if after:
+        sql = (f"select code, ts, open from minute_bars where ts >= {ph} and ts < {ph}")
+        params = (f"{d} 09:00:00", f"{d} 09:10:00")
+    else:
+        sql = f"select code, ts, close from minute_bars where ts >= {ph} and ts < {ph}"
+        params = (f"{d} 15:30:00", f"{d} 15:31:00")
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+        cur.close()
+    except Exception:  # noqa: BLE001 — 테이블 없음·권한 등. 가드는 보조이지 필수가 아니다.
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+    first: dict[str, tuple[str, float]] = {}
+    for code, ts, v in rows:
+        if not v or float(v) <= 0:
+            continue
+        key, t = str(code), str(ts)
+        if key not in first or t < first[key][0]:
+            first[key] = (t, float(v))
+    return ("open" if after else "close"), {c: v for c, (_, v) in first.items()}
+
+
 def _rescale_to_intraday(conn: Any, bars: list[Bar], last_day: date | str) -> list[Bar]:
-    """일봉 종가가 **그날 분봉 15:30 종가**와 20% 넘게 어긋나면 그 종목 전체를 분봉 쪽 배수로 맞춘다.
+    """일봉이 **그날 분봉**과 20% 넘게 어긋나면 그 종목 전체를 분봉 쪽 배수로 맞춘다.
 
     2026-10-05 발견(quant-airflow 정정 포함): 분봉은 키움 수정주가(`upd_stkpc_tp="1"`)로 재수집되므로 **기업행동
     (병합·분할) 뒤 재수집된 구간은 그 뒤 실시간 체결가와 같은 기준**이고, 일봉은 수집 당시 원주가라 기준이 어긋난다
@@ -533,34 +584,29 @@ def _rescale_to_intraday(conn: Any, bars: list[Bar], last_day: date | str) -> li
     같은 배수를 곱해 창 안 비율(등락률·레인지)은 보존된다. 기업행동 **당일**은 어느 테이블도 못 잡는다(둘 다 행동 전
     원주가) — 그때는 키움 기준가(cur_prc − pred_pre)가 정답이고 후속 과제다. minute_bars 가 없거나 못 읽으면 그대로
     돌려준다 — 가드가 매매를 멈추면 안 된다.
+
+    비교 기준은 :func:`_intraday_reference` — 2026-09-14 이후는 종가가 아니라 **시가**다. 종가로 비교하면
+    애프터마켓에서 20% 넘게 움직인 날 배수가 잘못 걸려, 배수 곱한 시가와 배수 없는 분봉 고가·저가
+    (:func:`_regularize`)가 섞이고 레인지가 부푼다(087010 10-07 레인지 중앙값 35.9% vs 6.7%, 10-12 리뷰).
     """
     if not bars:
         return bars
     # sqlite 는 trading_days 가 문자열을 돌려준다 — Bar.day(date)와 비교하려면 여기서 맞춘다.
     ld = last_day if isinstance(last_day, date) else date.fromisoformat(str(last_day))
-    day = ld.isoformat()
-    ph = _ph(conn)
-    try:
-        cur = conn.cursor()
-        cur.execute(f"select code, close from minute_bars where ts >= {ph} and ts < {ph}",
-                    (f"{day} 15:30:00", f"{day} 15:31:00"))
-        intraday = {str(c): float(v) for c, v in cur.fetchall() if v}
-        cur.close()
-    except Exception:  # noqa: BLE001 — 테이블 없음·권한 등. 가드는 보조이지 필수가 아니다.
-        try:
-            conn.rollback()
-        except Exception:  # noqa: BLE001
-            pass
+    ref = _intraday_reference(conn, ld)
+    if ref is None:
         return bars
+    column, intraday = ref
     if not intraday:
         return bars
     factor: dict[str, float] = {}
     for b in bars:
         m = intraday.get(b.code)
-        if b.day == ld and m and b.close > 0:
-            r = b.close / m
-            if r < 0.8 or r > 1.25:
-                factor[b.code] = m / b.close
+        daily = b.open if column == "open" else b.close
+        if b.day == ld and m and daily > 0:
+            r = daily / m
+            if r < _RESCALE_LO or r > _RESCALE_HI:
+                factor[b.code] = m / daily
     if not factor:
         return bars
     out = []
@@ -580,10 +626,19 @@ def build_universe(
     config: UniverseConfig | None = None,
     materials: Mapping[str, Sequence[str]] | None = None,
     material_scores: Mapping[str, float] | None = None,
+    *,
+    session: date | str | None = None,
 ) -> Universe:
     """DB → 후보 → 랭킹 → 선정. 장전에 이 함수 하나만 부르면 된다.
 
-    `asof` 는 **직전 영업일**이다(당일 일봉은 장이 끝나야 생긴다).
+    `asof` 는 **직전 영업일**이다(당일 일봉은 장이 끝나야 생긴다). `session` 은 이 유니버스로 매매할
+    세션(장 전이면 오늘) — 전일종가(가격제한폭 기준가)를 그 세션 것으로 구한다. 안 주면 `asof` 다음
+    세션으로 잡는다. 일봉 적재가 하루 밀려 `asof` 가 이틀 전이어도 `session` 을 주면 기준가는
+    오늘 것(직전 거래일 분봉 종가)이다.
+
+    기준가를 모르는 종목은 뺀다 — 단 **`pinned`(신규상장 §4-5 등)는 남긴다**(상한가 판정만 꺼진 채
+    구독). 기준가가 빈 종목은 원인과 함께 stderr 에 경고한다(10-12 리뷰: 15:45 분봉 크론이 실패한
+    날 후보가 전부 조용히 빠졌고, 신규상장주는 상장 다음 날 늘 빠졌다).
     """
     cfg = config or UniverseConfig()
     bars = fetch_bars(conn, asof, cfg)
@@ -592,12 +647,44 @@ def build_universe(
         asof_date = max(b.day for b in bars)
     cands = build_candidates(bars, asof_date, cfg)
     # 감지기의 전일종가 = 다음 세션의 가격제한폭 기준가. 정문으로만 구한다 — 일봉 종가를 직접 쓰면
-    # 2026-09-14 이후 애프터마켓 종가로 상한가가 틀린다. 기준가를 모르는 종목은 뺀다(상한가 판정 불가).
-    target = next_session(conn, asof_date) or asof_date + timedelta(days=1)
-    bases = base_prices(conn, target, [c.code for c in cands])
-    cands = [replace(c, prev_close=bases[c.code]) for c in cands if c.code in bases]
+    # 2026-09-14 이후 애프터마켓 종가로 상한가가 틀린다.
+    if session is not None:
+        target = session if isinstance(session, date) else date.fromisoformat(str(session))
+    else:
+        target = next_session(conn, asof_date) or asof_date + timedelta(days=1)
+    sources = base_price_sources(conn, target, [c.code for c in cands])
+    pinned = set(cfg.pinned)
+    missing = [c.code for c in cands if c.code not in sources]
+    _warn_base_coverage(conn, target, len(cands), sources, missing, pinned)
+    cands = [replace(c, prev_close=sources[c.code][0] if c.code in sources else 0)
+             for c in cands if c.code in sources or c.code in pinned]
     ranked = rank_candidates(cands, cfg, materials, material_scores)
     return select_universe(ranked, asof_date, cfg)
+
+
+def _warn_base_coverage(conn: Any, target: date, n_cands: int,
+                        sources: Mapping[str, tuple[int, str]], missing: Sequence[str],
+                        pinned: set[str]) -> None:
+    """기준가 커버리지를 출처별로 한 줄, 비었으면 원인과 함께 경고. 기동을 막지 않는다."""
+    if not n_cands:
+        return
+    by_src: dict[str, int] = defaultdict(int)
+    for _, src in sources.values():
+        by_src[src] += 1
+    detail = " · ".join(f"{k} {v}" for k, v in sorted(by_src.items())) or "출처 없음"
+    print(f"# 기준가 {len(sources)}/{n_cands}종목({target} 세션) — {detail}", file=sys.stderr)
+    if not missing:
+        return
+    try:
+        why = explain_missing_bases(conn, target, missing)
+    except Exception as exc:  # noqa: BLE001 — 진단 실패로 기동을 막지 않는다
+        why = f"원인 진단 실패: {type(exc).__name__}"
+    kept = sorted(set(missing) & pinned)
+    note = (f" · 신규상장 등 고정 편입 {len(kept)}종목은 기준가 없이 남긴다(상한가 판정 꺼짐): "
+            f"{', '.join(kept)}" if kept else "")
+    print(f"[경고] 기준가 미상 {len(missing)}/{n_cands}종목 — 후보에서 뺀다. {why}{note}",
+          file=sys.stderr)
+
 
 # ---------------------------------------------- 만쥬 §4-5 신규상장 · §5-5 신선도
 

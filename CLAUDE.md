@@ -65,11 +65,14 @@ deploy/research_run.sh uv run python <학습·대규모 스크립트>  # 무거�
 
 ## 데이터 함정
 - `minute_bars`는 기업행동 뒤 재수집 구간이 키움 수정주가로 덮여 있다. 일봉과 섞을 때 전일종가는 그날 **분봉 15:30**으로
-  잡는다. 연속 시계열은 `daily_bars_adjusted`를 쓰고, 실제 호가 단위는 틱만 믿는다(c03baff, 5f4a8b0, 833ddf7).
+  잡는다. 연속 시계열은 `daily_bars_adjusted`를 쓰되 **2026-09-14 이후 고가·저가·종가·거래량·거래대금은 애프터마켓이
+  섞여 오염**이다(아래). 실제 호가 단위는 틱만 믿는다(c03baff, 5f4a8b0, 833ddf7).
 - **애프터마켓 함정(2026-09-14~)**: `daily_bars`의 고가·저가·종가·거래량·거래대금, `supply_demand.close`, 분봉 16:00~19:59에
   애프터마켓 체결이 섞였다(시가만 정상, 일봉 종가로 구한 상한가는 85%가 틀림). 전일종가(가격제한폭 기준가)·정규장 종가·정규장
-  고저는 정문 `scalp_it.regular_session`(`base_prices`·`regular_closes`·`regular_session_bars`)으로만 구한다. `src/`에서 일봉
-  종가를 직접 SELECT하면 `tests/test_regular_session.py` 정적 규칙이 실패한다. `daily_bars`는 원주가도 아니다(분할 소급 반영).
+  고저는 정문 `scalp_it.regular_session`(`base_prices`·`regular_closes`·`regular_session_bars`)으로만 구한다. `src/`에서
+  `daily_bars`·`daily_bars_adjusted`·`supply_demand` 의 종가를 직접 SELECT하면 `tests/test_regular_session.py` 정적 규칙이
+  실패한다. `daily_bars`는 원주가도 아니다(분할 소급 반영). 장 전 기준가는 전일 분봉(15:45 크론)뿐이라 그 크론이 실패하거나
+  종목이 수집 대상 밖이면 기준가가 빈다 — 유니버스가 원인과 함께 `[경고] 기준가 미상` 을 찍는다.
 - 수집 불량일은 `research/bad_days.json`으로 캐시에서만 뺀다. 원본 행은 지우지 않는다. 사람이 적은 항목은 덮어쓰지 않는다.
 
 ## 코드 규칙

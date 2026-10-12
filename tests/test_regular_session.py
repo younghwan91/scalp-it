@@ -260,16 +260,22 @@ def test_loader_regular_only_drops_aftermarket(db):
 # ---------------------------------------------------------------- 정적 규칙
 # 일봉 종가를 SELECT 하는 SQL 은 정문(regular_session) 밖에 새로 생기면 안 된다. 상한가·등락률의
 # 분모로 흘러가면 2026-09-14 이후 애프터마켓 종가가 된다. 허용 목록은 이유가 있는 곳만.
+# daily_bars 만이 아니다 — daily_bars_adjusted 와 supply_demand.close 도 같은 오염이다(10-12 정규장
+# 종가 일치 36%, 10-12 리뷰). 셋 다 잡는다.
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "scalp_it"
-_FROM_DAILY = re.compile(r"\b(?:from|join)\s+daily_bars\b(?!_)", re.IGNORECASE)
+_FROM_DAILY = re.compile(
+    r"\b(?:from|join)\s+(?:daily_bars|daily_bars_adjusted|supply_demand)\b", re.IGNORECASE)
 _CLOSE = re.compile(r"\bclose\b", re.IGNORECASE)
 
 #: (파일, 함수) — 이유
 ALLOWED = {
     ("regular_session.py", "_daily_closes"),   # 정문 자신. 09-14 이전 날짜만 쓴다
+    ("regular_session.py", "_supply_bases"),   # 정문 자신. close/(1+flu_rt) 항등식 — 오염과 무관하다
     ("universe.py", "fetch_bars"),             # 읽은 뒤 _regularize 가 09-14 이후 종가를 바꾼다
     ("adapters/db.py", "load_daily_bars_raw"), # 기존 연구 재현용. 독스트링에 base_prices 를 쓰라고 적었다
+    ("adapters/db.py", "load_prices"),         # 연구용 연속 시계열(수정주가). 독스트링에 오염 경고
+    ("adapters/db.py", "load_ohlcv"),          # 연구용 연속 시계열(종가베팅). 독스트링에 오염 경고
 }
 
 
@@ -312,12 +318,31 @@ def test_the_static_rule_catches_injected_violations():
               'join daily_bars d on d.code = t.code")\n')
     lag = ('def h(cur):\n    cur.execute("""with x as (select lag(b.close) over (partition by b.code)'
            ' pc from daily_bars b) select * from x""")\n')
-    for src in (plain, split, joined, lag):
+    # daily_bars_adjusted·supply_demand.close 도 09-14 이후 애프터마켓 종가다(옛 _prev_day_movers 모양).
+    adjusted = ('def k(cur, ph):\n    cur.execute("select t.code from daily_bars_adjusted t "\n'
+                '        "join daily_bars_adjusted y on y.code = t.code "\n'
+                '        f"where t.date = {ph} and (t.close / y.close - 1.0) >= {ph}")\n')
+    supply = 'def s(cur):\n    cur.execute("select code, close from supply_demand where date = %s")\n'
+    for src in (plain, split, joined, lag, adjusted, supply):
         assert find_daily_close_sql(src, "x.py"), src
-    ok_adjusted = 'def k(cur):\n    cur.execute("select close from daily_bars_adjusted")\n'
     ok_no_close = 'def m(cur):\n    cur.execute("select code, low, high from daily_bars")\n'
-    assert not find_daily_close_sql(ok_adjusted, "x.py")
-    assert not find_daily_close_sql(ok_no_close, "x.py")
+    ok_adj_tv = 'def t(cur):\n    cur.execute("select code from daily_bars_adjusted where trade_value > 1")\n'
+    ok_supply_flow = 'def u(cur):\n    cur.execute("select code, individual, flu_rt from supply_demand")\n'
+    for src in (ok_no_close, ok_adj_tv, ok_supply_flow):
+        assert not find_daily_close_sql(src, "x.py"), src
+
+
+def test_static_rule_would_catch_the_old_prev_day_movers():
+    """기존 위반(realtime/store.py 옛 _prev_day_movers)을 되돌리면 규칙이 실패해야 한다."""
+    old = ('def _prev_day_movers(conn, limit, *, tv_floor, min_gain=0.10):\n'
+           '    cur = conn.cursor()\n'
+           '    cur.execute(\n'
+           '        "select t.code from daily_bars_adjusted t "\n'
+           '        "join daily_bars_adjusted y on y.code = t.code "\n'
+           '        "where t.date = %s and y.date = %s "\n'
+           '        "and t.close is not null and y.close is not null and y.close > 0 "\n'
+           '        "order by (t.close / y.close) desc limit %s", (1, 2, 3))\n')
+    assert find_daily_close_sql(old, "realtime/store.py")
 
 
 def test_cutoff_constant_is_the_aftermarket_start():
@@ -337,3 +362,199 @@ def test_coverage_reports_codes_whose_regular_close_is_unknown(db):
     text = format_report(Coverage(), day=D2, min_rate=0.295, n_bars=2, n_unknown=1)
     assert "정규장 종가 미상 1종목" in text
 
+
+
+# ---------------------------------------------------------------- 10-12 리뷰 결함 회귀
+# M1 신규상장 다음 날 탈락 · M2 애프터마켓 종가로 잡힌 배율 · M3 장중 편입 기준가 · 크론 실패 경로.
+
+@pytest.fixture(autouse=True)
+def _fresh_session_warnings():
+    """직전 거래일 불일치 경고는 프로세스에서 한 번만 찍는다 — 테스트마다 비운다."""
+    import scalp_it.regular_session as rs
+
+    rs._WARNED_SESSIONS.clear()
+    yield
+    rs._WARNED_SESSIONS.clear()
+
+
+SESSION = date(2026, 10, 12)   # D2(10-08) 다음 세션 — 장 전 08:55
+
+
+def _listing(db, code, *, minute: bool):
+    """D2 상장 신규주. 일봉 1행(애프터마켓 오염), 분봉은 ``minute`` 일 때만(15:45 수집 여부)."""
+    db.execute("insert into stocks values (?,?,?,?,?)", (code, "신규", "코스닥", "전기/전자", "A"))
+    _day(db, code, D2, open_=18_000, high=20_000, low=17_000, close=18_220,
+         after_close=19_500, after_high=21_000, minute=minute)
+    db.commit()
+
+
+def _cfg(**kw):
+    from scalp_it.universe import UniverseConfig
+
+    base = {"lookback_days": 3, "limit": 10, "min_trade_value_eok": 100.0,
+            "min_range_pct": 1.0, "min_surge_days": 1, "min_price": 1_000}
+    base.update(kw)
+    return UniverseConfig(**base)
+
+
+def test_new_listing_is_in_next_day_universe_with_listing_day_minute_base(db):
+    """상장 당일 분봉을 그날 15:45 에 받으면(cli_intraday tick_day) 다음 날 기준가 = 상장일 정규장 종가."""
+    from scalp_it.universe import build_universe
+
+    _listing(db, "444444", minute=True)
+    uni = build_universe(db, D2, _cfg(pinned=("444444",)), session=SESSION)
+    assert "444444" in uni.codes
+    assert uni.prev_close_by_code["444444"] == 18_220, "애프터마켓 종가 19,500 이 아니다"
+
+
+def test_new_listing_without_minutes_stays_pinned_and_warns(db, capsys):
+    """상장일 분봉이 아직 없으면 기준가는 모른다 — 그래도 고정 편입은 꺼지지 않고, 이유를 찍는다.
+
+    옛 코드는 _regularize 가 그 봉을 버리고(정규장 종가 미상) build_universe 가 기준가 없는 후보를
+    빼서 상장 다음 날 §4-5 편입이 조용히 사라졌다(486510 09-29).
+    """
+    from scalp_it.universe import build_universe
+
+    _listing(db, "444444", minute=False)
+    uni = build_universe(db, D2, _cfg(pinned=("444444",)), session=SESSION)
+    assert "444444" in uni.codes
+    assert "444444" not in uni.prev_close_by_code, "모르는 기준가를 오염 일봉으로 메우면 안 된다"
+    err = capsys.readouterr().err
+    assert "기준가 미상 1/" in err and "444444" in err
+    assert "분봉 수집 대상 밖" in err
+    # 고정 편입이 아닌 종목은 예전처럼 뺀다(틀린 상한가보다 모르는 게 낫다).
+    uni2 = build_universe(db, D2, _cfg(), session=SESSION)
+    assert "444444" not in uni2.codes
+
+
+def test_minute_cron_failure_warns_with_the_cause(db, capsys):
+    """15:45 분봉 크론이 실패한 날: 일봉은 D2 까지 있는데 D2 분봉이 없다 → 후보 전부 탈락 + 원인 경고."""
+    from scalp_it.universe import build_universe
+
+    db.execute("delete from minute_bars where ts >= ?", (D2,))
+    db.commit()
+    uni = build_universe(db, D2, _cfg(), session=SESSION)
+    assert uni.codes == []
+    err = capsys.readouterr().err
+    assert "분봉 종가 봉이 한 종목도 없다" in err, err   # explain_missing_bases 의 원인 줄
+    assert "기준가 미상" in err
+
+
+def test_previous_session_uses_minutes_when_daily_load_is_late(db, capsys):
+    """전일 일봉 적재가 밀리면 일봉 최신은 이틀 전이다 — 분봉 최신과 대조해 실제 직전 거래일을 쓴다."""
+    from scalp_it.regular_session import previous_session
+
+    db.execute("delete from daily_bars where date = ?", (D2,))
+    db.commit()
+    assert previous_session(db, SESSION) == date(2026, 10, 8)
+    assert "일봉 적재 전이거나 실패" in capsys.readouterr().err
+    # 기준가도 이틀 전(D1 11,000)이 아니라 D2 정규장 종가 11,500.
+    assert base_prices(db, SESSION, ["111111"]) == {"111111": 11_500}
+
+
+def test_previous_session_agreeing_sources_are_silent(db, capsys):
+    from scalp_it.regular_session import previous_session
+
+    assert previous_session(db, SESSION) == date(2026, 10, 8)
+    assert "불일치" not in capsys.readouterr().err
+
+
+def test_fetch_failure_is_logged_not_silent(capsys):
+    conn = sqlite3.connect(":memory:")
+    assert base_prices(conn, D2, ["111111"]) == {}
+    err = capsys.readouterr().err
+    assert "[regular_session]" in err and "조회 실패" in err
+
+
+def test_rescale_after_aftermarket_does_not_fire_on_an_aftermarket_move(db):
+    """애프터마켓에서 +30% 간 날 — 옛 코드는 일봉 종가/분봉 15:30 로 배율을 걸어 레인지를 부풀렸다.
+
+    087010 10-07: 범위 중앙값 35.9% vs 정상 6.7%. 시가(오염 없음)로 비교하면 배율이 안 걸린다.
+    """
+    from scalp_it.universe import build_candidates, fetch_bars
+
+    db.execute("update daily_bars set close = 15000, high = 15000 where code='111111' and date = ?", (D2,))
+    db.commit()
+    bars = fetch_bars(db, D2, _cfg())
+    cand = {c.code: c for c in build_candidates(bars, date(2026, 10, 8), _cfg())}["111111"]
+    assert cand.last_range_pct == pytest.approx((11_600 - 10_900) / 11_500 * 100)
+    assert {b.day: b.open for b in bars if b.code == "111111"}[date(2026, 10, 7)] == 10_050
+
+
+def test_rescale_after_aftermarket_still_catches_a_real_merge(db):
+    """기업행동(10:1 병합) 뒤 분봉이 수정주가로 재수집된 종목은 시가 비교로도 배율이 걸린다."""
+    from scalp_it.universe import build_candidates, fetch_bars
+
+    db.execute("insert into stocks values ('555555', '병합', '코스닥', '화학', 'A')")
+    for day, (o, h, lo, c_after, c_reg) in {D1: (1_000, 1_100, 990, 1_080, 1_050),
+                                            D2: (1_050, 1_200, 1_040, 1_190, 1_100)}.items():
+        db.executemany("insert into minute_bars values (?,?,?,?,?,?,?,?)", [
+            ("555555", f"{day} 09:00:00", o * 10, h * 10, lo * 10, o * 10, 600, 6e9),
+            ("555555", f"{day} 15:30:00", c_reg * 10, c_reg * 10, c_reg * 10, c_reg * 10, 400, 4e9),
+        ])
+        db.execute("insert into daily_bars values (?,?,?,?,?,?,?,?,?)",
+                   ("555555", day, o, h, lo, c_after, 1000, 11_000, "t"))
+    db.commit()
+    bars = [b for b in fetch_bars(db, D2, _cfg()) if b.code == "555555"]
+    by_day = {b.day: b for b in bars}
+    assert by_day[date(2026, 10, 8)].open == 10_500         # 일봉 시가 × 10
+    assert by_day[date(2026, 10, 8)].close == 11_000        # 정규장 종가(분봉)
+    cand = {c.code: c for c in build_candidates(bars, date(2026, 10, 8), _cfg())}["555555"]
+    assert cand.last_range_pct == pytest.approx((12_000 - 10_400) / 11_000 * 100)
+
+
+def test_breaking_meta_fills_unknown_bases_from_the_scan_row(db, tmp_path, monkeypatch):
+    """장중 대장 스캔 편입 종목 중 분봉 밖 종목은 DB 기준가가 없다 — 순위 응답 현재가·등락률로 메운다."""
+    import argparse
+
+    import scalp_it.cli_pair_detect as cpd
+
+    path = tmp_path / "kq.db"
+    disk = sqlite3.connect(path)
+    db.backup(disk)
+    disk.close()
+
+    class _Now(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 12, 10, 0)  # noqa: DTZ001 — KST naive(프로젝트 표준)
+
+    monkeypatch.setattr(cpd, "datetime", _Now)
+    scan = {"111111": 99_999.0, "333333": 2_150.0}
+    meta = cpd._breaking_meta(argparse.Namespace(dsn=str(path)), ["111111", "333333"], scan_bases=scan)
+    assert meta["prev_close"] == {"111111": 11_500.0, "333333": 2_150.0}, "DB 정문이 1순위, 스캔은 빈 곳만"
+
+    import scalp_it.intraday.store as st
+
+    def boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(st, "connect", boom)
+    meta = cpd._breaking_meta(argparse.Namespace(dsn=None), ["111111", "333333"], scan_bases=scan)
+    assert meta == {"prev_close": {"111111": 99_999.0, "333333": 2_150.0}}
+
+
+def test_scan_bases_convert_percent_rate_to_the_session_base():
+    """ka10027 ``flu_rt`` 는 % 다(수급표는 ×100). 1,331 / 1.2998 → 1,024 — 상한가 1,331 과 맞는다."""
+    import scalp_it.cli_pair_detect as cpd
+    from scalp_it.realtime.leader_scan import parse_scan_rows
+    from scalp_it.regular_session import base_price_from_pct
+
+    rows = parse_scan_rows([{"stk_cd": "043200_AL", "cur_prc": "+1331", "flu_rt": "+29.98"},
+                            {"stk_cd": "000001_AL", "cur_prc": "0", "flu_rt": "0"}])
+    assert cpd._scan_bases(rows) == {"043200": 1_024.0}
+    assert limit_up_price(1_024) == 1_331
+    assert base_price_from_pct(13_000, 30.0) == 10_000
+    assert base_price_from_pct(13_000, None) is None
+
+
+def test_prev_day_movers_rank_by_regular_close_over_base(db):
+    """cli_tick --auto 의 전일 급등주 — 일봉(수정) 종가 비율이 아니라 정규장 종가 / 기준가."""
+    from scalp_it.realtime.store import _prev_day_movers
+
+    db.execute("create table daily_bars_adjusted as select * from daily_bars")
+    db.commit()
+    # 정규장: 111111 +4.5%(11,500/11,000), 222222 +3.6%, 333333 D2 정규장 종가 모름.
+    # 오염 일봉으로 세면 111111 +5.4%, 333333 +4.8% 가 잡힌다.
+    assert _prev_day_movers(db, 10, tv_floor=0.0, min_gain=0.04) == ["111111"]
+    assert _prev_day_movers(db, 10, tv_floor=0.0, min_gain=0.05) == []

@@ -64,7 +64,11 @@ def _query(conn: Any, sql: str, params: tuple, columns: list[str]) -> pd.DataFra
 
 
 def load_prices(conn: Any, start: str, end: str) -> pd.DataFrame:
-    """``daily_bars_adjusted`` 에서 수정주가를 읽는다 (분할 반영본)."""
+    """``daily_bars_adjusted`` 에서 수정주가를 읽는다 (분할 반영본).
+
+    연구용 연속 시계열이다. 2026-09-14 이후 종가·거래대금은 애프터마켓 체결이 섞인 값이라
+    상한가·기준가·정규장 등락률에는 쓰지 않는다 — :mod:`scalp_it.regular_session` 을 쓴다.
+    """
     ph = _placeholder(conn)
     sql = (
         "select code, date, open, close, trade_value from daily_bars_adjusted "
@@ -171,6 +175,9 @@ def load_ohlcv(conn: Any, start: str, end: str) -> pd.DataFrame:
     :func:`load_prices` 는 ``open``·``close``·``trade_value`` 만 준다. 종가베팅
     피처는 종가가 고가 근처인지(``close_pos``)를 봐야 해서 ``high``·``low`` 가,
     거래량 급증을 보려면 ``volume`` 이 필요하다.
+
+    2026-09-14 이후 고가·저가·종가·거래량·거래대금은 애프터마켓 체결이 섞였다(시가만 정상).
+    그 구간의 종가 위치·상한가 판정에는 :mod:`scalp_it.regular_session` 을 쓴다.
     """
     ph = _placeholder(conn)
     sql = (
