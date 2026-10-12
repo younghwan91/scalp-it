@@ -3,6 +3,18 @@ import sqlite3
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_production_db(monkeypatch):
+    """테스트는 운영 DB 에 닿지 않는다.
+
+    ``scripts/_envload.py`` 가 ``../quant-airflow/.env`` 를 읽어 ``KR_QUANT_DB`` 가 늘 잡혀 있다.
+    krx-quant-core[db](psycopg) 를 깐 뒤로 ``start_run`` 이 그 DSN 으로 운영 ``kqc_runs`` 에 실제로
+    썼다(2026-10-12, test_pair_sweep_engine 의 임시 레포가 repo='repo' 14행). DB 가 필요한 테스트는
+    sqlite 경로 등을 ``monkeypatch.setenv`` 로 직접 준다.
+    """
+    monkeypatch.delenv("KR_QUANT_DB", raising=False)
+
+
 @pytest.fixture()
 def news_db(tmp_path):
     """계획 2 가 만드는 news.db 와 같은 스키마의 sqlite fixture."""
