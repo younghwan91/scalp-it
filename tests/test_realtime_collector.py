@@ -833,3 +833,47 @@ def test_reconnect_falls_back_to_env_dsn_when_no_dsn_given(tmp_path, monkeypatch
     monkeypatch.delenv("KR_QUANT_DB")
     assert collector._reconnect_db() is False
     assert any("재연결 불가" in m for m in logs)
+
+
+# ------------------------------------------ 1h 원문 덤프(FID 실측 대조용)
+
+def _vi_frame(code="005930", **values):
+    return json.dumps({"trnm": "REAL", "data": [
+        {"type": "0B", "item": code, "values": {"20": "093001", "10": "+1000", "15": "+1"}},
+        {"type": "1h", "item": code, "name": "VI발동/해제", "values": values or {"9068": "1"}},
+    ]})
+
+
+def test_first_vi_items_are_dumped_raw_then_capped():
+    """1h FID 가 추측이라 처음 몇 건은 원문 그대로 찍는다 — 그 뒤로는 조용히."""
+    from scalp_it.realtime.collector import VI_RAW_DUMP_LIMIT
+
+    logs: list[str] = []
+    c = KiwoomRealtimeCollector("tok", ["005930"], store=False, trade_date=TDAY,
+                                types=["0B", "0D", "1h"], log=logs.append)
+    for i in range(VI_RAW_DUMP_LIMIT + 2):
+        c._handle_raw(None, _vi_frame(**{"9068": str(i), "1223": "093001"}))
+    dumps = [m for m in logs if m.startswith("[VI원문")]
+    assert len(dumps) == VI_RAW_DUMP_LIMIT
+    assert '"9068": "0"' in dumps[0] and '"type": "1h"' in dumps[0]
+    assert f"[VI원문 {VI_RAW_DUMP_LIMIT}/{VI_RAW_DUMP_LIMIT}]" in dumps[-1]
+
+
+def test_vi_dump_includes_items_the_parser_would_drop():
+    """values 가 dict 가 아닌 1h 는 파서가 버린다 — 그래도 원문은 남아야 원인을 본다."""
+    logs: list[str] = []
+    c = KiwoomRealtimeCollector("tok", ["005930"], store=False, trade_date=TDAY,
+                                log=logs.append)
+    c._handle_raw(None, json.dumps({"trnm": "REAL", "data": [
+        {"type": "1h", "item": "", "values": ["이상한", "모양"]}]}))
+    assert any("이상한" in m for m in logs if m.startswith("[VI원문"))
+
+
+def test_non_vi_frames_are_not_dumped():
+    logs: list[str] = []
+    c = KiwoomRealtimeCollector("tok", ["005930"], store=False, trade_date=TDAY,
+                                log=logs.append)
+    c._handle_raw(None, json.dumps({"trnm": "REAL", "data": [
+        {"type": "0B", "item": "005930", "values": {"20": "093001", "10": "+1000"}}]}))
+    assert not [m for m in logs if m.startswith("[VI원문")]
+    assert c.vi_raw_dumped == 0

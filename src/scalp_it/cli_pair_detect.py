@@ -448,27 +448,63 @@ def _pin_codes(inline: str, path: str) -> list[str]:
     return out
 
 
-def _cap_codes_for_single_key(codes: list[str], types: list[str], *, dedicated: bool) -> list[str]:
-    """전용 키가 없으면 커넥션 1개에 담기는 만큼으로 자른다.
+def plan_subscription(
+    codes: Iterable[str], pairs: Sequence[Any], *, cap: int, slots: int | None,
+) -> tuple[list[list[str]], list[str], list[Any]]:
+    """장전 구독 종목을 키별 정원으로 나눈다 → ``(키별 종목 목록, 못 담은 종목, 깨진 쌍)``.
 
-    키움 WebSocket 은 App key 당 동시 세션 1개다. 등록 한도(≈100건 = 종목×type)를
-    넘으면 수집기가 커넥션을 쪼개는데, 같은 키로 두 개를 열면 서로 kick 하며 죽는다.
-    2026-08-24 에 실제로 80종목 중 **30종목이 10:58 에 끊겨** 하루의 3분의 2를 잃었다
-    (둘째 커넥션이 통째로 사망). 조용히 반쪽 데이터를 받느니 처음부터 받을 수 있는
-    만큼만 구독하는 게 낫다.
+    ``slots`` 는 담을 수 있는 커넥션(=앱키) 수, ``cap`` 은 커넥션 하나의 정원
+    (:func:`~scalp_it.realtime.collector.codes_per_connection`). ``slots=None`` 은 전용 키라
+    다커넥션이 안전한 경우로, 자르지 않고 한 덩어리로 돌려준다(수집기가 쪼갠다).
+
+    **쌍을 먼저 통째로 담는다.** 대장·후속 중 하나만 구독된 쌍은 감지가 안 되므로 반쪽
+    구독은 자리 낭비다. 남는 자리를 나머지 종목(코드순)으로 채운다. 예전엔 전 종목을
+    코드순으로 자르기만 해서 정원을 넘치면 어떤 쌍이 깨졌는지 안 보였다 — 1h(VI) 를
+    켜며 정원이 50→33 으로 줄어(2026-10-12) 그 일이 실제로 날 수 있게 됐다.
+
+    키움 WebSocket 은 App key 당 동시 세션 1개다. 같은 키로 커넥션을 둘 열면 서로
+    kick 하며 죽는다 — 2026-08-24 에 80종목 중 **30종목이 10:58 에 끊겨** 하루의
+    3분의 2를 잃었다. 조용히 반쪽 데이터를 받느니 처음부터 받을 수 있는 만큼만 구독한다.
     """
-    from .realtime.collector import codes_per_connection
+    all_codes = sorted({str(c) for c in codes if c})
+    if slots is None:
+        return [all_codes], [], []
+    total = max(0, int(cap)) * max(0, int(slots))
+    take: list[str] = []
+    seen: set[str] = set()
+    left_out: set[str] = set()            # 통째로 못 담은 쌍의 종목
+    for p in pairs:
+        need = [c for c in dict.fromkeys((str(p.leader), str(p.follower))) if c not in seen]
+        if len(take) + len(need) > total:
+            left_out.update(need)         # 이 쌍은 통째로 못 담는다 — 반쪽만 넣지 않는다
+            continue
+        take.extend(need)
+        seen.update(need)
+    # 남는 자리는 쌍과 무관한 종목부터. 못 담은 쌍의 반쪽은 그래도 자리가 남을 때만.
+    for c in [c for c in all_codes if c not in left_out] + sorted(left_out):
+        if len(take) >= total:
+            break
+        if c not in seen:
+            take.append(c)
+            seen.add(c)
+    groups = [take[i * cap:(i + 1) * cap] for i in range(slots)]
+    dropped = [c for c in all_codes if c not in seen]
+    broken = [p for p in pairs if str(p.leader) not in seen or str(p.follower) not in seen]
+    return groups, dropped, broken
 
-    if dedicated:
-        return codes                      # 전용 키가 있으면 다커넥션이 안전하다
-    cap = codes_per_connection(types)
-    if len(codes) <= cap:
-        return codes
-    print(f"[경고] 종목 {len(codes)}개 > 단일 키 한도 {cap}개(type {len(types)}종) — "
-          f"앞의 {cap}개만 구독한다. 2026-08-24 에 이 한도를 넘겨 30종목이 10:58 에 "
-          f"끊긴 전례가 있다. 전 종목이 필요하면 PAIR_DETECT_APP_KEY 를 두라.",
+
+def _report_dropped(dropped: Sequence[str], broken: Sequence[Any], *,
+                    cap: int, slots: int, types: Sequence[str]) -> None:
+    """정원을 넘쳐 뺀 종목·쌍을 한 줄로 남긴다 — 조용히 자르지 않는다."""
+    if not dropped and not broken:
+        return
+    pairs_s = ", ".join(f"{p.leader}→{p.follower}" for p in list(broken)[:10])
+    print(f"[경고] 구독 정원 {cap}×{slots}={cap * slots}종목(type {list(types)}) 초과 — "
+          f"종목 {len(dropped)}개·쌍 {len(broken)}개를 뺀다. "
+          f"종목: {', '.join(list(dropped)[:15])}{' …' if len(dropped) > 15 else ''}"
+          + (f" · 쌍: {pairs_s}{' …' if len(broken) > 10 else ''}" if broken else "")
+          + (" · 키가 하나뿐이면 KIWOOM_APP_KEY_2 로 정원을 두 배로" if slots == 1 else ""),
           file=sys.stderr, flush=True)
-    return codes[:cap]
 
 
 def _advance_cursor(rows: list[tuple[str, str, str]], take: list[str],
@@ -1358,6 +1394,7 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
     from .realtime.collector import (
         TYPE_QUOTE,
         TYPE_TRADE,
+        TYPE_VI,
         WS_URL,
         WS_URL_MOCK,
         DualKeyCollector,
@@ -1370,10 +1407,10 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
     from .realtime.store import init_realtime_tables
 
     url = WS_URL_MOCK if args.mock else WS_URL
-    # ⚠️ 1h(VI) 는 REG 하지 않는다 — 이 데몬이 tick-collect 를 대체한 뒤로(2026-08-24~)
-    # vi_events 가 한 건도 안 쌓인 원인이다(2026-10-12 감사). 1h 를 넣으면 종목당 등록
-    # 3건이라 커넥션 정원이 50→33종목으로 준다 — 켤지는 정원과 맞바꾸는 결정이다.
-    types = [TYPE_TRADE, TYPE_QUOTE]
+    # 1h(VI) 기본 켬(2026-10-12 사용자 결정). 이 데몬이 tick-collect 를 대체한 뒤로
+    # (2026-08-24~) 1h 를 REG 조차 안 해서 vi_events 가 한 건도 안 쌓였다. 대가로 종목당
+    # 등록이 3건이라 커넥션(=앱키) 정원이 50→33종목으로 준다. 끄려면 --no-vi.
+    types = [TYPE_TRADE, TYPE_QUOTE] + ([TYPE_VI] if args.vi else [])
     codes_all = sorted(detector.codes)
     store = not args.no_store and not args.dry_run
     bus = build_default_bus(log_path=args.log, bell=args.bell,
@@ -1416,16 +1453,16 @@ def run_live(args: argparse.Namespace, detector: PairDetector,
         if dual_key:
             conn2 = connect(args.dsn or os.environ.get("KR_QUANT_DB"))
 
+    # 정원은 type 개수로 정해진다(등록 100 ÷ type 수) — 0B·0D 면 50, 1h 까지면 33.
+    cap = codes_per_connection(types)
+    slots = 2 if dual_key else (None if dedicated else 1)
+    groups, dropped, broken = plan_subscription(codes_all, detector.pairs, cap=cap, slots=slots)
+    codes_a = groups[0]
+    codes_b = groups[1] if dual_key else []
+    if slots is not None:
+        _report_dropped(dropped, broken, cap=cap, slots=slots, types=types)
     if dual_key:
-        cap = codes_per_connection(types)
-        codes_a, codes_b = codes_all[:cap], codes_all[cap:cap * 2]
-        if len(codes_all) > cap * 2:
-            print(f"[경고] 종목 {len(codes_all)}개 > 앱키 2개 정원 {cap * 2}개 — "
-                  f"앞의 {cap * 2}개만 구독한다.", file=sys.stderr, flush=True)
-        print(f"# 앱키 2개 사용 — 정원 {cap} x 2 = {cap * 2}", file=sys.stderr)
-    else:
-        codes_a = _cap_codes_for_single_key(codes_all, types, dedicated=bool(dedicated))
-        codes_b = []
+        print(f"# 앱키 2개 사용 — 정원 {cap} x 2 = {cap * 2} (type {types})", file=sys.stderr)
 
     trade_date = date.today()  # noqa: DTZ011 — KST naive, 프로젝트 표준
     seq = SeqAssigner()
@@ -1858,6 +1895,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="소켓: 이 프로세스에서 ticks·quotes 저장 안 함(감지만)")
     p.add_argument("--flush-interval", type=float, default=1.5,
                    help="소켓: 저장 배치 간격 초 (기본 1.5)")
+    p.add_argument("--vi", action=argparse.BooleanOptionalAction, default=True,
+                   help="소켓: VI(1h) 발동/해제 구독 (기본 켬). 종목당 등록 3건이라 "
+                        "앱키당 정원이 50→33. --no-vi 로 끔")
     p.add_argument("--spool-dir", default="data/spool",
                    help="DB 순단 중 프로세스가 죽어도 버퍼를 잃지 않게 미러링할 "
                         "디렉터리(기본 data/spool). 빈 문자열이면 끔")

@@ -82,6 +82,13 @@ FID_VI_BASE_DYNAMIC = "1237"   # 동적기준가격 (csv 확정)
 FID_VI_GAP_STATIC = "1238"     # 정적괴리율 (csv 확정)
 FID_VI_GAP_DYNAMIC = "1239"    # 동적괴리율 (csv 확정)
 
+#: 프로세스마다 처음 받은 1h 아이템 몇 건을 원문 그대로 로그에 남긴다 — 위 FID 를
+#: 실측으로 대조할 유일한 근거다(2026-10-12 1h 구독을 켜며 추가). 파서가 버리는 모양
+#: (item 이 비었거나 values 가 dict 가 아님)도 그대로 찍히도록 파싱 **전**에 덤프한다.
+#: 상한을 둬서 VI 가 몰리는 날에도 로그가 불어나지 않는다. FID 확정 뒤엔 0 으로.
+VI_RAW_DUMP_LIMIT = 3
+_VI_RAW_DUMP_MAXLEN = 2000
+
 
 # --------------------------------------------------------------- 파싱 헬퍼
 
@@ -511,6 +518,7 @@ class KiwoomRealtimeCollector:
         self.quotes_stored = 0
         self.quote_events_stored = 0
         self.vi_stored = 0
+        self.vi_raw_dumped = 0   # VI_RAW_DUMP_LIMIT 까지 찍은 1h 원문 수
         self.reconnects = 0
         # 장중 구독 추가(만쥬 §6)용 — grp_no → (소켓, 그 커넥션의 종목 목록).
         self._live_ws: dict[str, tuple[Any, list[str]]] = {}
@@ -739,6 +747,8 @@ class KiwoomRealtimeCollector:
         if trnm != "REAL":
             return
         self.frames_seen += 1
+        if self.vi_raw_dumped < VI_RAW_DUMP_LIMIT:
+            self._dump_vi_raw(msg)
         if self._on_frame is not None:
             self._on_frame(msg)
         # VI 발동시각 FID 결손 대비 수신 시각(naive KST) 을 넘긴다.
@@ -754,6 +764,19 @@ class KiwoomRealtimeCollector:
                 q["recv_ts"] = now
             self._qevent_buf.extend(quotes)
         self._vi_buf.extend(vis)
+
+    def _dump_vi_raw(self, msg: dict) -> None:
+        """REAL 프레임의 1h 아이템을 원문 그대로 로그에 남긴다(상한 VI_RAW_DUMP_LIMIT)."""
+        for item in msg.get("data") or []:
+            if self.vi_raw_dumped >= VI_RAW_DUMP_LIMIT:
+                return
+            if not isinstance(item, dict) or _clean(item.get("type")) != TYPE_VI:
+                continue
+            self.vi_raw_dumped += 1
+            text = json.dumps(item, ensure_ascii=False, default=str)
+            if len(text) > _VI_RAW_DUMP_MAXLEN:
+                text = text[:_VI_RAW_DUMP_MAXLEN] + " …(잘림)"
+            self._log(f"[VI원문 {self.vi_raw_dumped}/{VI_RAW_DUMP_LIMIT}] {text}")
 
     async def _flush_loop(self) -> None:
         while not self._stop.is_set():
