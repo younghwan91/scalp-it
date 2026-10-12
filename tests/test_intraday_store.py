@@ -12,6 +12,7 @@ import pytest
 from scalp_it.intraday.store import (
     _CREATE_TABLE,
     _placeholder,
+    collection_universe,
     count_bars,
     init_minute_bars,
     latest_ts,
@@ -148,3 +149,42 @@ def test_top_universe_empty_table_returns_empty(conn):
     conn.execute("CREATE TABLE daily_bars_adjusted (code text, date text, trade_value real)")
     conn.commit()
     assert top_universe(conn, 10) == []
+
+
+def _daily(conn, rows):
+    conn.execute(
+        "CREATE TABLE daily_bars_adjusted (code text, date text, trade_value real)")
+    conn.executemany("INSERT INTO daily_bars_adjusted VALUES (?,?,?)", rows)
+    conn.commit()
+
+
+def test_collection_universe_keeps_recently_collected_codes(conn):
+    """ADV 순위 밖으로 밀려도 최근 수집 종목은 계속 받는다 (2026-10-12 감사).
+
+    상위 N 하드캡에선 순위에서 빠진 종목이 그날로 영영 멈췄다.
+    """
+    days = ["2026-10-06", "2026-10-07", "2026-10-08", "2026-10-12"]
+    _daily(conn, [(c, d, tv) for d in days
+                  for c, tv in (("TOP1", 900), ("TOP2", 500), ("FELL", 100), ("GONE", 50))])
+    upsert_minute_bars(conn, [
+        _bar(pd.Timestamp(2026, 10, 7, 15, 30), code="FELL"),   # 창 안에서 수집됨
+        _bar(pd.Timestamp(2026, 9, 21, 15, 30), code="GONE"),   # 창 밖에서 멈춤
+        _bar(pd.Timestamp(2026, 10, 12, 9, 0), code="TOP1"),
+    ])
+    # 최근 3 거래일(10-07~10-12) 창: FELL 은 순위 밖이어도 유지, GONE 은 탈락.
+    got = collection_universe(conn, 2, lookback_days=4, keep_days=3)
+    assert got == ["TOP1", "TOP2", "FELL"]
+    # 창을 넓히면 순위 밖 GONE 은 여전히 9-21 이라 안 들어온다(daily 날짜 하한이 10-06).
+    assert "GONE" not in collection_universe(conn, 2, lookback_days=4, keep_days=10)
+
+
+def test_collection_universe_has_no_duplicates(conn):
+    _daily(conn, [("TOP1", "2026-10-12", 900), ("TOP2", "2026-10-12", 500)])
+    upsert_minute_bars(conn, [_bar(pd.Timestamp(2026, 10, 12, 9, 0), code="TOP1")])
+    assert collection_universe(conn, 2, lookback_days=1, keep_days=1) == ["TOP1", "TOP2"]
+
+
+def test_collection_universe_empty_daily_returns_empty(conn):
+    _daily(conn, [])
+    upsert_minute_bars(conn, [_bar(pd.Timestamp(2026, 10, 12, 9, 0))])
+    assert collection_universe(conn, 5) == []

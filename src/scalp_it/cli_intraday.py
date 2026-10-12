@@ -17,11 +17,11 @@ import httpx
 
 from .adapters.kiwoom import KiwoomClient, KiwoomError, api_credentials
 from .intraday.store import (
+    collection_universe,
     connect,
     count_bars,
     init_minute_bars,
     latest_ts,
-    top_universe,
     upsert_minute_bars,
 )
 
@@ -31,7 +31,10 @@ def resolve_codes(args: argparse.Namespace, conn: Any) -> list[str]:
     if args.codes:
         return [c.strip() for c in args.codes.split(",") if c.strip()]
     if args.universe_top:
-        return top_universe(conn, args.universe_top, lookback_days=args.lookback_days)
+        # 상위 N 만 받으면 순위 밖으로 밀린 종목이 영영 멈춘다 — 최근 수집분을 합친다.
+        return collection_universe(conn, args.universe_top,
+                                   lookback_days=args.lookback_days,
+                                   keep_days=args.keep_days)
     return []
 
 
@@ -40,9 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
     target = parser.add_mutually_exclusive_group()
     target.add_argument("--codes", default=None, help="쉼표 구분 종목코드")
     target.add_argument("--universe-top", type=int, default=None,
-                        help="거래대금 상위 N 종목 (daily_bars_adjusted 최근 20일 평균)")
+                        help="거래대금 상위 N 종목 (daily_bars_adjusted 최근 20일 평균) "
+                             "+ 최근 --keep-days 거래일 안에 분봉을 받은 종목")
     parser.add_argument("--lookback-days", type=int, default=20,
                         help="상위 종목 선정에 쓸 거래일 수")
+    parser.add_argument("--keep-days", type=int, default=20,
+                        help="--universe-top 에서 순위 밖이어도 계속 받는 '최근 수집' 거래일 수")
     parser.add_argument("--pages", type=int, default=40, help="종목당 최대 페이지")
     parser.add_argument("--tic-scope", default="1", help="분 단위. 1=1분봉")
     parser.add_argument("--since", default=None,

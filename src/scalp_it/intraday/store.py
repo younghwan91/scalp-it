@@ -16,7 +16,7 @@ from typing import Any
 
 import pandas as pd
 
-from ..adapters.db import connect, is_postgres, _placeholder  # noqa: F401 — re-exported
+from ..adapters.db import _placeholder, connect, is_postgres  # noqa: F401 — re-exported
 
 #: 압축 대상: (code, ts) 로만 필터하는 조회가 대부분이라 segmentby='code',
 #: 최신 우선 조회가 많아 orderby='ts DESC'. compress_after=14일은 실측
@@ -193,17 +193,12 @@ def top_universe(conn: Any, limit: int, *, lookback_days: int = 20) -> list[str]
     '최근 20일'은 달력이 아니라 **거래일** 기준이다. 휴장·연휴가 끼면 달력
     20일은 거래일 13일밖에 안 되는 구간이 실제로 있다.
     """
-    ph = _placeholder(conn)
-    cur = conn.cursor()
-    cur.execute(
-        "select distinct date from daily_bars_adjusted order by date desc limit " + ph,
-        (int(lookback_days),),
-    )
-    dates = [r[0] for r in cur.fetchall()]
+    dates = _recent_trading_dates(conn, lookback_days)
     if not dates:
-        cur.close()
         return []
     cutoff = min(dates)
+    ph = _placeholder(conn)
+    cur = conn.cursor()
     cur.execute(
         "select code, avg(trade_value) as adv from daily_bars_adjusted "
         f"where date >= {ph} and trade_value is not null "
@@ -213,3 +208,61 @@ def top_universe(conn: Any, limit: int, *, lookback_days: int = 20) -> list[str]
     codes = [str(r[0]).strip() for r in cur.fetchall()]
     cur.close()
     return codes
+
+
+def _recent_trading_dates(conn: Any, days: int) -> list[Any]:
+    """``daily_bars_adjusted`` 기준 최근 ``days`` 거래일(최신 우선)."""
+    ph = _placeholder(conn)
+    cur = conn.cursor()
+    cur.execute(
+        "select distinct date from daily_bars_adjusted order by date desc limit " + ph,
+        (int(days),),
+    )
+    dates = [r[0] for r in cur.fetchall()]
+    cur.close()
+    return dates
+
+
+def recently_collected(conn: Any, *, keep_days: int = 20) -> list[str]:
+    """최근 ``keep_days`` 거래일 안에 ``minute_bars`` 행이 하나라도 있는 종목.
+
+    거래일 경계는 :func:`top_universe` 와 같이 ``daily_bars_adjusted`` 의 날짜로
+    정한다. ``ts`` 하한만 거는 조회라 하이퍼테이블 청크 제외가 그대로 먹는다.
+    """
+    dates = _recent_trading_dates(conn, keep_days)
+    if not dates:
+        return []
+    cutoff = min(dates)
+    ph = _placeholder(conn)
+    cur = conn.cursor()
+    cur.execute(
+        f"select distinct code from minute_bars where ts >= {ph} order by code",
+        (cutoff,),
+    )
+    codes = [str(r[0]).strip() for r in cur.fetchall()]
+    cur.close()
+    return codes
+
+
+def collection_universe(
+    conn: Any, limit: int, *, lookback_days: int = 20, keep_days: int = 20,
+) -> list[str]:
+    """분봉 수집 대상 = ADV 상위 ``limit`` **∪** 최근 ``keep_days`` 거래일 안에 수집된 종목.
+
+    ADV 상위만 쓰면 순위 밖으로 밀린 종목은 그날로 갱신이 영영 끊긴다 — 실제로
+    상위 1400 하드캡(2026-09-22~) 아래에서 333종목이 09-21 에, 217종목이 08-21 에
+    멈춘 채 남았다(2026-10-12 데이터 감사). 최근에 받던 종목은 순위에서 빠져도
+    ``keep_days`` 동안은 계속 받고, 그 뒤에도 순위 밖이면 그때 떨어진다.
+
+    순서는 ADV 상위가 먼저, 유지분은 코드순으로 뒤에 붙는다. 그래서 대상 수는
+    ``limit`` 보다 클 수 있다.
+
+    ⚠️ 이건 **멈춤**을 막을 뿐 **구멍**은 못 막는다. 크론은 ``--pages 6``
+    (≈13 거래일)이라, ``keep_days`` 밖으로 떨어졌다가 한참 뒤 순위에 돌아온
+    종목은 최신 13거래일만 받고 그 사이가 빈다. 메우려면 그 종목만 골라
+    ``--codes ... --pages 40`` 으로 따로 돌려야 한다.
+    """
+    top = top_universe(conn, limit, lookback_days=lookback_days)
+    seen = set(top)
+    kept = [c for c in recently_collected(conn, keep_days=keep_days) if c not in seen]
+    return top + kept
