@@ -30,8 +30,9 @@ data/bigkinds/
 # 에이전트 워크트리
 .claude/worktrees/
 
-# 이 PC 전용 Claude Code 설정·잠금
-.claude/
+# 이 PC 전용 Claude Code 설정·잠금 — 단 공유 권한 규칙(동결 파일 편집 거부)은 추적한다
+.claude/*
+!.claude/settings.json
 # graphify 산출물 — 커밋마다 훅이 다시 만들어 작업 트리를 더럽히고 simnode 동기화(pull)를 막는다. 전부 로컬 재생성물로 둔다.
 graphify-out/
 # 전진 최종 판정(한 번뿐) 기록은 남겨야 한다 — *.jsonl 일괄 무시의 예외
