@@ -5,7 +5,8 @@
 
 > ⚠️ **레포 이름은 역사의 잔재다.** 지금은 스윙이 아니라
 > **트레이더 만쥬의 일중 단타 시스템 복제**를 만든다.
-> **2026-08-28 부터 실주문 1주가 나간다**(그전까지 dry-run).
+> **2026-09-16 밤부터 실주문 중단 — 지금은 dry-run**(주문 0). 2026-08-27~09-16 에만
+> `--confirm-real` 로 1주 실주문이 나갔다(`scripts/pair_detect_daily.sh` 헤더 참고).
 > 현재 상태·판정 현황은 [`docs/STATUS.md`](docs/STATUS.md) 부터.
 
 핵심 규율은 하나다 — **사전등록하고, 한 번만 재고, 결과를 그대로 기록한다.**
@@ -27,7 +28,7 @@
 
 ```bash
 uv sync --extra dev
-uv run pytest                       # 1190 tests
+uv run pytest
 
 export $(grep -v '^#' ../quant-airflow/.env | xargs)                   # KR_QUANT_DB + KIWOOM_APP_*
 ```
@@ -128,24 +129,26 @@ flowchart TD
 
 ## 운영 (cron, 평일)
 
-이 레포는 **trader**(실시간 수집·매매)와 **simnode**(재현 가능한 배치·분석) 두 호스트에
-나눠 돈다 — 같은 레포를 양쪽에 clone 해두고, 트리거 시각은 옛 trader 단일 호스트 시절 그대로다.
+**2026-10-07 trader(N100) 처분 이후 simnode 단일 호스트**에서 전부 돈다 — 크론 정본은
+[`deploy/crontab.simnode`](deploy/crontab.simnode)(dotfiles 의 cron-install 이 설치, 손으로 고치지 말 것).
+아래는 주요 줄만 추린 것이다.
 
-| 시각 | 호스트 | 하는 일 |
-|---|---|---|
-| 08:55 | trader | `scripts/pair_detect_daily.sh` — 짝꿍 감지기 dry-run 시작. 틱·호가 수집 겸함, 크래시 자동 재시작, 15:20 자체 종료 |
-| 09:10 · 10:00 | trader | `scalp-tick-health --minutes 20` — 수집 헬스체크 |
-| 15:25 | simnode | `scripts/pair_daily_summary.py` — 짝꿍 일일 성과 집계 |
-| 15:40 | trader | 수집·감지 프로세스 종료(`pkill`) |
-| 15:45 | trader | `scalp-morning --date today` — 아침 리포트용 당일치 집계 |
-| 16:00 | trader | `scripts/tick_sanity.py --date today` |
-| 16:05 | simnode | `scripts/news_judge_shadow.py` — 뉴스 판단 반응매매 그림자 |
-| 16:10 | trader | `scalp-theme-snapshot` — 키움 테마 일일 스냅샷 |
-| 18:30 | simnode | `scalp-coverage` — 필터배제 커버리지 측정 |
+| 시각 | 하는 일 |
+|---|---|
+| 08:45 | `scripts/preopen_check.sh` — 개장 전 점검(읽기 전용) |
+| 08:55 | `scripts/pair_detect_daily.sh` — 짝꿍 감지기 dry-run 시작. 틱·호가 수집 겸함, 크래시 자동 재시작, 15:20 자체 종료 |
+| 09:10 · 10:00 | `scalp-tick-health --minutes 20` — 수집 헬스체크 |
+| 15:25 | `scripts/pair_daily_summary.py` — 짝꿍 일일 성과 집계 |
+| 15:40 | 수집·감지 프로세스 종료(`pkill`) |
+| 15:45 | `scalp-morning --date today` — 아침 리포트용 당일치 집계 · 분봉 수집(`scalp_it.cli_intraday`) |
+| 16:00 | `scripts/tick_sanity.py --date today` |
+| 16:05 | `scripts/news_judge_shadow.py` — 뉴스 판단 반응매매 그림자 |
+| 16:10 | `scalp-theme-snapshot` — 키움 테마 일일 스냅샷 · `scripts/collect_health.py` |
+| 18:30 | `scalp-coverage` — 필터배제 커버리지 측정 |
 
 `scripts/db_guard.sh`(장중 DB 컨테이너 헬스가드)는 **2026-09-11 크론에서 뺐다** — 지금 걸어두면
-아래 "DB 의존성"의 split-brain 위험을 만든다. 스크립트 파일 자체는 남아있으니(trader 가 다시
-PRIMARY 를 맡게 되면 되살릴 근거), 재활성화 전에 파일 헤더 주석과 `pg_is_in_recovery()` 상태를
+아래 "DB 의존성"의 split-brain 위험을 만든다. 스크립트 파일 자체는 남아있으니(옛 trader PRIMARY
+시절의 기록), 재활성화 전에 파일 헤더 주석과 `pg_is_in_recovery()` 상태를
 반드시 확인할 것.
 
 **키움 App key 1개 = WebSocket 세션 1개.** 그래서 `scalp-tick-collect` 를 따로 띄우지 않고
@@ -156,6 +159,9 @@ PRIMARY 를 맡게 되면 되살릴 근거), 재활성화 전에 파일 헤더 �
 `KR_QUANT_DB`(`quant-airflow/.env`)는 **고정 호스트가 아니라 지금 PRIMARY 인 쪽**을 가리킨다 — 어느
 쪽이 PRIMARY 인지는 `pg_is_in_recovery()` 로 확인한다(false = PRIMARY). 자세한 배경·전환 절차는
 형제 레포 quant-airflow 의 README 상단 안내 상자 참고.
+
+> 2026-10-07 trader 처분으로 아래 trader 리플리카 서술은 역사 기록이다 — 지금은 수집기·감지기도
+> simnode 에서 돌며 같은 호스트의 PRIMARY(`192.168.45.9:5433`)에 쓴다.
 
 **2026-09-11 저녁부터**: PRIMARY 는 simnode(`192.168.45.9:5433`), trader 는 읽기 전용 스트리밍
 리플리카(`quant-airflow-timescaledb-1`, localhost:5432)다. `KiwoomRealtimeCollector`(trader 에서

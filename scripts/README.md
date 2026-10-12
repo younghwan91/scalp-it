@@ -8,8 +8,8 @@
 
 | 파일 | 역할 | cron |
 |---|---|---|
-| `pair_detect_daily.sh` | 짝꿍 감지기 실행(**실주문**, `--confirm-real`) | 평일 08:55 |
-| `db_guard.sh` | 장중 DB 헬스가드 | 평일 08-15시 5분마다 |
+| `pair_detect_daily.sh` | 짝꿍 감지기 실행(dry-run — 2026-09-16 밤 `--confirm-real` 제거로 실주문 중단) | 평일 08:55 |
+| `db_guard.sh` | 장중 DB 헬스가드 | **크론에 없음**(2026-09-11 뺐다 — split-brain 위험, `deploy/crontab.simnode` 주석) |
 | `pair_daily_summary.py` | dry-run 일일 성과 집계 | 평일 15:25 |
 | `pair_journal.py` | 매매일지(문서44 §10-2) | 평일 15:26 |
 | `tick_sanity.py` | 틱 sanity(28번) — 겸용, 아래 E 참고 | 평일 16:00 |
