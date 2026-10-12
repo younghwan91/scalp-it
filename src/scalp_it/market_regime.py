@@ -140,6 +140,10 @@ def fetch_market_turnover(conn: Any, day: date | str, market: str = KOSDAQ) -> f
     """그날 `market` 전체 거래대금을 **조원**으로 돌려준다. 데이터가 없으면 None.
 
     `daily_bars.trade_value` 의 단위는 **백만원**이라 1e6 으로 나누면 조원이 된다.
+
+    2026-09-14 이후 이 값에는 애프터마켓(16:00~20:00) 거래대금이 섞여 있다. 정규장만의 시장 합계는
+    분봉(~1,400종목만 덮음)으로 다시 만들 수 없어 일봉 합계를 그대로 쓴다 — 게이트(5조·8조)는
+    그만큼 후하게 열린다. 정규장 값이 필요한 종목 단위 계산은 :mod:`scalp_it.regular_session` 으로.
     """
     ph = _ph(conn)
     sql = (
@@ -270,28 +274,20 @@ def is_mania(*, turnover_jo: float, limitups: int,
 
 
 def count_limitups(conn: Any, day: date | str, market: str = KOSDAQ) -> int:
-    """그날 상한가 종목 수(전일종가 대비 +29.5% 이상).
+    """그날 상한가 종목 수(정규장 종가가 기준가 대비 +29.5% 이상).
 
-    ``daily_bars.close`` 가 **정수형**이라 ``::float`` 캐스팅이 없으면 정수 나눗셈이
-    되어 거의 안 걸린다 — 실제로 그 함정에 빠져 1년 2,313건을 5건으로 셌던 적이 있다.
+    정문 :func:`scalp_it.regular_session.limitup_codes` 로 센다. 일봉 ``close / lag(close)`` 는
+    2026-09-14 이후 애프터마켓 종가라 틀린다(그 전에는 ``::float`` 없는 정수 나눗셈으로 1년 2,313건을
+    5건으로 센 적이 있다).
     """
+    from .regular_session import limitup_codes
+
     ph = _ph(conn)
-    d = day if isinstance(day, str) else day.isoformat()
     cur = conn.cursor()
-    cur.execute(
-        f"""
-        with x as (
-          select b.code, b.date, cast(b.close as float) c,
-                 lag(cast(b.close as float)) over (partition by b.code order by b.date) pc
-          from daily_bars b join stocks s on s.code = b.code
-          where s.market = {ph} and b.date <= {ph}
-        )
-        select count(*) from x where date = {ph} and pc > 0 and c / pc >= 1.295
-        """,
-        [market, d, d],
-    )
-    row = cur.fetchone()
-    return int(row[0]) if row else 0
+    cur.execute(f"select code from stocks where market = {ph}", [market])
+    codes = [str(r[0]) for r in cur.fetchall()]
+    cur.close()
+    return len(limitup_codes(conn, day, codes))
 
 
 #: 만쥬 A1(2026-08-30) — Gate 0 아래 구간의 비중. "짝꿍주가 보이더라도 평소 비중의

@@ -10,8 +10,10 @@ fixture 로 돌리고 운영은 postgres 로 돌리므로 둘이 갈라지면 �
 
 from __future__ import annotations
 
+import contextlib
+import sys
 from collections.abc import Iterable, Sequence
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -244,18 +246,45 @@ def recently_collected(conn: Any, *, keep_days: int = 20) -> list[str]:
     return codes
 
 
+def ticked_codes(conn: Any, day: date) -> list[str]:
+    """``day`` 에 실시간 ``ticks`` 가 한 건이라도 있는 종목(감지기·수집기가 그날 구독한 종목).
+
+    표가 없거나 읽기 실패면 빈 리스트 — 분봉 수집을 막지 않는다. ``ts`` 범위만 거는 조회라
+    ``idx_ticks_ts`` 를 탄다(실측 하루 ~1초).
+    """
+    ph = _placeholder(conn)
+    try:
+        cur = conn.cursor()
+        cur.execute(f"select distinct code from ticks where ts >= {ph} and ts < {ph}",
+                    (f"{day.isoformat()} 00:00:00", f"{(day + timedelta(days=1)).isoformat()} 00:00:00"))
+        codes = sorted(str(r[0]).strip() for r in cur.fetchall() if r[0])
+        cur.close()
+        return codes
+    except Exception as exc:  # noqa: BLE001 — 틱 표 문제로 분봉 수집을 멈추지 않는다
+        print(f"[분봉] 그날 구독 종목 조회 실패(건너뜀): {type(exc).__name__}", file=sys.stderr)
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        return []
+
+
 def collection_universe(
     conn: Any, limit: int, *, lookback_days: int = 20, keep_days: int = 20,
+    tick_day: date | None = None,
 ) -> list[str]:
-    """분봉 수집 대상 = ADV 상위 ``limit`` **∪** 최근 ``keep_days`` 거래일 안에 수집된 종목.
+    """분봉 수집 대상 = ADV 상위 ``limit`` **∪** 그날 구독 종목 **∪** 최근 ``keep_days`` 거래일 수집 종목.
 
     ADV 상위만 쓰면 순위 밖으로 밀린 종목은 그날로 갱신이 영영 끊긴다 — 실제로
     상위 1400 하드캡(2026-09-22~) 아래에서 333종목이 09-21 에, 217종목이 08-21 에
     멈춘 채 남았다(2026-10-12 데이터 감사). 최근에 받던 종목은 순위에서 빠져도
     ``keep_days`` 동안은 계속 받고, 그 뒤에도 순위 밖이면 그때 떨어진다.
 
-    순서는 ADV 상위가 먼저, 유지분은 코드순으로 뒤에 붙는다. 그래서 대상 수는
-    ``limit`` 보다 클 수 있다.
+    ``tick_day`` 를 주면 그날 ``ticks`` 에 있는 종목(:func:`ticked_codes`)을 더한다. 신규상장주는
+    상장 당일 일봉이 없어 ADV 순위에 못 들고, 그날 분봉이 다음 날 15:45 에야 들어와 상장 다음 날
+    08:55 감지기가 기준가(전일 정규장 종가)를 몰랐다(486510 09-29, 10-12 리뷰). 감지기가 그날
+    구독한 종목(대장 스캔·신규상장·돌발 재료)은 다음 날 기준가가 필요한 종목이라 같은 날 받는다.
+    실측 하루 10~17종목 추가(09-29·10-07·10-12).
+
+    순서는 ADV 상위, 그날 구독분, 유지분(코드순). 그래서 대상 수는 ``limit`` 보다 클 수 있다.
 
     ⚠️ 이건 **멈춤**을 막을 뿐 **구멍**은 못 막는다. 크론은 ``--pages 6``
     (≈13 거래일)이라, ``keep_days`` 밖으로 떨어졌다가 한참 뒤 순위에 돌아온
@@ -264,5 +293,11 @@ def collection_universe(
     """
     top = top_universe(conn, limit, lookback_days=lookback_days)
     seen = set(top)
+    ticked: list[str] = []
+    if tick_day is not None:
+        for c in ticked_codes(conn, tick_day):
+            if c not in seen:
+                seen.add(c)
+                ticked.append(c)
     kept = [c for c in recently_collected(conn, keep_days=keep_days) if c not in seen]
-    return top + kept
+    return top + ticked + kept

@@ -502,11 +502,12 @@ def event_candidates(conn: Any, limit: int, *, tv_floor: float = 5_000.0,
 
     1. **전일 거래대금 상위** — :func:`scalp_it.intraday.store.top_universe` 와 같은
        ADV 기준(최근 20 거래일 평균)으로 유동성 있는 종목.
-    2. **전일 급등주(상따/돌파 프록시)** — 가장 최근 거래일 종가가 그 전 거래일
-       종가 대비 크게 오른 종목. 상따·돌파 이벤트는 대개 전일 강세의 연장이라,
+    2. **전일 급등주(상따/돌파 프록시)** — 가장 최근 거래일 **정규장** 종가가 그날
+       기준가(전 거래일 정규장 종가) 대비 크게 오른 종목(:func:`_prev_day_movers`, 정문
+       ``regular_session``). 상따·돌파 이벤트는 대개 전일 강세의 연장이라,
        스캐너 스크립트를 통째로 돌리지 않고도 후보를 싸게 잡는다.
 
-    ``daily_bars_adjusted`` 만 읽고, ``trade_value`` 하한(백만원 단위, 기본 50억)을
+    순위·거래대금은 ``daily_bars_adjusted`` 를 읽고, ``trade_value`` 하한(백만원 단위, 기본 50억)을
     둔다. 두 리스트를 순서대로 합쳐 중복을 제거하고 ``limit`` 개로 자른다.
 
     **급등주 위주(기본 80%)** 로 섞는다 — 만쥬 상따/돌파/짝꿍 대상은 대형 유동주가
@@ -548,25 +549,35 @@ def event_candidates(conn: Any, limit: int, *, tv_floor: float = 5_000.0,
 
 def _prev_day_movers(conn: Any, limit: int, *, tv_floor: float,
                      min_gain: float = 0.10) -> list[str]:
-    """가장 최근 거래일 종가 상승률 상위. 거래대금 하한 + 최소 상승률 적용."""
+    """가장 최근 거래일 **정규장** 종가 상승률 상위. 거래대금 하한 + 최소 상승률 적용.
+
+    상승률 = 그날 정규장 종가 / 그날 가격제한폭 기준가 − 1 — 둘 다 정문
+    :mod:`scalp_it.regular_session` 으로 구한다. 예전에는 ``daily_bars_adjusted`` 종가 두 날의 비율이었는데,
+    2026-09-14 이후 그 종가는 분자·분모 모두 애프터마켓(16:00~20:00) 종가라 급등주 판정이 틀렸다.
+    정규장 종가를 모르는 종목(분봉 수집 밖 + 다음 거래일 수급표 전)은 빠진다. 거래대금 하한은 일봉
+    값(애프터마켓 포함)을 그대로 쓴다 — 문턱 용도라 조금 부풀어도 판정이 뒤집히지 않는다.
+    """
+    from ..regular_session import base_prices, regular_closes
+
     ph = _placeholder(conn)
     cur = conn.cursor()
-    cur.execute("select distinct date from daily_bars_adjusted order by date desc limit 2")
-    dates = [r[0] for r in cur.fetchall()]
-    if len(dates) < 2:
+    cur.execute("select max(date) from daily_bars_adjusted")
+    row = cur.fetchone()
+    if not row or row[0] is None:
         cur.close()
         return []
-    last, prev = dates[0], dates[1]
+    last = row[0]
     cur.execute(
-        "select t.code from daily_bars_adjusted t "
-        "join daily_bars_adjusted y on y.code = t.code "
-        f"where t.date = {ph} and y.date = {ph} "
-        "and t.close is not null and y.close is not null and y.close > 0 "
-        f"and t.trade_value is not null and t.trade_value >= {ph} "
-        f"and (t.close / y.close - 1.0) >= {ph} "
-        f"order by (t.close / y.close) desc limit {ph}",
-        (last, prev, float(tv_floor), float(min_gain), int(limit)),
+        "select code from daily_bars_adjusted "
+        f"where date = {ph} and trade_value is not null and trade_value >= {ph}",
+        (last, float(tv_floor)),
     )
     codes = [str(r[0]).strip() for r in cur.fetchall()]
     cur.close()
-    return codes
+    if not codes:
+        return []
+    closes = regular_closes(conn, last, codes)
+    bases = base_prices(conn, last, list(closes))
+    gains = [(c, px / float(bases[c]) - 1.0) for c, px in closes.items() if bases.get(c, 0) > 0]
+    picked = sorted((g for g in gains if g[1] >= float(min_gain)), key=lambda g: (-g[1], g[0]))
+    return [c for c, _ in picked[: int(limit)]]

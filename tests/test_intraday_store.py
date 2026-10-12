@@ -188,3 +188,56 @@ def test_collection_universe_empty_daily_returns_empty(conn):
     _daily(conn, [])
     upsert_minute_bars(conn, [_bar(pd.Timestamp(2026, 10, 12, 9, 0))])
     assert collection_universe(conn, 5) == []
+
+
+# ------------------------------------------------- 그날 구독 종목(신규상장) 같은 날 수집
+# 신규상장주는 상장 당일 일봉이 없어 ADV 순위에 못 든다. 그날 분봉을 15:45 에 안 받으면 다음 날
+# 08:55 감지기가 기준가(전일 정규장 종가)를 몰라 §4-5 고정 편입이 꺼진다(486510 09-29, 10-12 리뷰).
+
+def _ticks(conn, rows):
+    conn.execute("CREATE TABLE ticks (code text, ts timestamp, seq integer, price integer)")
+    conn.executemany("INSERT INTO ticks VALUES (?,?,?,?)", rows)
+    conn.commit()
+
+
+def test_collection_universe_adds_codes_ticked_that_day(conn):
+    from datetime import date
+
+    _daily(conn, [("TOP1", "2026-10-12", 900), ("TOP2", "2026-10-12", 500)])
+    _ticks(conn, [
+        ("NEWIPO", "2026-10-13 09:02:42", 0, 18_000),   # 상장 당일 — 일봉·ADV 없음
+        ("TOP1", "2026-10-13 10:00:00", 0, 1_000),      # 이미 대상 — 중복 없음
+        ("OLDDAY", "2026-10-12 10:00:00", 0, 1_000),    # 다른 날 구독 — 안 더한다
+    ])
+    got = collection_universe(conn, 2, lookback_days=1, keep_days=1, tick_day=date(2026, 10, 13))
+    assert got == ["TOP1", "TOP2", "NEWIPO"]
+    # tick_day 를 안 주면(옛 동작) 신규상장주는 빠진다 — 이 테스트가 지키는 회귀.
+    assert "NEWIPO" not in collection_universe(conn, 2, lookback_days=1, keep_days=1)
+
+
+def test_collection_universe_survives_missing_ticks_table(conn, capsys):
+    from datetime import date
+
+    _daily(conn, [("TOP1", "2026-10-12", 900)])
+    got = collection_universe(conn, 1, lookback_days=1, keep_days=1, tick_day=date(2026, 10, 13))
+    assert got == ["TOP1"]
+    assert "구독 종목 조회 실패" in capsys.readouterr().err
+
+
+def test_cli_intraday_passes_today_as_tick_day(monkeypatch):
+    """15:45 크론 실행줄(--universe-top 1400 --pages 6)은 플래그 없이 그날 구독 종목을 더한다."""
+    from datetime import date
+
+    import scalp_it.cli_intraday as ci
+
+    seen = {}
+
+    def fake(conn, limit, **kw):
+        seen.update(kw)
+        return []
+
+    monkeypatch.setattr(ci, "collection_universe", fake)
+    ci.resolve_codes(ci.build_parser().parse_args(["--universe-top", "1400", "--pages", "6"]), None)
+    assert seen["tick_day"] == date.today()  # noqa: DTZ011 — KST naive
+    ci.resolve_codes(ci.build_parser().parse_args(["--universe-top", "5", "--no-tick-codes"]), None)
+    assert seen["tick_day"] is None

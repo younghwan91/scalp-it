@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date
 from typing import Any
 
 import httpx
@@ -32,9 +33,11 @@ def resolve_codes(args: argparse.Namespace, conn: Any) -> list[str]:
         return [c.strip() for c in args.codes.split(",") if c.strip()]
     if args.universe_top:
         # 상위 N 만 받으면 순위 밖으로 밀린 종목이 영영 멈춘다 — 최근 수집분을 합친다.
+        # 그날 감지기가 구독한 종목(신규상장·대장 스캔)도 받는다 — 다음 날 08:55 기준가가 이 분봉이다.
+        tick_day = None if args.no_tick_codes else date.today()  # noqa: DTZ011 — KST naive
         return collection_universe(conn, args.universe_top,
                                    lookback_days=args.lookback_days,
-                                   keep_days=args.keep_days)
+                                   keep_days=args.keep_days, tick_day=tick_day)
     return []
 
 
@@ -49,6 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="상위 종목 선정에 쓸 거래일 수")
     parser.add_argument("--keep-days", type=int, default=20,
                         help="--universe-top 에서 순위 밖이어도 계속 받는 '최근 수집' 거래일 수")
+    parser.add_argument("--no-tick-codes", action="store_true",
+                        help="--universe-top 에 오늘 ticks 구독 종목(신규상장·장중 편입)을 더하지 않는다")
     parser.add_argument("--pages", type=int, default=40, help="종목당 최대 페이지")
     parser.add_argument("--tic-scope", default="1", help="분 단위. 1=1분봉")
     parser.add_argument("--since", default=None,
