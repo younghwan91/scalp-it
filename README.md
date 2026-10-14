@@ -18,8 +18,6 @@
   [kiwoom-client](https://github.com/younghwan91/kiwoom-client) 로 접근한다.
 - **형제 레포 클론**: 이 레포와 같은 부모 디렉터리에 `quant-airflow` 가 있어야 한다.
   DB 접속정보(`KR_QUANT_DB`)와 키움 App key/secret 을 그 `.env` 에서 읽어온다.
-  ([swing-it](https://github.com/younghwan91/swing-it), 구 kr-quant는 스윙 리서치
-  전용이라 trader에는 더 이상 클론하지 않는다 — 2026-09-13.)
 - **TimescaleDB 컨테이너**: `quant-airflow` 가 띄우는
   `quant-airflow-timescaledb-1` 컨테이너를 공유해서 쓴다(localhost:5432/kr_quant).
   자세한 주의사항은 아래 [DB 의존성](#db-의존성-주의) 참고.
@@ -146,37 +144,21 @@ flowchart TD
 | 16:10 | `scalp-theme-snapshot` — 키움 테마 일일 스냅샷 · `scripts/collect_health.py` |
 | 18:30 | `scalp-coverage` — 필터배제 커버리지 측정 |
 
-`scripts/db_guard.sh`(장중 DB 컨테이너 헬스가드)는 **2026-09-11 크론에서 뺐다** — 지금 걸어두면
-아래 "DB 의존성"의 split-brain 위험을 만든다. 스크립트 파일 자체는 남아있으니(옛 trader PRIMARY
-시절의 기록), 재활성화 전에 파일 헤더 주석과 `pg_is_in_recovery()` 상태를
-반드시 확인할 것.
+`scripts/db_guard.sh`(장중 DB 컨테이너 헬스가드)는 크론에서 제외되어 있다.
 
 **키움 App key 1개 = WebSocket 세션 1개.** 그래서 `scalp-tick-collect` 를 따로 띄우지 않고
 짝꿍 감지기가 수집을 겸한다(45종목). 두 프로세스를 동시에 띄우면 서로 kick 해 틱이 유실된다.
 
 ## DB 의존성 (주의)
 
-`KR_QUANT_DB`(`quant-airflow/.env`)는 **고정 호스트가 아니라 지금 PRIMARY 인 쪽**을 가리킨다 — 어느
-쪽이 PRIMARY 인지는 `pg_is_in_recovery()` 로 확인한다(false = PRIMARY). 자세한 배경·전환 절차는
-형제 레포 quant-airflow 의 README 상단 안내 상자 참고.
+2026-10-07 trader(N100) 처분 이후 **simnode 단일 호스트**에서 수집기·감지기가 돌며, 같은 호스트의 TimescaleDB PRIMARY(`192.168.45.9:5433` / `quant-airflow-timescaledb-1`)에 직접 쓴다.
 
-> 2026-10-07 trader 처분으로 아래 trader 리플리카 서술은 역사 기록이다 — 지금은 수집기·감지기도
-> simnode 에서 돌며 같은 호스트의 PRIMARY(`192.168.45.9:5433`)에 쓴다.
-
-**2026-09-11 저녁부터**: PRIMARY 는 simnode(`192.168.45.9:5433`), trader 는 읽기 전용 스트리밍
-리플리카(`quant-airflow-timescaledb-1`, localhost:5432)다. `KiwoomRealtimeCollector`(trader 에서
-실행)는 LAN 너머 simnode PRIMARY 에 직접 쓴다 — 원래는 "PRIMARY 는 수집기와 같은 호스트에 있어야
-LAN 순단에도 안 죽는다"는 제약 때문에 반대(trader=PRIMARY)였는데, collector 에 재연결+디스크
-스풀(`spool_dir`)이 들어가 LAN 순단을 스스로 버티는 게 실전 검증되면서 그 제약이 풀렸다.
-
-**틱·호가는 소급 수집이 불가능**하므로, PRIMARY 쪽 DB(지금은 simnode)가 장중에 완전히 죽으면
-그날 데이터는 영구 손실이다 — trader 의 로컬 리플리카가 죽는 것과는 다르다(리플리카는 그냥
-읽기 전용 사본이라 죽어도 수집엔 영향 없음, PRIMARY 에서 다시 시딩하면 됨).
+**틱·호가는 소급 수집이 불가능**하므로, DB 가 장중에 완전히 죽으면 그날 데이터는 영구 손실이다.
 
 ## 공통 코어 의존성 (krx-quant-core)
 
 시장 규칙·주문 가드처럼 **시장에만 묶인 로직은 이 레포에 사본을 두지 않고**
-[krx-quant-core](https://github.com/younghwan91/krx-quant-core) (v0.1.0, `pyproject.toml` 에 git 태그 핀)에서
+[krx-quant-core](https://github.com/younghwan91/krx-quant-core) (v0.7.0, `pyproject.toml` 에 핀)에서
 가져온다. daytrade-it·swing-it 과 같은 함수를 봐야 백테스트·실시간·다른 레포의 판정이 어긋나지 않는다.
 
 | scalp-it 이름 (그대로 import 가능) | 코어 정본 |
@@ -212,8 +194,8 @@ LAN 순단에도 안 죽는다"는 제약 때문에 반대(trader=PRIMARY)였는
 |---|---|
 | [kiwoom-client](https://github.com/younghwan91/kiwoom-client) | 시세·수급·분봉·테마·주문 (182 REST + WebSocket) |
 | [krx-quant-core](https://github.com/younghwan91/krx-quant-core) | 국장 공통 코어 — 호가단위·상한가·세션·주문 가드·체결 판정·검증 통계 (위 "공통 코어 의존성") |
-| [swing-it](https://github.com/younghwan91/swing-it) (구 kr-quant) | 검증 프레임워크 (walk-forward·음성대조) + 이관된 저빈도 팩터(PEAD·저변동성) |
-| quant-airflow | 일일 데이터 적재 + TimescaleDB PRIMARY/리플리카 구성 (**DB 공유** — 위 "DB 의존성" 참고) |
+| [swing-it](https://github.com/younghwan91/swing-it) | 검증 프레임워크 (walk-forward·음성대조) + 이관된 저빈도 팩터(PEAD·저변동성) |
+| [quant-airflow](https://github.com/younghwan91/quant-airflow) | 일일 데이터 적재 + TimescaleDB PRIMARY/리플리카 구성 (**DB 공유** — 위 "DB 의존성" 참고) |
 
 ## 원칙
 
