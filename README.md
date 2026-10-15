@@ -1,8 +1,5 @@
 # scalp-it
 
-[![GitHub stars](https://img.shields.io/github/stars/younghwan91/scalp-it?style=social)](https://github.com/younghwan91/scalp-it)
-[![GitHub forks](https://img.shields.io/github/forks/younghwan91/scalp-it?style=social)](https://github.com/younghwan91/scalp-it)
-
 한국 주식(KOSPI·KOSDAQ) 단타 전략의 **검증 프레임워크이자 실행 도구**.
 장중 틱·호가 실시간 수집 → 신호 탐지 → 실측이 지금의 축이다.
 
@@ -209,13 +206,4 @@ flowchart TD
 - **비용을 먼저 뺀다.** 2026년 왕복 34bp. 단타는 비용이 지배한다
 - **데이터는 커밋하지 않는다**
 
----
-
-## ⭐ Star History & Support
-
-[![Star History Chart](https://api.star-history.com/svg?repos=younghwan91/scalp-it&type=Date)](https://star-history.com/#younghwan91/scalp-it&Date)
-
-엄격한 사전등록과 재현 가능한 국장 실전 단타/스캘핑 연구 기록이 도움이 되셨다면 **[⭐ Star](https://github.com/younghwan91/scalp-it)**를 눌러 응원해주세요!
-- 🐛 버그 리포트 및 질의 → [Issues](https://github.com/younghwan91/scalp-it/issues)
-- 📈 업데이트 소식 → [Follow @younghwan91](https://github.com/younghwan91)
 
