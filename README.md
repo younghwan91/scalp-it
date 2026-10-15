@@ -1,5 +1,8 @@
 # scalp-it
 
+[![GitHub stars](https://img.shields.io/github/stars/younghwan91/scalp-it?style=social)](https://github.com/younghwan91/scalp-it)
+[![GitHub forks](https://img.shields.io/github/forks/younghwan91/scalp-it?style=social)](https://github.com/younghwan91/scalp-it)
+
 한국 주식(KOSPI·KOSDAQ) 단타 전략의 **검증 프레임워크이자 실행 도구**.
 장중 틱·호가 실시간 수집 → 신호 탐지 → 실측이 지금의 축이다.
 
@@ -7,6 +10,8 @@
 > **트레이더 만쥬의 일중 단타 시스템 복제**를 만든다.
 > **2026-09-16 밤부터 실주문 중단 — 지금은 dry-run**(주문 0). 2026-08-27~09-16 에만
 > `--confirm-real` 로 1주 실주문이 나갔다(`scripts/pair_detect_daily.sh` 헤더 참고).
+> 2026년 10월 사전등록 연구 프로그램(호가 흐름 스캘핑, LightGBM, Double-DQN, 대기열 인지 지정가 엔진)은
+> **전진 판정 전부 기각으로 공식 종결**(소매 왕복비용 미달성). 현재는 장중 틱·분봉 실시간 수집 및 헬스체크만 운영.
 > 현재 상태·판정 현황은 [`docs/STATUS.md`](docs/STATUS.md) 부터.
 
 핵심 규율은 하나다 — **사전등록하고, 한 번만 재고, 결과를 그대로 기록한다.**
@@ -19,7 +24,7 @@
 - **형제 레포 클론**: 이 레포와 같은 부모 디렉터리에 `quant-airflow` 가 있어야 한다.
   DB 접속정보(`KR_QUANT_DB`)와 키움 App key/secret 을 그 `.env` 에서 읽어온다.
 - **TimescaleDB 컨테이너**: `quant-airflow` 가 띄우는
-  `quant-airflow-timescaledb-1` 컨테이너를 공유해서 쓴다(localhost:5432/kr_quant).
+  `quant-airflow-timescaledb-replica-1` 컨테이너를 공유해서 쓴다(:5433/kr_quant).
   자세한 주의사항은 아래 [DB 의존성](#db-의존성-주의) 참고.
 
 ## 설치 · 실행
@@ -203,3 +208,14 @@ flowchart TD
 - **평균만 보지 않는다.** 중앙값·승률·손익비·분위·연도별을 함께 본다
 - **비용을 먼저 뺀다.** 2026년 왕복 34bp. 단타는 비용이 지배한다
 - **데이터는 커밋하지 않는다**
+
+---
+
+## ⭐ Star History & Support
+
+[![Star History Chart](https://api.star-history.com/svg?repos=younghwan91/scalp-it&type=Date)](https://star-history.com/#younghwan91/scalp-it&Date)
+
+엄격한 사전등록과 재현 가능한 국장 실전 단타/스캘핑 연구 기록이 도움이 되셨다면 **[⭐ Star](https://github.com/younghwan91/scalp-it)**를 눌러 응원해주세요!
+- 🐛 버그 리포트 및 질의 → [Issues](https://github.com/younghwan91/scalp-it/issues)
+- 📈 업데이트 소식 → [Follow @younghwan91](https://github.com/younghwan91)
+
