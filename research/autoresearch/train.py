@@ -46,8 +46,7 @@ def _tick_rel(p: np.ndarray) -> np.ndarray:
 def _cir(gap: np.ndarray, tk: np.ndarray, lam: float, w: int) -> np.ndarray:
     mp = max(3, w // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
-        dn = np.sqrt(_rmean(np.minimum(gap, 0.0) ** 2, w, mp))              # 하방 편차(Sortino) — 밤사이 급락 위험만 벌한다
-        return (_rmean(gap, w, mp) - lam * tk) / np.maximum(dn, 1e-4)
+        return (_rmean(gap, w, mp) - lam * tk) / _rstd(gap, w, mp)
 
 
 def signals(V: dict, x: dict) -> dict:
