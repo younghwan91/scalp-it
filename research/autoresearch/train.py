@@ -49,7 +49,8 @@ def signals(V: dict, x: dict) -> dict:
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
         on = (_rmean(gap, x["w"], mp) - x["lam"] * _tick_rel(V["C1"])) / _rstd(gap, x["w"], mp)   # (야간 성향 − 틱 비용) / 위험
-    cand = V["uni"] & np.isfinite(on)
+        ib = _rmean(np.log(V["C1"] / V["O1"]), x["w"], mp)                  # 같은 창의 일중(시가→종가) 평균
+    cand = V["uni"] & np.isfinite(on) & (ib < 0)                             # 밤에 오르고 낮에 내리는 고객층(tug of war) 종목만
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
