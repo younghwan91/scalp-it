@@ -23,14 +23,23 @@ import numpy as np
 import pandas as pd
 
 
-def _rmean(a: np.ndarray, w: int) -> np.ndarray:
-    return pd.DataFrame(a.T).rolling(w, min_periods=w).mean().to_numpy().T
+def _rmean(a: np.ndarray, w: int, mp: int) -> np.ndarray:
+    return pd.DataFrame(a.T).rolling(w, min_periods=mp).mean().to_numpy().T
+
+
+def _xrank(a: np.ndarray, m: np.ndarray) -> np.ndarray:
+    """열(날)마다 후보 안 백분위 순위 — 그날 값만 쓴다."""
+    return pd.DataFrame(np.where(m, a, np.nan)).rank(axis=0, pct=True).to_numpy()
 
 
 def signals(V: dict, x: dict) -> dict:
-    liq = _rmean(V["TV1"], x["w"])
-    cand = V["uni"] & np.isfinite(liq)
-    return {"cand": cand, "score": np.where(cand, np.log(np.maximum(liq, 1.0)), np.nan)}
+    # 야간 갭 지속성(tug of war): 최근 w 일(오늘 시가 갭 포함) 평균 야간 수익이 높은 종목이 오늘 밤도 높다.
+    gap = np.log(V["O"] / V["C1"])
+    on = _rmean(gap, x["w"], max(2, x["w"] // 2))
+    liq = _rmean(V["TV1"], 20, 15)
+    base = V["uni"] & np.isfinite(on) & np.isfinite(liq)
+    cand = base & (_xrank(liq, base) >= x["q"])
+    return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
 def cfg(x: dict) -> dict:
@@ -38,5 +47,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 1, 20), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "q": ("float", 0.0, 0.9), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
