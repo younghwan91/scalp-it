@@ -55,9 +55,7 @@ def signals(V: dict, x: dict) -> dict:
     tk = _tick_rel(V["C1"])
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
-    mg = np.nan_to_num(0.5 * (V["kx_gap"] + V["kq_gap"]), nan=0.0)        # 오늘 시장 시가 갭
-    day = (x["g"] * mg >= 0)[None, :]                                         # 학습이 정한 쪽(g 부호)의 갭 날만 산다 — 선택 품질이 시장 상태에 달렸는지
-    cand = V["uni"] & np.isfinite(on) & day
+    cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
@@ -66,5 +64,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "g": ("choice", (-1, 0, 1)), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
