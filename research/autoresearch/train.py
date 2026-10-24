@@ -43,10 +43,10 @@ def _tick_rel(p: np.ndarray) -> np.ndarray:
         return old / p
 
 
-def _cir(gap: np.ndarray, tk: np.ndarray, lam: float, w: int) -> np.ndarray:
+def _cir(gap: np.ndarray, tk: np.ndarray, lam: float, w: int, cv: np.ndarray, b: float) -> np.ndarray:
     mp = max(3, w // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
-        return (_rmean(gap, w, mp) - lam * tk) / _rstd(gap, w, mp)
+        return (_rmean(gap, w, mp) - lam * tk - b * _rmean(cv, w, mp)) / _rstd(gap, w, mp)
 
 
 def signals(V: dict, x: dict) -> dict:
@@ -54,7 +54,10 @@ def signals(V: dict, x: dict) -> dict:
     gap = np.log(V["O"] / V["C1"])
     tk = _tick_rel(V["C1"])
     w = x["w"]
-    on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cv = np.log(V["C1"] * V["V1"] / V["TV1"])                            # 전일 종가 / 전일 VWAP(거래대금/거래량) — 마감 매도 압력이면 음수
+    cv = np.where(np.isfinite(cv), cv, 0.0)
+    on = sum(_cir(gap, tk, x["lam"], v, cv, x["b"]) for v in (max(3, w // 2), w, min(2 * w, 250))) / 3   # 습관적 마감 압력 종목은 시가에 되돌린다
     cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
@@ -64,5 +67,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "b": ("float", -1.0, 1.0), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
