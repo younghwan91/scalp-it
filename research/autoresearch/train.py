@@ -39,11 +39,9 @@ def _xrank(a: np.ndarray, m: np.ndarray) -> np.ndarray:
 def signals(V: dict, x: dict) -> dict:
     # 야간 갭 지속성의 위험 조정판: 최근 w 일 야간 수익의 평균 / 표준편차(일관되게 밤에 오르는 종목).
     gap = np.log(V["O"] / V["C1"])
-    with np.errstate(invalid="ignore", divide="ignore"):
-        ex = gap - np.nanmedian(np.where(V["uni"], gap, np.nan), axis=0)[None, :]   # 그날 유니버스 중앙 갭을 뺀 고유 야간
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
-        on = _rmean(ex, x["w"], mp) / _rstd(ex, x["w"], mp)
+        on = _rmean(gap, x["w"], mp) / _rstd(gap, x["w"], mp)
     liq = _rmean(V["TV1"], 20, 15)
     base = V["uni"] & np.isfinite(on) & np.isfinite(liq)
     cand = base & (_xrank(liq, base) >= x["q"])
