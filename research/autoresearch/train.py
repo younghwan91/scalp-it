@@ -55,6 +55,10 @@ def signals(V: dict, x: dict) -> dict:
     tk = _tick_rel(V["C1"])
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
+    tv20 = pd.DataFrame(V["TV1"].T).shift(1).rolling(20, min_periods=15).mean().to_numpy().T
+    with np.errstate(invalid="ignore", divide="ignore"):
+        sv = np.log(V["TV1"] / tv20)                                          # 전일 거래대금 이상치(로그 배수) — 전일판 거래량 급증
+    on = on + x["b"] * np.where(np.isfinite(sv), np.clip(sv, -3, 3), 0.0) / 10
     cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
@@ -64,5 +68,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "b": ("float", -1.0, 1.0), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
