@@ -31,10 +31,6 @@ def _rstd(a: np.ndarray, w: int, mp: int) -> np.ndarray:
     return pd.DataFrame(a.T).rolling(w, min_periods=mp).std().to_numpy().T
 
 
-def _rmed(a: np.ndarray, w: int, mp: int) -> np.ndarray:
-    return pd.DataFrame(a.T).rolling(w, min_periods=mp).median().to_numpy().T
-
-
 def _xrank(a: np.ndarray, m: np.ndarray) -> np.ndarray:
     """열(날)마다 후보 안 백분위 순위 — 그날 값만 쓴다."""
     return pd.DataFrame(np.where(m, a, np.nan)).rank(axis=0, pct=True).to_numpy()
@@ -52,7 +48,7 @@ def signals(V: dict, x: dict) -> dict:
     gap = np.log(V["O"] / V["C1"])
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
-        on = (_rmed(gap, x["w"], mp) - x["lam"] * _tick_rel(V["C1"])) / _rstd(gap, x["w"], mp)   # (야간 갭 중앙값 − 틱 비용) / 위험 — 사건성 큰 갭에 둔감
+        on = (_rmean(gap, x["w"], mp) - x["lam"] * _tick_rel(V["C1"])) / _rstd(gap, x["w"], mp)   # (야간 성향 − 틱 비용) / 위험
     cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
