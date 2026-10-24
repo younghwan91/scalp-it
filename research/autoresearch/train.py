@@ -49,7 +49,7 @@ def signals(V: dict, x: dict) -> dict:
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
         on = (_rmean(gap, x["w"], mp) - x["lam"] * _tick_rel(V["C1"])) / _rstd(gap, x["w"], mp)   # (야간 성향 − 틱 비용) / 위험
-    cand = V["uni"] & np.isfinite(on)
+    cand = V["uni"] & np.isfinite(on) & (on >= x["th"])                     # 성향이 약한 날은 슬롯을 비운다(노출 바닥 0.5 는 평가기가 지킨다)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
@@ -58,5 +58,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "th": ("float", -0.2, 0.6), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
