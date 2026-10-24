@@ -50,11 +50,11 @@ def _cir(gap: np.ndarray, tk: np.ndarray, lam: float, w: int) -> np.ndarray:
 
 
 def signals(V: dict, x: dict) -> dict:
-    # 비용 조정 야간 IR((평균 갭 − λ·틱/가격)/갭 표준편차)을 창 w/2·w·2w 세 개로 평균 — 창 선택 잡음을 줄인다.
+    # 비용 조정 야간 IR((평균 갭 − λ·틱/가격)/갭 표준편차)을 창 w/2·w·2w 세 개 중 최솟값 — 모든 지평에서 꾸준한 종목만 위로.
     gap = np.log(V["O"] / V["C1"])
     tk = _tick_rel(V["C1"])
     w = x["w"]
-    on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
+    on = np.minimum(np.minimum(_cir(gap, tk, x["lam"], max(3, w // 2)), _cir(gap, tk, x["lam"], w)), _cir(gap, tk, x["lam"], min(2 * w, 250)))
     cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
