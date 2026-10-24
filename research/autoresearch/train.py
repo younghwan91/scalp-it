@@ -42,8 +42,10 @@ def signals(V: dict, x: dict) -> dict:
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
         on = _rmean(gap, x["w"], mp) / _rstd(gap, x["w"], mp)
-    cand = V["uni"] & np.isfinite(on)
-    return {"cand": cand, "score": np.where(cand, on, np.nan)}
+    hit = _rmean(np.sign(gap), x["w"], mp)                                  # 밤에 오른 날 비율(이상치에 둔감한 성향)
+    cand = V["uni"] & np.isfinite(on) & np.isfinite(hit)
+    sc = _xrank(np.round(hit, 5), cand) + x["b"] * _xrank(np.round(on, 5), cand)
+    return {"cand": cand, "score": np.where(cand, sc, np.nan)}
 
 
 def cfg(x: dict) -> dict:
@@ -51,5 +53,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "b": ("float", 0.0, 2.0), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
