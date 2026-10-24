@@ -17,7 +17,8 @@ _spec = importlib.util.spec_from_file_location("ar_prepare", _DIR / "prepare.py"
 P = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(P)
 SB = P.SB
-BASE = _DIR / "train.py"
+# 기준선 train.py(태그 autoresearch-overnight-prereg-2, sha 3fbbe246) 사본 — 루프가 끝나면 train.py 는 BEST 라 기준선이 아니다
+BASE = Path(__file__).resolve().parent / "fixtures" / "autoresearch_train_baseline.py"
 
 
 def _raw(n: int = 4, t: int = 160, start: str = "2012-01-02", dl=None) -> dict:
