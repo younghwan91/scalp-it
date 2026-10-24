@@ -49,7 +49,8 @@ def signals(V: dict, x: dict) -> dict:
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
         on = (_rmean(gap, x["w"], mp) - x["lam"] * _tick_rel(V["C1"])) / _rstd(gap, x["w"], mp)   # (야간 성향 − 틱 비용) / 위험
-    cand = V["uni"] & np.isfinite(on)
+    pos = (pd.DataFrame(np.isfinite(gap).T).rolling(x["w"], min_periods=1).sum().to_numpy().T >= x["w"])   # 창이 꽉 찬(결측 없는) 종목만
+    cand = V["uni"] & np.isfinite(on) & pos
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
