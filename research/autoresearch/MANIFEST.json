@@ -1,0 +1,11 @@
+{
+ "research/autoresearch/prepare.py": "aeb1eed51274b3743737247fca3add8537392382ef30760dc4f96e69abfbf14e",
+ "research/autoresearch/PREREG.md": "1daa18e79f05f54adb137cdc3280202aa9d6971d28e6d69642938f15a38e0dcd",
+ "research/autoresearch/program.md": "59a4552683ceb46ba07e25e7e9e920b5558b028c289f2b102676e0f31737d6fc",
+ "tests/test_autoresearch_guards.py": "3faa30eceb6d3a3e7eac633d8ec3926629ecaa1927fcd59064b28d5b02277dc4",
+ "pyproject.toml": "ae363067132d559b28580806cabf23dc971fbdfa6071a4c29b7ccc4007ccdc7d",
+ "uv.lock": "dbc475dfb57e436692c5729d54839032910d93091c28b23d35829e83098eab5e",
+ "core/costs/tax.py": "4b566d5d8a564f41dda8acdea54970593782d81c2760ca28d5ffe7788eaa2e9a",
+ "core/stats/sharpe.py": "dbbbd189770a506e35fa0b8136e4d8f148861a61af35d1ef958e8d389629d5ff",
+ "cache/search_s0.pkl": "49fc57aa84dec36bc50bb9d098e305a0bf82f1097a971c4ed275b0a8292232fb"
+}
