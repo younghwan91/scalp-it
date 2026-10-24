@@ -55,9 +55,7 @@ def signals(V: dict, x: dict) -> dict:
     tk = _tick_rel(V["C1"])
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
-    tv20 = pd.DataFrame(V["TV1"].T).shift(1).rolling(20, min_periods=15).mean().to_numpy().T
-    surge = V["TV1"] >= 3 * tv20                                              # 전일 거래대금 급증(06 의 tv_ratio ≥ 3 정의, 전일판) — 사건 종목
-    cand = V["uni"] & np.isfinite(on) & ~surge
+    cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
