@@ -56,9 +56,7 @@ def signals(V: dict, x: dict) -> dict:
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
     gp = V["O"] / V["C1"] - 1
-    ret1 = V["C1"] / pd.DataFrame(V["C1"].T).shift(1).to_numpy().T - 1
-    ev = (gp >= V["lim"][None, :] / 2) | (np.abs(ret1) >= V["lim"][None, :] - 0.02)   # 전일 상·하한가 마감도 사건
-    cand = V["uni"] & np.isfinite(on) & ~ev       # 오늘 시가가 제한폭 절반 이상 갭업 = 사건 종목(상한가 근처 종가는 어차피 못 산다)
+    cand = V["uni"] & np.isfinite(on) & ~(gp >= V["lim"][None, :] / 2)       # 오늘 시가가 제한폭 절반 이상 갭업 = 사건 종목(상한가 근처 종가는 어차피 못 산다)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
