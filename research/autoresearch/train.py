@@ -42,7 +42,6 @@ def signals(V: dict, x: dict) -> dict:
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
         on = _rmean(gap, x["w"], mp) / _rstd(gap, x["w"], mp)
-        on = on * np.sqrt(pd.DataFrame(np.isfinite(gap).T).rolling(x["w"], min_periods=1).sum().to_numpy().T)   # 평균/표준오차(t 통계)
     cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
