@@ -55,7 +55,10 @@ def signals(V: dict, x: dict) -> dict:
     tk = _tick_rel(V["C1"])
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
-    cand = V["uni"] & np.isfinite(on)
+    mp = max(3, w // 2)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        z = (gap - _rmean(gap, w, mp)) / _rstd(gap, w, mp)                   # 오늘 갭이 평소 분포에서 얼마나 벗어났나
+    cand = V["uni"] & np.isfinite(on) & ~(np.abs(z) > x["z"])                 # 오늘 사건성 갭(뉴스) 종목은 뺀다 — 성향이 아니라 사건
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
@@ -64,5 +67,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "z": ("float", 1.5, 6.0), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
