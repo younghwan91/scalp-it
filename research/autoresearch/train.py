@@ -54,8 +54,7 @@ def signals(V: dict, x: dict) -> dict:
     gap = np.log(V["O"] / V["C1"])
     tk = _tick_rel(V["C1"])
     w = x["w"]
-    ws = (max(3, w // 2), w, min(2 * w, 250))
-    on = sum(_cir(gap, tk, x["lam"], v) * np.sqrt(v) for v in ws) / len(ws)   # 창마다 t 통계(IR·√창) — 긴 창의 추정이 더 믿을 만하다
+    on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
     cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
