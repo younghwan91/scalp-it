@@ -55,7 +55,8 @@ def signals(V: dict, x: dict) -> dict:
     tk = _tick_rel(V["C1"])
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
-    cand = V["uni"] & np.isfinite(on)
+    att = _rmean(V["TV1"], 5, 4) < _rmean(V["TV1"], 60, 40)                  # 최근 5일 거래대금이 60일 평균 미만(관심이 식은 조용한 종목)
+    cand = V["uni"] & np.isfinite(on) & att
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
