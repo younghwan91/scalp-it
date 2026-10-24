@@ -56,6 +56,8 @@ def signals(V: dict, x: dict) -> dict:
     tk = _tick_rel(V["C1"])
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
+    ret1 = V["C1"] / pd.DataFrame(V["C1"].T).shift(1).to_numpy().T - 1
+    on = on + x["b"] * (ret1 >= V["lim"][None, :] / 2)                      # 전일 급등(제한폭 절반 이상) 종목 가산 — 빼면 손해였다(관심 지속)
     gp = V["O"] / V["C1"] - 1
     cand = V["uni"] & np.isfinite(on) & ~(np.abs(gp) >= V["lim"][None, :] / 2)       # 오늘 시가가 제한폭 절반 이상 갭업 = 사건 종목(상한가 근처 종가는 어차피 못 산다)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
@@ -66,5 +68,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "b": ("float", -1.0, 1.0), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
