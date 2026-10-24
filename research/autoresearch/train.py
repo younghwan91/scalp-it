@@ -44,10 +44,8 @@ def signals(V: dict, x: dict) -> dict:
         on = _rmean(gap, x["w"], mp) / _rstd(gap, x["w"], mp)
     liq = _rmean(V["TV1"], 20, 15)
     base = V["uni"] & np.isfinite(on) & np.isfinite(liq)
-    rk = np.log(V["O"] / pd.DataFrame(V["C1"].T).shift(x["k"] - 1).to_numpy().T)  # 최근 k 일 수익(오늘 시가까지)
-    cand = base & np.isfinite(rk) & (_xrank(liq, base) >= x["q"])
-    sc = _xrank(on, cand) - x["b"] * _xrank(rk, cand)                       # 단기 반전과 결합
-    return {"cand": cand, "score": np.where(cand, sc, np.nan)}
+    cand = base & (_xrank(liq, base) >= x["q"])
+    return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
 def cfg(x: dict) -> dict:
@@ -55,5 +53,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "q": ("float", 0.0, 0.9), "k": ("int", 1, 20), "b": ("float", -1.0, 1.0), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "q": ("float", 0.0, 0.9), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
