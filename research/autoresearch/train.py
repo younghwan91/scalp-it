@@ -46,8 +46,7 @@ def _tick_rel(p: np.ndarray) -> np.ndarray:
 def _cir(gap: np.ndarray, tk: np.ndarray, lam: float, w: int) -> np.ndarray:
     mp = max(3, w // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
-        mu = _rmean(gap, w, mp)
-        return (mu - lam * tk) / _rmean(np.abs(gap), w, mp)                 # 위험 = 평균 절대 갭(표준편차보다 사건 갭에 덜 휘둘림)
+        return (_rmean(gap, w, mp) - lam * tk) / _rstd(gap, w, mp)
 
 
 def signals(V: dict, x: dict) -> dict:
@@ -56,9 +55,7 @@ def signals(V: dict, x: dict) -> dict:
     tk = _tick_rel(V["C1"])
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
-    ret1 = np.log(V["C1"] / pd.DataFrame(V["C1"].T).shift(1).to_numpy().T)
-    lim = V["lim"][None, :]
-    cand = V["uni"] & np.isfinite(on) & ~(np.abs(ret1) >= lim - 0.02)        # 전일 상·하한가(근처) 마감 종목 제외 — 사건 다음 날
+    cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
@@ -67,5 +64,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "d": ("float", 0.05, 0.3), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
