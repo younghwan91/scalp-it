@@ -56,9 +56,8 @@ def signals(V: dict, x: dict) -> dict:
     tk = _tick_rel(V["C1"])
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
-    stale = _rmean((V["O"] == V["C1"]).astype(float), w, max(3, w // 2)) > 0.5   # 시가 = 전일 종가가 절반 넘는 종목(호가가 굳은 종목 — IR 이 0 근처 분모로 부푼다)
     gp = V["O"] / V["C1"] - 1
-    cand = V["uni"] & np.isfinite(on) & ~stale & ~(np.abs(gp) >= V["lim"][None, :] / 2)       # 오늘 시가가 제한폭 절반 이상 갭업 = 사건 종목(상한가 근처 종가는 어차피 못 산다)
+    cand = V["uni"] & np.isfinite(on) & ~(np.abs(gp) >= V["lim"][None, :] / 2)       # 오늘 시가가 제한폭 절반 이상 갭업 = 사건 종목(상한가 근처 종가는 어차피 못 산다)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
