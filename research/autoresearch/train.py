@@ -36,20 +36,14 @@ def _xrank(a: np.ndarray, m: np.ndarray) -> np.ndarray:
     return pd.DataFrame(np.where(m, a, np.nan)).rank(axis=0, pct=True).to_numpy()
 
 
-def _ir(a: np.ndarray, w: int) -> np.ndarray:
-    mp = max(3, w // 2)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        ir = _rmean(a, w, mp) / np.maximum(_rstd(a, w, mp), 1e-4)            # 표준편차 바닥(갭이 상수인 창의 0/0 수치 흔들림 차단)
-    return np.round(ir, 5)                                                   # rolling 누적 오차가 순위 동점을 흔들지 않게
-
-
 def signals(V: dict, x: dict) -> dict:
-    # 야간 갭 지속성의 위험 조정판(평균/표준편차)을 짧은 창·긴 창 두 개로 — 최근 변화와 오래된 성향을 함께 본다.
+    # 야간 갭 지속성의 위험 조정판: 최근 w 일 야간 수익의 평균 / 표준편차(일관되게 밤에 오르는 종목).
     gap = np.log(V["O"] / V["C1"])
-    s_on, l_on = _ir(gap, x["ws"]), _ir(gap, x["wl"])
-    cand = V["uni"] & np.isfinite(s_on) & np.isfinite(l_on)
-    sc = _xrank(s_on, cand) + x["b"] * _xrank(l_on, cand)
-    return {"cand": cand, "score": np.where(cand, sc, np.nan)}
+    mp = max(3, x["w"] // 2)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        on = _rmean(gap, x["w"], mp) / _rstd(gap, x["w"], mp)
+    cand = V["uni"] & np.isfinite(on)
+    return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
 def cfg(x: dict) -> dict:
@@ -57,5 +51,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"ws": ("int", 5, 40), "wl": ("int", 60, 250), "b": ("float", 0.0, 2.0), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
