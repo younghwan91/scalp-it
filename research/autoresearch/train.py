@@ -43,10 +43,12 @@ def _tick_rel(p: np.ndarray) -> np.ndarray:
         return old / p
 
 
-def _cir(gap: np.ndarray, tk: np.ndarray, lam: float, w: int) -> np.ndarray:
+def _cir(gap: np.ndarray, tk: np.ndarray, lam: float, w: int, tv: np.ndarray) -> np.ndarray:
     mp = max(3, w // 2)
+    tw = np.where(np.isfinite(gap) & np.isfinite(tv), tv, 0.0)
     with np.errstate(invalid="ignore", divide="ignore"):
-        return (_rmean(gap, w, mp) - lam * tk) / _rstd(gap, w, mp)
+        mu = _rmean(np.where(tw > 0, gap, 0.0) * tw, w, mp) / _rmean(tw, w, mp)   # 거래대금 가중 평균 갭(거래가 붐빈 날의 밤을 더 믿는다)
+        return (mu - lam * tk) / _rstd(gap, w, mp)
 
 
 def signals(V: dict, x: dict) -> dict:
@@ -55,7 +57,8 @@ def signals(V: dict, x: dict) -> dict:
     gap = np.where(np.abs(V["O"] / V["C1"] - 1) >= V["lim"][None, :] / 2, np.nan, gap)   # 성향 추정에서 사건 갭(제한폭 절반 이상)은 뺀다
     tk = _tick_rel(V["C1"])
     w = x["w"]
-    on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
+    tv = V["TV1"] / np.maximum(_rmean(V["TV1"], 20, 15), 1.0)                # 전일 거래대금 / 20일 평균(갭 직전 날의 활동도)
+    on = (_cir(gap, tk, x["lam"], max(3, w // 2), tv) + _cir(gap, tk, x["lam"], w, tv) + _cir(gap, tk, x["lam"], min(2 * w, 250), tv)) / 3
     gp = V["O"] / V["C1"] - 1
     cand = V["uni"] & np.isfinite(on) & ~(np.abs(gp) >= V["lim"][None, :] / 2)       # 오늘 시가가 제한폭 절반 이상 갭업 = 사건 종목(상한가 근처 종가는 어차피 못 산다)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
