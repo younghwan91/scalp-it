@@ -55,7 +55,8 @@ def signals(V: dict, x: dict) -> dict:
     tk = _tick_rel(V["C1"])
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
-    cand = V["uni"] & np.isfinite(on)
+    gp = V["O"] / V["C1"] - 1
+    cand = V["uni"] & np.isfinite(on) & ~(gp >= V["lim"][None, :] / 2)       # 오늘 시가가 제한폭 절반 이상 갭업 = 사건 종목(상한가 근처 종가는 어차피 못 산다)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
