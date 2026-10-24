@@ -36,14 +36,24 @@ def _xrank(a: np.ndarray, m: np.ndarray) -> np.ndarray:
     return pd.DataFrame(np.where(m, a, np.nan)).rank(axis=0, pct=True).to_numpy()
 
 
+def _tick_rel(p: np.ndarray) -> np.ndarray:
+    """편도 1틱 / 가격 — 옛·새 호가표 중 큰 쪽(시대를 모르므로 보수). 기대 비용 차이를 순위에 넣는 데만 쓴다."""
+    with np.errstate(invalid="ignore"):
+        old = np.select([p < 1000, p < 5000, p < 10000, p < 50000, p < 100000, p < 500000], [1, 5, 10, 50, 100, 500], 1000)
+        new = np.select([p < 2000, p < 5000, p < 20000, p < 50000, p < 200000, p < 500000], [1, 5, 10, 50, 100, 500], 1000)
+        return np.maximum(old, new) / p
+
+
 def signals(V: dict, x: dict) -> dict:
     # 야간 갭 지속성의 위험 조정판: 최근 w 일 야간 수익의 평균 / 표준편차(일관되게 밤에 오르는 종목).
     gap = np.log(V["O"] / V["C1"])
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
         on = _rmean(gap, x["w"], mp) / _rstd(gap, x["w"], mp)
-    cand = V["uni"] & np.isfinite(on)
-    return {"cand": cand, "score": np.where(cand, on, np.nan)}
+    tk = _tick_rel(V["C1"])
+    cand = V["uni"] & np.isfinite(on) & np.isfinite(tk)
+    sc = _xrank(np.round(on, 5), cand) - x["lam"] * _xrank(tk, cand)        # 기대값 = 야간 성향 − 틱 비용(정가 비용 뒤로 고른다)
+    return {"cand": cand, "score": np.where(cand, sc, np.nan)}
 
 
 def cfg(x: dict) -> dict:
@@ -51,5 +61,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 1.5), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
