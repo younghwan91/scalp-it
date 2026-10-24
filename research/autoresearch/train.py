@@ -38,7 +38,7 @@ def _xrank(a: np.ndarray, m: np.ndarray) -> np.ndarray:
 
 def signals(V: dict, x: dict) -> dict:
     # 야간 갭 지속성의 위험 조정판: 최근 w 일 야간 수익의 평균 / 표준편차(일관되게 밤에 오르는 종목).
-    gap = np.log(V["O"] / V["C1"])
+    gap = np.clip(np.log(V["O"] / V["C1"]), -x["c"], x["c"])               # 사건성 큰 갭을 잘라 꾸준한 야간만 본다
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
         on = _rmean(gap, x["w"], mp) / _rstd(gap, x["w"], mp)
@@ -51,5 +51,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "c": ("float", 0.01, 0.1), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
