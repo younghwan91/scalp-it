@@ -42,9 +42,10 @@ def signals(V: dict, x: dict) -> dict:
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
         on = _rmean(gap, x["w"], mp) / _rstd(gap, x["w"], mp)
+        vol = _rstd(np.log(V["C1"] / V["O1"]), 20, 15)                      # 최근 일중 변동성
     liq = _rmean(V["TV1"], 20, 15)
-    base = V["uni"] & np.isfinite(on) & np.isfinite(liq)
-    cand = base & (_xrank(liq, base) >= x["q"])
+    base = V["uni"] & np.isfinite(on) & np.isfinite(liq) & np.isfinite(vol)
+    cand = base & (_xrank(liq, base) >= x["q"]) & (_xrank(vol, base) <= x["v"])   # 고변동(복권형) 제외
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
@@ -53,5 +54,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "q": ("float", 0.0, 0.9), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "q": ("float", 0.0, 0.9), "v": ("float", 0.3, 1.0), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
