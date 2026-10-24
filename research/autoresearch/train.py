@@ -27,15 +27,21 @@ def _rmean(a: np.ndarray, w: int, mp: int) -> np.ndarray:
     return pd.DataFrame(a.T).rolling(w, min_periods=mp).mean().to_numpy().T
 
 
+def _rstd(a: np.ndarray, w: int, mp: int) -> np.ndarray:
+    return pd.DataFrame(a.T).rolling(w, min_periods=mp).std().to_numpy().T
+
+
 def _xrank(a: np.ndarray, m: np.ndarray) -> np.ndarray:
     """열(날)마다 후보 안 백분위 순위 — 그날 값만 쓴다."""
     return pd.DataFrame(np.where(m, a, np.nan)).rank(axis=0, pct=True).to_numpy()
 
 
 def signals(V: dict, x: dict) -> dict:
-    # 야간 갭 지속성(tug of war): 최근 w 일(오늘 시가 갭 포함) 평균 야간 수익이 높은 종목이 오늘 밤도 높다.
+    # 야간 갭 지속성의 위험 조정판: 최근 w 일 야간 수익의 평균 / 표준편차(일관되게 밤에 오르는 종목).
     gap = np.log(V["O"] / V["C1"])
-    on = _rmean(gap, x["w"], max(2, x["w"] // 2))
+    mp = max(3, x["w"] // 2)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        on = _rmean(gap, x["w"], mp) / _rstd(gap, x["w"], mp)
     liq = _rmean(V["TV1"], 20, 15)
     base = V["uni"] & np.isfinite(on) & np.isfinite(liq)
     cand = base & (_xrank(liq, base) >= x["q"])
