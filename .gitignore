@@ -37,3 +37,8 @@ data/bigkinds/
 graphify-out/
 # 전진 최종 판정(한 번뿐) 기록은 남겨야 한다 — *.jsonl 일괄 무시의 예외
 !research/runs/*/RUNS.jsonl
+
+# autoresearch 루프 산출물(원장은 평가기가 ~/.cache 사본과 이중 기록)
+research/autoresearch/ledger/
+/results.tsv
+/run.log

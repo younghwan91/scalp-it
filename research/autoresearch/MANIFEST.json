@@ -1,0 +1,12 @@
+{
+ "research/autoresearch/prepare.py": "2c51c928397ca2e18ce500f8745932aa68a3d9a391cb35b4bbcd798b51e347ac",
+ "research/autoresearch/ar_sandbox.py": "d1d933f10a3a4acb2659e14ee52b4eda4bbda921997cbae6dc0c1a0df519f160",
+ "research/autoresearch/PREREG.md": "be1caa2c2a2cec03eb3e452f1ba82f92942c21cae5d905ba31220388f4a047ae",
+ "research/autoresearch/program.md": "3a39d586f7748e04df6c89582974369f6e27376cddc1e3fc8e2ec1021ac3f7dd",
+ "tests/test_autoresearch_guards.py": "4a1d7998d9ca71d58d3d958ab6c031ddbd96e6c1118fe87ce381e2ad680fdd62",
+ "pyproject.toml": "ae363067132d559b28580806cabf23dc971fbdfa6071a4c29b7ccc4007ccdc7d",
+ "uv.lock": "dbc475dfb57e436692c5729d54839032910d93091c28b23d35829e83098eab5e",
+ "core/costs/tax.py": "4b566d5d8a564f41dda8acdea54970593782d81c2760ca28d5ffe7788eaa2e9a",
+ "core/stats/sharpe.py": "dbbbd189770a506e35fa0b8136e4d8f148861a61af35d1ef958e8d389629d5ff",
+ "cache/search_s0.pkl": "239b1a710c4e9ba38fb3eb5f3c2331589c6df142fca3b310a6138ba7eb902010"
+}
