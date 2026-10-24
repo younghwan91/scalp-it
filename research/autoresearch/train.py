@@ -43,12 +43,18 @@ def _tick_rel(p: np.ndarray) -> np.ndarray:
         return old / p
 
 
-def signals(V: dict, x: dict) -> dict:
-    # 야간 갭 지속성의 위험 조정판: 최근 w 일 야간 수익의 평균 / 표준편차(일관되게 밤에 오르는 종목).
-    gap = np.log(V["O"] / V["C1"])
-    mp = max(3, x["w"] // 2)
+def _cir(gap: np.ndarray, tk: np.ndarray, lam: float, w: int) -> np.ndarray:
+    mp = max(3, w // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
-        on = (_rmean(gap, x["w"], mp) - x["lam"] * _tick_rel(V["C1"])) / _rstd(gap, x["w"], mp)   # (야간 성향 − 틱 비용) / 위험
+        return (_rmean(gap, w, mp) - lam * tk) / _rstd(gap, w, mp)
+
+
+def signals(V: dict, x: dict) -> dict:
+    # 비용 조정 야간 IR((평균 갭 − λ·틱/가격)/갭 표준편차)을 창 w/2·w·2w 세 개로 평균 — 창 선택 잡음을 줄인다.
+    gap = np.log(V["O"] / V["C1"])
+    tk = _tick_rel(V["C1"])
+    w = x["w"]
+    on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
     cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
