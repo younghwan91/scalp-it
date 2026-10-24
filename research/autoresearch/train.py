@@ -54,11 +54,7 @@ def signals(V: dict, x: dict) -> dict:
     gap = np.log(V["O"] / V["C1"])
     tk = _tick_rel(V["C1"])
     w = x["w"]
-    with np.errstate(invalid="ignore", divide="ignore"):
-        gv = np.log(V["O"] * V["V1"] / V["TV1"])                             # 전일 VWAP → 오늘 시가(마감 구간 압력 + 밤)
-    gv = np.where(np.isfinite(gv), gv, gap)
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
-    on = 0.5 * on + 0.5 * (_cir(gv, tk, x["lam"], max(3, w // 2)) + _cir(gv, tk, x["lam"], w) + _cir(gv, tk, x["lam"], min(2 * w, 250))) / 3
     cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
