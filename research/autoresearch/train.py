@@ -36,12 +36,19 @@ def _xrank(a: np.ndarray, m: np.ndarray) -> np.ndarray:
     return pd.DataFrame(np.where(m, a, np.nan)).rank(axis=0, pct=True).to_numpy()
 
 
+def _tick_rel(p: np.ndarray) -> np.ndarray:
+    """편도 1틱 / 가격 — 옛 호가표(새 표보다 어디서나 크거나 같다 — 시대를 모르므로 보수). 기대 비용을 점수에 넣는 데만 쓴다."""
+    with np.errstate(invalid="ignore"):
+        old = np.select([p < 1000, p < 5000, p < 10000, p < 50000, p < 100000, p < 500000], [1, 5, 10, 50, 100, 500], 1000)
+        return old / p
+
+
 def signals(V: dict, x: dict) -> dict:
     # 야간 갭 지속성의 위험 조정판: 최근 w 일 야간 수익의 평균 / 표준편차(일관되게 밤에 오르는 종목).
     gap = np.log(V["O"] / V["C1"])
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
-        on = _rmean(gap, x["w"], mp) / _rstd(gap, x["w"], mp)
+        on = (_rmean(gap, x["w"], mp) - x["lam"] * _tick_rel(V["C1"])) / _rstd(gap, x["w"], mp)   # (야간 성향 − 틱 비용) / 위험
     cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
@@ -51,5 +58,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
