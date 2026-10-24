@@ -57,9 +57,7 @@ def signals(V: dict, x: dict) -> dict:
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
     gp = V["O"] / V["C1"] - 1
-    with np.errstate(invalid="ignore", divide="ignore"):
-        z = (np.log(V["O"] / V["C1"]) - _rmean(gap, w, max(3, w // 2))) / _rstd(gap, w, max(3, w // 2))
-    cand = V["uni"] & np.isfinite(on) & ~(np.abs(gp) >= V["lim"][None, :] / 2) & ~(np.abs(z) > 3)   # 자기 분포 밖(±3σ) 오늘 갭도 사건       # 오늘 시가가 제한폭 절반 이상 갭업 = 사건 종목(상한가 근처 종가는 어차피 못 산다)
+    cand = V["uni"] & np.isfinite(on) & ~(np.abs(gp) >= V["lim"][None, :] / 2)       # 오늘 시가가 제한폭 절반 이상 갭업 = 사건 종목(상한가 근처 종가는 어차피 못 산다)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
