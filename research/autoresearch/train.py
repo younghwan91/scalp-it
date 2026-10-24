@@ -55,7 +55,9 @@ def signals(V: dict, x: dict) -> dict:
     tk = _tick_rel(V["C1"])
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
-    cand = V["uni"] & np.isfinite(on)
+    ret1 = np.log(V["C1"] / pd.DataFrame(V["C1"].T).shift(1).to_numpy().T)
+    lim = V["lim"][None, :]
+    cand = V["uni"] & np.isfinite(on) & ~(np.abs(ret1) >= lim - 0.02)        # 전일 상·하한가(근처) 마감 종목 제외 — 사건 다음 날
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
