@@ -37,12 +37,11 @@ def _xrank(a: np.ndarray, m: np.ndarray) -> np.ndarray:
 
 
 def signals(V: dict, x: dict) -> dict:
-    # tug of war: 하루 단위 (오늘 야간 − 어제 일중) 차이의 평균/표준편차. 밤에 사고 낮에 파는 고객층이 꾸준한 종목.
+    # 야간 갭 지속성의 위험 조정판: 최근 w 일 야간 수익의 평균 / 표준편차(일관되게 밤에 오르는 종목).
     gap = np.log(V["O"] / V["C1"])
-    tow = gap - x["b"] * np.log(V["C1"] / V["O1"])
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
-        on = np.round(_rmean(tow, x["w"], mp) / np.maximum(_rstd(tow, x["w"], mp), 1e-4), 5)
+        on = _rmean(gap, x["w"], mp) / _rstd(gap, x["w"], mp)
     cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
@@ -52,5 +51,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "b": ("float", 0.0, 1.0), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
