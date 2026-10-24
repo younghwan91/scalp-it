@@ -44,11 +44,8 @@ def signals(V: dict, x: dict) -> dict:
         on = _rmean(gap, x["w"], mp) / _rstd(gap, x["w"], mp)
     liq = _rmean(V["TV1"], 20, 15)
     base = V["uni"] & np.isfinite(on) & np.isfinite(liq)
-    c1 = pd.DataFrame(V["C1"].T)
-    mom = np.log(c1.shift(20).to_numpy().T / c1.shift(x["m"]).to_numpy().T)   # 중기 모멘텀(최근 한 달 제외) — 모멘텀 수익은 밤에 난다(Lou·Polk)
-    cand = base & np.isfinite(mom) & (_xrank(liq, base) >= x["q"])
-    sc = _xrank(on, cand) + x["b"] * _xrank(mom, cand)
-    return {"cand": cand, "score": np.where(cand, sc, np.nan)}
+    cand = base & (_xrank(liq, base) >= x["q"])
+    return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
 def cfg(x: dict) -> dict:
@@ -56,5 +53,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "q": ("float", 0.0, 0.9), "m": ("int", 80, 250), "b": ("float", -1.0, 1.0), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "q": ("float", 0.0, 0.9), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
