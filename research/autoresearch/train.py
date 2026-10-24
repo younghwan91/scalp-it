@@ -51,5 +51,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 20, 250), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
