@@ -33,13 +33,15 @@ def _xrank(a: np.ndarray, m: np.ndarray) -> np.ndarray:
 
 
 def signals(V: dict, x: dict) -> dict:
-    # 야간 갭 지속성(tug of war): 최근 w 일(오늘 시가 갭 포함) 평균 야간 수익이 높은 종목이 오늘 밤도 높다.
+    # 야간 갭 지속성(tug of war) + 일중 반대 방향: 최근 야간 수익이 높고 최근 일중(시가→종가)이 약한 종목.
     gap = np.log(V["O"] / V["C1"])
     on = _rmean(gap, x["w"], max(2, x["w"] // 2))
+    intra = _rmean(np.log(V["C1"] / V["O1"]), x["wi"], max(2, x["wi"] // 2))
     liq = _rmean(V["TV1"], 20, 15)
-    base = V["uni"] & np.isfinite(on) & np.isfinite(liq)
+    base = V["uni"] & np.isfinite(on) & np.isfinite(intra) & np.isfinite(liq)
     cand = base & (_xrank(liq, base) >= x["q"])
-    return {"cand": cand, "score": np.where(cand, on, np.nan)}
+    sc = _xrank(on, cand) - x["b"] * _xrank(intra, cand)
+    return {"cand": cand, "score": np.where(cand, sc, np.nan)}
 
 
 def cfg(x: dict) -> dict:
@@ -47,5 +49,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "q": ("float", 0.0, 0.9), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "wi": ("int", 5, 120), "b": ("float", -1.0, 2.0), "q": ("float", 0.0, 0.9), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
