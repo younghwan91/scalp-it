@@ -43,19 +43,19 @@ def _tick_rel(p: np.ndarray) -> np.ndarray:
         return old / p
 
 
-def _cir(gap: np.ndarray, tk: np.ndarray, lam: float, w: int) -> np.ndarray:
+def _cir(gap: np.ndarray, tk: np.ndarray, lam: float, w: int, raw: np.ndarray) -> np.ndarray:
     mp = max(3, w // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
-        return (_rmean(gap, w, mp) - lam * tk) / _rstd(gap, w, mp)
+        return (_rmean(gap, w, mp) - lam * tk) / _rstd(raw, w, mp)             # 평균은 평상시 갭, 위험은 사건 포함 전체 갭
 
 
 def signals(V: dict, x: dict) -> dict:
     # 비용 조정 야간 IR((평균 갭 − λ·틱/가격)/갭 표준편차)을 창 w/2·w·2w 세 개로 평균 — 창 선택 잡음을 줄인다.
-    gap = np.log(V["O"] / V["C1"])
-    gap = np.where(np.abs(V["O"] / V["C1"] - 1) >= V["lim"][None, :] / 2, np.nan, gap)   # 성향 추정에서 사건 갭(제한폭 절반 이상)은 뺀다
+    raw = np.log(V["O"] / V["C1"])
+    gap = np.where(np.abs(V["O"] / V["C1"] - 1) >= V["lim"][None, :] / 2, np.nan, raw)   # 성향 추정에서 사건 갭(제한폭 절반 이상)은 뺀다
     tk = _tick_rel(V["C1"])
     w = x["w"]
-    on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
+    on = (_cir(gap, tk, x["lam"], max(3, w // 2), raw) + _cir(gap, tk, x["lam"], w, raw) + _cir(gap, tk, x["lam"], min(2 * w, 250), raw)) / 3
     gp = V["O"] / V["C1"] - 1
     cand = V["uni"] & np.isfinite(on) & ~(np.abs(gp) >= V["lim"][None, :] / 2)       # 오늘 시가가 제한폭 절반 이상 갭업 = 사건 종목(상한가 근처 종가는 어차피 못 산다)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
