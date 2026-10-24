@@ -49,6 +49,9 @@ def signals(V: dict, x: dict) -> dict:
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
         on = (_rmean(gap, x["w"], mp) - x["lam"] * _tick_rel(V["C1"])) / _rstd(gap, x["w"], mp)   # (야간 성향 − 틱 비용) / 위험
+        rng_ = V["H1"] - V["L1"]
+        loc = np.where(rng_ > 0, (V["C1"] - V["L1"]) / rng_, 0.5)            # 전일 종가의 고저 안 위치
+        on = on - x["b"] * (_rmean(loc, x["w"], mp) - 0.5)                   # 습관적으로 약하게 마감하는 종목(마감 매도 압력 → 시가 반등)
     cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
@@ -58,5 +61,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "b": ("float", -1.0, 1.0), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
