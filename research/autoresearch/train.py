@@ -58,13 +58,7 @@ def signals(V: dict, x: dict) -> dict:
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
     gp = V["O"] / V["C1"] - 1
     cand = V["uni"] & np.isfinite(on) & ~(np.abs(gp) >= V["lim"][None, :] / 2)       # 오늘 시가가 제한폭 절반 이상 갭업 = 사건 종목(상한가 근처 종가는 어차피 못 산다)
-    liq = _rmean(V["TV1"], 20, 15)
-    lr = _xrank(np.round(np.log(np.maximum(liq, 1.0)), 6), cand)
-    sc = np.full(on.shape, np.nan)
-    for lo, hi in ((0.0, 1 / 3), (1 / 3, 2 / 3), (2 / 3, 1.01)):             # 거래대금 3분위마다 따로 순위 → 상위가 규모별로 고르게(벤치와 규모 맞춤)
-        b = cand & (lr > lo) & (lr <= hi)
-        sc = np.where(b, _xrank(np.round(on, 5), b), sc)
-    return {"cand": cand, "score": np.where(cand, sc, np.nan)}
+    return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
 def cfg(x: dict) -> dict:
