@@ -53,6 +53,8 @@ def signals(V: dict, x: dict) -> dict:
     # 비용 조정 야간 IR((평균 갭 − λ·틱/가격)/갭 표준편차)을 창 w/2·w·2w 세 개로 평균 — 창 선택 잡음을 줄인다.
     gap = np.log(V["O"] / V["C1"])
     gap = np.where(np.abs(V["O"] / V["C1"] - 1) >= V["lim"][None, :] / 2, np.nan, gap)   # 성향 추정에서 사건 갭(제한폭 절반 이상)은 뺀다
+    ret1 = V["C1"] / pd.DataFrame(V["C1"].T).shift(1).to_numpy().T - 1
+    gap = np.where(np.abs(ret1) >= V["lim"][None, :] / 2, np.nan, gap)      # 전일 급변(제한폭 절반 이상) 다음 날 갭도 사건 여파라 뺀다
     tk = _tick_rel(V["C1"])
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
