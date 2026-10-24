@@ -49,55 +49,14 @@ def _cir(gap: np.ndarray, tk: np.ndarray, lam: float, w: int) -> np.ndarray:
         return (_rmean(gap, w, mp) - lam * tk) / _rstd(gap, w, mp)
 
 
-def _zs(a: np.ndarray, m: np.ndarray) -> np.ndarray:
-    """열(날)마다 후보 안 z 점수, ±3 에서 자름 — 그날 값만 쓴다."""
-    b = np.where(m, a, np.nan)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        z = (b - np.nanmean(b, axis=0)) / np.nanstd(b, axis=0)
-    return np.clip(np.where(np.isfinite(z), z, 0.0), -3, 3)
-
-
-def _fm_beta(F: list, y: np.ndarray, m: np.ndarray) -> np.ndarray:
-    """날 s 마다 단면 OLS: y[:, s] ~ F[:, s−1] (전날 종가에 알던 피처 → 그날 밤 수익). (T, k) — 미래 열은 쓰지 않는다."""
-    N, T = y.shape
-    k = len(F) + 1
-    B = np.full((T, k), np.nan)
-    X3 = np.stack([np.ones((N, T))] + F, axis=2)
-    for s in range(1, T):
-        ok = m[:, s - 1] & np.isfinite(y[:, s])
-        if ok.sum() < 50:
-            continue
-        X, yy = X3[ok, s - 1, :], y[ok, s]
-        B[s] = np.linalg.solve(X.T @ X + 1.0 * np.eye(k), X.T @ yy)
-    return B
-
-
 def signals(V: dict, x: dict) -> dict:
-    # 롤링 Fama-MacBeth: 날마다 (전날 피처 → 그날 밤 단면 초과 야간 수익) 회귀, 최근 L 일 계수 평균으로 오늘 밤을 예측 −λ·틱 비용.
-    # 피처(전부 t 열 기준, 창 ≤ w): 야간 IR·평균·표준편차, 틱/가격, 거래대금, 마감 위치 습관, 일중 평균, 오늘 갭 놀람, 5일 수익.
+    # 비용 조정 야간 IR((평균 갭 − λ·틱/가격)/갭 표준편차)을 창 w/2·w·2w 세 개로 평균 — 창 선택 잡음을 줄인다.
     gap = np.log(V["O"] / V["C1"])
     tk = _tick_rel(V["C1"])
     w = x["w"]
-    mp = max(3, w // 2)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        mu, sd = _rmean(gap, w, mp), _rstd(gap, w, mp)
-        ir = mu / sd
-        rng_ = V["H1"] - V["L1"]
-        loc = _rmean(np.where(rng_ > 0, (V["C1"] - V["L1"]) / rng_, 0.5), w, mp)
-        intra = _rmean(np.log(V["C1"] / V["O1"]), w, mp)
-        sur = (gap - mu) / sd
-        liq = np.log(np.maximum(_rmean(V["TV1"], 20, 15), 1.0))
-        r5 = np.log(V["O"] / pd.DataFrame(V["C1"].T).shift(4).to_numpy().T)
-    m = V["uni"] & np.isfinite(ir) & np.isfinite(tk) & np.isfinite(liq)
-    F = [_zs(f, m) for f in (ir, mu, sd, tk, liq, loc, intra, sur, r5)]
-    with np.errstate(invalid="ignore"):
-        y = np.clip(gap - np.nanmean(np.where(V["uni"], gap, np.nan), axis=0), -0.1, 0.1)   # 그날 유니버스 대비 초과 야간(자름)
-    B = _fm_beta(F, y, m)
-    Bm = pd.DataFrame(B).rolling(x["L"], min_periods=x["L"] // 2).mean().to_numpy()   # 오늘 열까지의 계수 — 오늘 갭(=어제 피처의 결과)까지 안다
-    pred = Bm[None, :, 0] + sum(Bm[None, :, j + 1] * F[j] for j in range(len(F)))
-    sc = pred - x["lam"] * tk
-    cand = m & np.isfinite(sc)
-    return {"cand": cand, "score": np.where(cand, sc, np.nan)}
+    on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
+    cand = V["uni"] & np.isfinite(on)
+    return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
 
 def cfg(x: dict) -> dict:
@@ -105,5 +64,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 10, 120), "L": ("int", 40, 160), "lam": ("float", 0.0, 3.0), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
