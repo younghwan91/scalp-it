@@ -55,9 +55,6 @@ def signals(V: dict, x: dict) -> dict:
     tk = _tick_rel(V["C1"])
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
-    with np.errstate(invalid="ignore", divide="ignore"):
-        i1 = np.log(V["C1"] / V["O1"]) / _rstd(np.log(V["C1"] / V["O1"]), 20, 10)   # 어제 일중 수익(자기 변동성 단위)
-    on = on - x["b"] * np.where(np.isfinite(i1), i1, 0.0) / 10               # 일중 → 야간 되돌림(어제 낮에 밀린 종목이 밤에 반등) 크기는 학습이 정한다
     cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
@@ -67,5 +64,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "b": ("float", -1.0, 1.0), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
