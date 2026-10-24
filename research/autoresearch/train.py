@@ -42,8 +42,10 @@ def signals(V: dict, x: dict) -> dict:
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
         on = _rmean(gap, x["w"], mp) / _rstd(gap, x["w"], mp)
-    cand = V["uni"] & np.isfinite(on)
-    return {"cand": cand, "score": np.where(cand, on, np.nan)}
+    liq = np.round(np.log(np.maximum(_rmean(V["TV1"], 20, 15), 1.0)), 5)
+    cand = V["uni"] & np.isfinite(on) & np.isfinite(liq)
+    sc = _xrank(np.round(on, 5), cand) + x["b"] * _xrank(liq, cand)          # 규모(거래대금) 기울기를 학습 구간이 정한다
+    return {"cand": cand, "score": np.where(cand, sc, np.nan)}
 
 
 def cfg(x: dict) -> dict:
@@ -51,5 +53,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "b": ("float", -1.0, 1.0), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
