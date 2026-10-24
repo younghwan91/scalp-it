@@ -53,8 +53,6 @@ def signals(V: dict, x: dict) -> dict:
     # 비용 조정 야간 IR((평균 갭 − λ·틱/가격)/갭 표준편차)을 창 w/2·w·2w 세 개로 평균 — 창 선택 잡음을 줄인다.
     gap = np.log(V["O"] / V["C1"])
     gap = np.where(np.abs(V["O"] / V["C1"] - 1) >= V["lim"][None, :] / 2, np.nan, gap)   # 성향 추정에서 사건 갭(제한폭 절반 이상)은 뺀다
-    with np.errstate(invalid="ignore"):
-        gap = gap - np.nanmedian(np.where(V["uni"], gap, np.nan), axis=0)[None, :]   # 그날 유니버스 중앙 갭을 뺀 초과 야간(시장 밤 잡음 제거)
     tk = _tick_rel(V["C1"])
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
