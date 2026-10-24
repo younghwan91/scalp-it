@@ -51,7 +51,7 @@ def _cir(gap: np.ndarray, tk: np.ndarray, lam: float, w: int) -> np.ndarray:
 
 def signals(V: dict, x: dict) -> dict:
     # 비용 조정 야간 IR((평균 갭 − λ·틱/가격)/갭 표준편차)을 창 w/2·w·2w 세 개로 평균 — 창 선택 잡음을 줄인다.
-    gap = np.log(V["O"] / V["C1"])
+    gap = V["O"] / V["C1"] - 1                                               # 단순 수익(평가기가 재는 것과 같은 단위 — 로그는 변동성 끌림만큼 낮게 잡힌다)
     tk = _tick_rel(V["C1"])
     w = x["w"]
     on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
