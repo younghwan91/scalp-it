@@ -48,7 +48,9 @@ def signals(V: dict, x: dict) -> dict:
     gap = np.log(V["O"] / V["C1"])
     mp = max(3, x["w"] // 2)
     with np.errstate(invalid="ignore", divide="ignore"):
-        on = (_rmean(gap, x["w"], mp) - x["lam"] * _tick_rel(V["C1"])) / _rstd(gap, x["w"], mp)   # (야간 성향 − 틱 비용) / 위험
+        mu, sd = _rmean(gap, x["w"], mp), _rstd(gap, x["w"], mp)
+        on = (mu - x["lam"] * _tick_rel(V["C1"])) / sd                      # (야간 성향 − 틱 비용) / 위험
+        on = on - x["c"] * (gap - mu) / sd                                   # 오늘 갭이 평소보다 얼마나 튀었나(놀람)
     cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
@@ -58,5 +60,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "c": ("float", -0.5, 0.5), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
