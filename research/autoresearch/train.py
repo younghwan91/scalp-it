@@ -54,7 +54,7 @@ def signals(V: dict, x: dict) -> dict:
     gap = np.log(V["O"] / V["C1"])
     tk = _tick_rel(V["C1"])
     w = x["w"]
-    on = (_cir(gap, tk, x["lam"], max(3, w // 2)) + _cir(gap, tk, x["lam"], w) + _cir(gap, tk, x["lam"], min(2 * w, 250))) / 3
+    on = (_cir(gap, tk, 2.0, max(3, w // 2)) + _cir(gap, tk, 2.0, w) + _cir(gap, tk, 2.0, min(2 * w, 250))) / 3   # 2 = 비용 모형의 왕복 2틱(학습 안 함)
     cand = V["uni"] & np.isfinite(on)
     return {"cand": cand, "score": np.where(cand, on, np.nan)}
 
@@ -64,5 +64,5 @@ def cfg(x: dict) -> dict:
 
 
 def get_strategy() -> dict:
-    return {"params": {"w": ("int", 5, 120), "lam": ("float", 0.0, 3.0), "slots": ("choice", (5, 10, 20, 40))},
+    return {"params": {"w": ("int", 5, 120), "slots": ("choice", (5, 10, 20, 40))},
             "signals": signals, "cfg": cfg}
