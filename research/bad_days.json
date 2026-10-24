@@ -46,6 +46,11 @@
       "cover": 0.529,
       "last_tick": "15:18:58",
       "why": "분커버 53% — 자동 등록(collect_health)"
+    },
+    "2026-10-13": {
+      "cover": 0.345,
+      "last_tick": "11:10:12",
+      "why": "분커버 34% — 자동 등록(collect_health)"
     }
   }
 }
