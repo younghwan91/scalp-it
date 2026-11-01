@@ -20,7 +20,7 @@ from collections.abc import Iterable, Sequence
 from datetime import date, datetime
 from typing import Any
 
-from ..intraday.store import _placeholder, connect, is_postgres, pg_upsert
+from ..intraday.store import _placeholder, connect, is_postgres, pg_write
 
 __all__ = [
     "connect",
@@ -162,7 +162,7 @@ def upsert_theme_groups(conn: Any, snapshot_date: Any, rows: Iterable[dict]) -> 
         return 0
     if is_postgres(conn):
         head, tail = _UPSERT_GROUPS.split("({ph})")
-        pg_upsert(conn, head, tail, payload, key=lambda r: (r[0], r[1]), page_size=1000)
+        pg_write(conn, head, tail, payload, ts_index=None, key=lambda r: (r[0], r[1]), page_size=1000)
     else:
         ph = _placeholder(conn)
         cur = conn.cursor()
@@ -194,7 +194,9 @@ def upsert_theme_members(conn: Any, snapshot_date: Any, rows: Iterable[dict]) ->
         return 0
     if is_postgres(conn):
         head, tail = _UPSERT_MEMBERS.split("({ph})")
-        pg_upsert(conn, head, tail, payload, key=lambda r: (r[0], r[1], r[2]), page_size=1000)
+        pg_write(
+            conn, head, tail, payload, ts_index=None, key=lambda r: (r[0], r[1], r[2]), page_size=1000
+        )
     else:
         ph = _placeholder(conn)
         cur = conn.cursor()

@@ -19,7 +19,7 @@ import json
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from scalp_it.intraday.store import _bind_ts, _placeholder, connect, is_postgres, pg_upsert, ts_key
+from scalp_it.intraday.store import _bind_ts, _placeholder, connect, is_postgres, pg_write, ts_key
 
 __all__ = [
     "QUOTE_COLUMNS",
@@ -303,16 +303,14 @@ def insert_ticks(conn: Any, rows: Iterable[dict]) -> int:
         return 0
     head = f"INSERT INTO ticks ({', '.join(TICK_COLUMNS)}) VALUES "
     tail = " ON CONFLICT (code, ts, seq) DO NOTHING"
-    cur = conn.cursor()
     if is_postgres(conn):
-        # 행마다 왕복하지 않게 한 문장으로 보낸다. DO NOTHING 은 한 문장 안 중복 키도 받는다.
-        from psycopg2.extras import execute_values
-
-        execute_values(cur, head + "%s" + tail, payload, page_size=2000)
+        # DO NOTHING 은 한 문장 안 중복 키도 받는다(앞 행이 남는다 — executemany 와 같다).
+        pg_write(conn, head, tail, payload, ts_index=1)
     else:
         ph = _placeholder(conn)
+        cur = conn.cursor()
         cur.executemany(head + f"({','.join([ph] * len(TICK_COLUMNS))})" + tail, payload)
-    cur.close()
+        cur.close()
     conn.commit()
     return len(payload)
 
@@ -341,7 +339,7 @@ def insert_quotes(conn: Any, rows: Iterable[dict]) -> int:
         f"{c}=excluded.{c}" for c in updatable
     )
     if is_postgres(conn):
-        pg_upsert(conn, head, tail, payload, key=lambda r: (r[0], ts_key(r[1])))
+        pg_write(conn, head, tail, payload, ts_index=1, key=lambda r: (r[0], ts_key(r[1])))
     else:
         ph = _placeholder(conn)
         cur = conn.cursor()
@@ -375,18 +373,16 @@ def insert_quote_events(conn: Any, rows: Iterable[dict]) -> int:
         return 0
     head = f"INSERT INTO quote_events ({', '.join(QUOTE_EVENT_COLUMNS)}) VALUES "
     tail = " ON CONFLICT (code, ts, qseq) DO NOTHING"
-    cur = conn.cursor()
     if is_postgres(conn):
         # executemany 는 행마다 왕복한다. flush 는 이벤트 루프 안 동기 호출이라, 초당 수십~
         # 수백 행을 LAN 너머로 한 줄씩 보내면 장 시작 폭주 때 감지기 프레임 처리가 밀린다.
-        # 부가 수집이 라이브 경로를 늦추지 않게 한 문장으로 보낸다.
-        from psycopg2.extras import execute_values
-
-        execute_values(cur, head + "%s" + tail, payload, page_size=2000)
+        # 부가 수집이 라이브 경로를 늦추지 않게 한 문장으로 보낸다(압축 청크에 닿을 옛 행은 제외).
+        pg_write(conn, head, tail, payload, ts_index=1)
     else:
         ph = _placeholder(conn)
+        cur = conn.cursor()
         cur.executemany(head + f"({','.join([ph] * len(QUOTE_EVENT_COLUMNS))})" + tail, payload)
-    cur.close()
+        cur.close()
     conn.commit()
     return len(payload)
 
@@ -420,7 +416,7 @@ def insert_vi_events(conn: Any, rows: Iterable[dict]) -> int:
         f"{c}=excluded.{c}" for c in updatable
     )
     if is_postgres(conn):
-        pg_upsert(conn, head, tail, payload, key=lambda r: (r[0], ts_key(r[1]), r[2]))
+        pg_write(conn, head, tail, payload, ts_index=1, key=lambda r: (r[0], ts_key(r[1]), r[2]))
     else:
         ph = _placeholder(conn)
         cur = conn.cursor()
