@@ -20,7 +20,7 @@ from collections.abc import Iterable, Sequence
 from datetime import date, datetime
 from typing import Any
 
-from ..intraday.store import _placeholder, connect
+from ..intraday.store import _placeholder, connect, is_postgres, pg_upsert
 
 __all__ = [
     "connect",
@@ -160,11 +160,14 @@ def upsert_theme_groups(conn: Any, snapshot_date: Any, rows: Iterable[dict]) -> 
         )
     if not payload:
         return 0
-    ph = _placeholder(conn)
-    sql = _UPSERT_GROUPS.format(ph=",".join([ph] * len(GROUP_COLUMNS)))
-    cur = conn.cursor()
-    cur.executemany(sql, payload)
-    cur.close()
+    if is_postgres(conn):
+        head, tail = _UPSERT_GROUPS.split("({ph})")
+        pg_upsert(conn, head, tail, payload, key=lambda r: (r[0], r[1]), page_size=1000)
+    else:
+        ph = _placeholder(conn)
+        cur = conn.cursor()
+        cur.executemany(_UPSERT_GROUPS.format(ph=",".join([ph] * len(GROUP_COLUMNS))), payload)
+        cur.close()
     conn.commit()
     return len(payload)
 
@@ -189,11 +192,14 @@ def upsert_theme_members(conn: Any, snapshot_date: Any, rows: Iterable[dict]) ->
         )
     if not payload:
         return 0
-    ph = _placeholder(conn)
-    sql = _UPSERT_MEMBERS.format(ph=",".join([ph] * len(MEMBER_COLUMNS)))
-    cur = conn.cursor()
-    cur.executemany(sql, payload)
-    cur.close()
+    if is_postgres(conn):
+        head, tail = _UPSERT_MEMBERS.split("({ph})")
+        pg_upsert(conn, head, tail, payload, key=lambda r: (r[0], r[1], r[2]), page_size=1000)
+    else:
+        ph = _placeholder(conn)
+        cur = conn.cursor()
+        cur.executemany(_UPSERT_MEMBERS.format(ph=",".join([ph] * len(MEMBER_COLUMNS))), payload)
+        cur.close()
     conn.commit()
     return len(payload)
 

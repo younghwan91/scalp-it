@@ -19,7 +19,7 @@ import json
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from scalp_it.intraday.store import _bind_ts, _placeholder, connect, is_postgres
+from scalp_it.intraday.store import _bind_ts, _placeholder, connect, is_postgres, pg_upsert, ts_key
 
 __all__ = [
     "QUOTE_COLUMNS",
@@ -301,14 +301,17 @@ def insert_ticks(conn: Any, rows: Iterable[dict]) -> int:
         )
     if not payload:
         return 0
-    ph = _placeholder(conn)
-    sql = (
-        f"INSERT INTO ticks ({', '.join(TICK_COLUMNS)}) "
-        f"VALUES ({','.join([ph] * len(TICK_COLUMNS))}) "
-        "ON CONFLICT (code, ts, seq) DO NOTHING"
-    )
+    head = f"INSERT INTO ticks ({', '.join(TICK_COLUMNS)}) VALUES "
+    tail = " ON CONFLICT (code, ts, seq) DO NOTHING"
     cur = conn.cursor()
-    cur.executemany(sql, payload)
+    if is_postgres(conn):
+        # 행마다 왕복하지 않게 한 문장으로 보낸다. DO NOTHING 은 한 문장 안 중복 키도 받는다.
+        from psycopg2.extras import execute_values
+
+        execute_values(cur, head + "%s" + tail, payload, page_size=2000)
+    else:
+        ph = _placeholder(conn)
+        cur.executemany(head + f"({','.join([ph] * len(TICK_COLUMNS))})" + tail, payload)
     cur.close()
     conn.commit()
     return len(payload)
@@ -332,17 +335,18 @@ def insert_quotes(conn: Any, rows: Iterable[dict]) -> int:
         payload.append(tuple(values))
     if not payload:
         return 0
-    ph = _placeholder(conn)
     updatable = [c for c in QUOTE_COLUMNS if c not in ("code", "ts")]
-    sql = (
-        f"INSERT INTO quotes ({', '.join(QUOTE_COLUMNS)}) "
-        f"VALUES ({','.join([ph] * len(QUOTE_COLUMNS))}) "
-        "ON CONFLICT (code, ts) DO UPDATE SET "
-        + ", ".join(f"{c}=excluded.{c}" for c in updatable)
+    head = f"INSERT INTO quotes ({', '.join(QUOTE_COLUMNS)}) VALUES "
+    tail = " ON CONFLICT (code, ts) DO UPDATE SET " + ", ".join(
+        f"{c}=excluded.{c}" for c in updatable
     )
-    cur = conn.cursor()
-    cur.executemany(sql, payload)
-    cur.close()
+    if is_postgres(conn):
+        pg_upsert(conn, head, tail, payload, key=lambda r: (r[0], ts_key(r[1])))
+    else:
+        ph = _placeholder(conn)
+        cur = conn.cursor()
+        cur.executemany(head + f"({','.join([ph] * len(QUOTE_COLUMNS))})" + tail, payload)
+        cur.close()
     conn.commit()
     return len(payload)
 
@@ -410,17 +414,18 @@ def insert_vi_events(conn: Any, rows: Iterable[dict]) -> int:
         )
     if not payload:
         return 0
-    ph = _placeholder(conn)
     updatable = [c for c in VI_COLUMNS if c not in ("code", "ts", "vi_type")]
-    sql = (
-        f"INSERT INTO vi_events ({', '.join(VI_COLUMNS)}) "
-        f"VALUES ({','.join([ph] * len(VI_COLUMNS))}) "
-        "ON CONFLICT (code, ts, vi_type) DO UPDATE SET "
-        + ", ".join(f"{c}=excluded.{c}" for c in updatable)
+    head = f"INSERT INTO vi_events ({', '.join(VI_COLUMNS)}) VALUES "
+    tail = " ON CONFLICT (code, ts, vi_type) DO UPDATE SET " + ", ".join(
+        f"{c}=excluded.{c}" for c in updatable
     )
-    cur = conn.cursor()
-    cur.executemany(sql, payload)
-    cur.close()
+    if is_postgres(conn):
+        pg_upsert(conn, head, tail, payload, key=lambda r: (r[0], ts_key(r[1]), r[2]))
+    else:
+        ph = _placeholder(conn)
+        cur = conn.cursor()
+        cur.executemany(head + f"({','.join([ph] * len(VI_COLUMNS))})" + tail, payload)
+        cur.close()
     conn.commit()
     return len(payload)
 

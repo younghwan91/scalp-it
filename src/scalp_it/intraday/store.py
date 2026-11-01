@@ -124,6 +124,61 @@ def _bind_ts(conn: Any, value: Any) -> Any:
     return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
+#: SQLSTATE 21000 — ``ON CONFLICT DO UPDATE`` 가 한 문장 안에서 같은 행을 두 번 건드렸다.
+_CARDINALITY_VIOLATION = "21000"
+
+
+def ts_key(value: Any) -> Any:
+    """배치 안 중복을 거를 때 ``timestamp``(tz 없음) 열 값을 PG 가 보는 키에 가깝게 맞춘다.
+
+    스풀에서 되살린 행의 ts 는 문자열이고 라이브 행은 ``datetime`` 이다. 같은 시각이라도
+    파이썬 키로는 달라서 중복 제거를 빠져나간다. 그래서 문자열을 naive ``datetime`` 으로 읽는다.
+    오프셋이 붙은 문자열은 그대로 둔다. PG ``timestamp`` 는 오프셋을 버리지만 파이썬 ``datetime``
+    비교는 순간으로 비교하므로, 바꾸면 PG 가 다르게 보는 두 행을 하나로 합쳐 행을 잃을 수 있다.
+    여기서 덜 합친 것은 :func:`pg_upsert` 의 폴백이 받는다.
+    """
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.strip())
+        except ValueError:
+            return value
+        return parsed if parsed.tzinfo is None else value
+    return value
+
+
+def pg_upsert(
+    conn: Any,
+    head: str,
+    tail: str,
+    payload: Sequence[Sequence[Any]],
+    key: Any,
+    *,
+    page_size: int = 2000,
+) -> None:
+    """``INSERT ... VALUES <행들> ON CONFLICT ... DO UPDATE`` 를 ``execute_values`` 로 보낸다(PG 전용).
+
+    ``executemany`` 는 행마다 왕복한다. 한 문장으로 보내려면 같은 충돌 키가 한 문장에 두 번
+    나오면 안 되므로(SQLSTATE 21000) ``key(row)`` 로 중복을 걸러 **마지막 행**만 남긴다.
+    ``executemany`` 가 차례로 덮어쓴 결과와 같다. 파이썬 키로는 달랐는데 PG 에선 같은 키라
+    21000 이 나면, 롤백하고 원래 경로(행마다 ``executemany``)로 같은 배치를 다시 넣는다.
+    커밋은 호출자가 한다.
+    """
+    from psycopg2.extras import execute_values
+
+    rows = list({key(r): r for r in payload}.values())
+    cur = conn.cursor()
+    try:
+        execute_values(cur, head + "%s" + tail, rows, page_size=page_size)
+    except Exception as exc:
+        if getattr(exc, "pgcode", None) != _CARDINALITY_VIOLATION:
+            raise
+        cur.close()
+        conn.rollback()
+        cur = conn.cursor()
+        cur.executemany(head + "(" + ",".join(["%s"] * len(payload[0])) + ")" + tail, payload)
+    cur.close()
+
+
 def _to_datetime(value: Any) -> datetime | None:
     if value is None:
         return None
