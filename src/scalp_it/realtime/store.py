@@ -305,7 +305,7 @@ def insert_ticks(conn: Any, rows: Iterable[dict]) -> int:
     tail = " ON CONFLICT (code, ts, seq) DO NOTHING"
     if is_postgres(conn):
         # DO NOTHING 은 한 문장 안 중복 키도 받는다(앞 행이 남는다 — executemany 와 같다).
-        pg_write(conn, head, tail, payload, ts_index=1)
+        pg_write(conn, head, tail, payload, ts_index=1, table="ticks")
     else:
         ph = _placeholder(conn)
         cur = conn.cursor()
@@ -339,7 +339,9 @@ def insert_quotes(conn: Any, rows: Iterable[dict]) -> int:
         f"{c}=excluded.{c}" for c in updatable
     )
     if is_postgres(conn):
-        pg_write(conn, head, tail, payload, ts_index=1, key=lambda r: (r[0], ts_key(r[1])))
+        pg_write(
+            conn, head, tail, payload, ts_index=1, table="quotes", key=lambda r: (r[0], ts_key(r[1]))
+        )
     else:
         ph = _placeholder(conn)
         cur = conn.cursor()
@@ -377,7 +379,7 @@ def insert_quote_events(conn: Any, rows: Iterable[dict]) -> int:
         # executemany 는 행마다 왕복한다. flush 는 이벤트 루프 안 동기 호출이라, 초당 수십~
         # 수백 행을 LAN 너머로 한 줄씩 보내면 장 시작 폭주 때 감지기 프레임 처리가 밀린다.
         # 부가 수집이 라이브 경로를 늦추지 않게 한 문장으로 보낸다(압축 청크에 닿을 옛 행은 제외).
-        pg_write(conn, head, tail, payload, ts_index=1)
+        pg_write(conn, head, tail, payload, ts_index=1, table="quote_events")
     else:
         ph = _placeholder(conn)
         cur = conn.cursor()
@@ -416,7 +418,10 @@ def insert_vi_events(conn: Any, rows: Iterable[dict]) -> int:
         f"{c}=excluded.{c}" for c in updatable
     )
     if is_postgres(conn):
-        pg_write(conn, head, tail, payload, ts_index=1, key=lambda r: (r[0], ts_key(r[1]), r[2]))
+        pg_write(
+            conn, head, tail, payload, ts_index=1, table="vi_events",
+            key=lambda r: (r[0], ts_key(r[1]), r[2]),
+        )
     else:
         ph = _placeholder(conn)
         cur = conn.cursor()

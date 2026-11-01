@@ -128,10 +128,10 @@ def _bind_ts(conn: Any, value: Any) -> Any:
 #: SQLSTATE 21000 — ``ON CONFLICT DO UPDATE`` 가 한 문장 안에서 같은 행을 두 번 건드렸다.
 _CARDINALITY_VIOLATION = "21000"
 
-#: 한 문장(``execute_values``)으로 보내는 행의 최대 나이. 이보다 오래된 행은 원래 경로(행마다)로 보낸다.
 #: TimescaleDB 2.17 은 **압축 청크**와 충돌한 다중 행 ``ON CONFLICT DO NOTHING`` 에서 그 뒤 행을 오류 없이
-#: 버린다(오늘 청크로 가는 행까지). 압축 정책은 ``compress_after`` 14일이라 14일 안의 행은 압축 청크에
-#: 닿지 않는다. 손으로 압축하는 경우까지 여유를 두고 7일로 자른다.
+#: 버린다(오늘 청크로 가는 행까지). 그래서 압축 청크에 닿을 수 있는 행은 행마다 보낸다. 경계는 배치마다
+#: 조회한 압축 청크의 끝(:func:`_compressed_until`, 손으로 압축한 청크까지 잡는다)과 이 나이 중 늦은 쪽이다.
+#: 이 나이는 조회와 insert 사이에 압축 정책(``compress_after`` 14일)이 돌아도 안전하게 하는 하한이다.
 FAST_PATH_MAX_AGE = timedelta(days=7)
 
 #: ``str(datetime)``·``isoformat()`` 이 내는 모양만 정규화한다. 소수 7자리 이상은 파이썬이 자르고 PG 는
@@ -148,13 +148,35 @@ def ts_key(value: Any) -> Any:
     덜 합친 것은 :func:`pg_upsert` 의 21000 폴백이 받고, 더 합치면 행을 잃는다.
     """
     if isinstance(value, str) and _NAIVE_TS_RE.fullmatch(value):
-        return datetime.fromisoformat(value)
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:  # 24:00:00·23:59:60 처럼 PG 만 받는 값 — 그대로 둬 원래 경로로 보낸다
+            return value
     return value
 
 
 def _naive_ts(value: Any) -> datetime | None:
     ts = ts_key(value)
     return ts if isinstance(ts, datetime) and ts.tzinfo is None else None
+
+
+def _compressed_until(conn: Any, table: str) -> datetime | None:
+    """``table`` 의 압축 청크가 덮는 마지막 시각(naive). 압축 청크가 없거나 TimescaleDB 가 아니면 ``None``."""
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT to_regclass('timescaledb_information.chunks') IS NOT NULL")
+        if not cur.fetchone()[0]:
+            return None
+        # tz 없는 timestamp 차원의 경계는 UTC 로 해석된 timestamptz 로 나온다 → UTC 로 되돌리면 naive 경계.
+        cur.execute(
+            "SELECT max(range_end) AT TIME ZONE 'UTC' FROM timescaledb_information.chunks "
+            "WHERE hypertable_name = %s AND hypertable_schema = ANY(current_schemas(false)) "
+            "AND is_compressed",
+            (table,),
+        )
+        return cur.fetchone()[0]
+    finally:
+        cur.close()
 
 
 def pg_write(
@@ -164,14 +186,15 @@ def pg_write(
     payload: Sequence[Sequence[Any]],
     *,
     ts_index: int | None,
+    table: str | None = None,
     key: Any = None,
     page_size: int = 2000,
     now: datetime | None = None,
 ) -> None:
     """``INSERT ... VALUES <행들> ON CONFLICT ...`` 를 PG 에 보낸다. 결과는 행마다 ``executemany`` 와 같다.
 
-    - 최근 행(:data:`FAST_PATH_MAX_AGE` 안, naive ts)은 ``execute_values`` 한 문장으로 보낸다.
-      ``executemany`` 는 행마다 왕복한다.
+    - 최근 행(압축 청크 끝 + 1일, :data:`FAST_PATH_MAX_AGE` 둘 다보다 새 naive ts)은 ``execute_values``
+      한 문장으로 보낸다. ``executemany`` 는 행마다 왕복한다.
     - 옛 행(압축 청크에 닿을 수 있다)은 원래대로 행마다 보낸다. 옛 행과 최근 행은 naive ts 가 달라
       충돌 키가 겹치지 않으므로 나눠 보내도 결과가 같다.
     - naive ``datetime`` 으로 읽을 수 없는 ts(오프셋 문자열 등)가 하나라도 있으면 PG 에서 어느 행과
@@ -185,7 +208,6 @@ def pg_write(
     """
     from psycopg2.extras import execute_values
 
-    cutoff = (now or datetime.now()) - FAST_PATH_MAX_AGE  # noqa: DTZ005 — KST naive, 프로젝트 표준
     if ts_index is None:
         recent, old = list(payload), []
     else:
@@ -193,8 +215,13 @@ def pg_write(
         if any(t is None for t in stamps):
             recent, old = [], list(payload)
         else:
-            recent = [r for r, t in zip(payload, stamps, strict=True) if t >= cutoff]
-            old = [r for r, t in zip(payload, stamps, strict=True) if t < cutoff]
+            cutoff = (now or datetime.now()) - FAST_PATH_MAX_AGE  # noqa: DTZ005 — KST naive, 프로젝트 표준
+            until = _compressed_until(conn, table) if table else None
+            if until is not None:
+                cutoff = max(cutoff, until + timedelta(days=1))
+            is_recent = [t >= cutoff for t in stamps]  # NaT 등 비교가 안 되는 값은 False → 옛 행 쪽
+            recent = [r for r, ok in zip(payload, is_recent, strict=True) if ok]
+            old = [r for r, ok in zip(payload, is_recent, strict=True) if not ok]
     row_sql = head + "(" + ",".join(["%s"] * len(payload[0])) + ")" + tail if payload else ""
     if key is not None:
         last: dict[Any, Sequence[Any]] = {}

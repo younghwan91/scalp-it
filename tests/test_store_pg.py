@@ -37,7 +37,8 @@ def test_ts_key_reads_only_str_datetime_shapes():
     assert ts_key(str(T + timedelta(microseconds=500))) == T + timedelta(microseconds=500)
     assert ts_key(T) == T
     # 오프셋·소수 7자리 이상·그 밖의 모양은 합치지 않는다(PG 와 해석이 달라 행을 잃을 수 있다).
-    for s in (f"{T}+09:00", f"{T}Z", f"{T}.0000009", f"{T}.123456789", f" {T}", "not a time"):
+    for s in (f"{T}+09:00", f"{T}Z", f"{T}.0000009", f"{T}.123456789", f" {T}", "not a time",
+              "2026-10-29 24:00:00", "2026-10-29 23:59:60"):
         assert ts_key(s) == s
 
 
@@ -46,14 +47,22 @@ pg = pytest.mark.skipif(not DSN, reason="SCALP_IT_TEST_PG_DSN 없음")
 
 def _fresh(*, timescale: bool):
     import psycopg2
+    import psycopg2.errors
 
     c = psycopg2.connect(DSN)
     cur = c.cursor()
     if timescale:
         cur.execute("CREATE EXTENSION IF NOT EXISTS timescaledb")
     for t in ("ticks", "quotes", "quote_events", "vi_events", "theme_groups", "theme_members"):
-        cur.execute(f"DROP TABLE IF EXISTS {t}")
-    c.commit()
+        for attempt in range(5):  # 압축 정책 백그라운드 작업과 DROP 이 교착할 수 있다
+            try:
+                cur.execute(f"DROP TABLE IF EXISTS {t}")
+                c.commit()
+                break
+            except psycopg2.errors.DeadlockDetected:
+                c.rollback()
+                if attempt == 4:
+                    raise
     init_realtime_tables(c)
     init_theme_tables(c)
     return c
@@ -167,10 +176,13 @@ def _timescale(conn) -> bool:
 
 @pg
 @pytest.mark.parametrize("table", ["ticks", "quote_events"])
-def test_compressed_chunk_conflict_does_not_drop_rows(ts_conn, table):
+@pytest.mark.parametrize("age", [timedelta(days=40), timedelta(days=2)], ids=["policy-age", "manual"])
+def test_compressed_chunk_conflict_does_not_drop_rows(ts_conn, table, age):
     # TimescaleDB 2.17: 압축 청크와 충돌한 다중 행 ON CONFLICT DO NOTHING 은 그 뒤 행을 오류 없이 버린다.
-    # 오래된 스풀 + 오늘 틱이 한 배치로 오면 오늘 틱이 사라졌다(리뷰 C1). 옛 행은 행마다 보내야 한다.
+    # 오래된 스풀 + 오늘 틱이 한 배치로 오면 오늘 틱이 사라졌다(리뷰 C1). 압축 청크에 닿을 행은 행마다
+    # 보내야 한다. manual: 정책 나이(14일)보다 새 청크를 손으로 압축해도 경계를 조회해 잡는다.
     c = ts_conn
+    old_ts = T - age
     if not _timescale(c):
         pytest.skip("timescaledb 없음 — 압축 청크 재현 불가")
     insert = insert_ticks if table == "ticks" else insert_quote_events
@@ -179,16 +191,18 @@ def test_compressed_chunk_conflict_does_not_drop_rows(ts_conn, table):
     def row(ts, n):
         return {"code": "005930", "ts": ts, seq: n, "price": n, "bid1": n}
 
-    insert(c, [row(OLD, n) for n in range(50)])
+    insert(c, [row(old_ts, n) for n in range(50)])
     _rows(c, f"SELECT compress_chunk(ch) FROM show_chunks('{table}') ch")
     c.commit()
     compressed = _rows(c, "SELECT count(*) FROM timescaledb_information.chunks "
                           f"WHERE hypertable_name = '{table}' AND is_compressed")
     assert compressed[0][0] >= 1
-    batch = [row(OLD, 0)] + [row(OLD, n) for n in range(50, 70)] + [row(T, n) for n in range(3000)]
+    # T 도 압축 청크(손 압축)에 들어갈 수 있어, 확실히 새 청크인 시각을 따로 둔다
+    now = T + timedelta(days=30) if age < FAST_PATH_MAX_AGE else T
+    batch = [row(old_ts, 0)] + [row(old_ts, n) for n in range(50, 70)] + [row(now, n) for n in range(3000)]
     assert insert(c, batch) == len(batch)
-    assert _rows(c, f"SELECT count(*) FROM {table} WHERE ts = '{OLD}'")[0][0] == 70
-    assert _rows(c, f"SELECT count(*) FROM {table} WHERE ts = '{T}'")[0][0] == 3000
+    assert _rows(c, f"SELECT count(*) FROM {table} WHERE ts = '{old_ts}'")[0][0] == 70
+    assert _rows(c, f"SELECT count(*) FROM {table} WHERE ts = '{now}'")[0][0] == 3000
 
 
 @pg
