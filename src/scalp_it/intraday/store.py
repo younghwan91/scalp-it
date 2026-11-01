@@ -11,6 +11,7 @@ fixture 로 돌리고 운영은 postgres 로 돌리므로 둘이 갈라지면 �
 from __future__ import annotations
 
 import contextlib
+import re
 import sys
 from collections.abc import Iterable, Sequence
 from datetime import date, datetime, timedelta
@@ -122,6 +123,127 @@ def _bind_ts(conn: Any, value: Any) -> Any:
     if isinstance(value, str) or is_postgres(conn):
         return value
     return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+#: SQLSTATE 21000 — ``ON CONFLICT DO UPDATE`` 가 한 문장 안에서 같은 행을 두 번 건드렸다.
+_CARDINALITY_VIOLATION = "21000"
+
+#: TimescaleDB 2.17 은 **압축 청크**와 충돌한 다중 행 ``ON CONFLICT DO NOTHING`` 에서 그 뒤 행을 오류 없이
+#: 버린다(오늘 청크로 가는 행까지). 그래서 압축 청크에 닿을 수 있는 행은 행마다 보낸다. 경계는 배치마다
+#: 조회한 압축 청크의 끝(:func:`_compressed_until`, 손으로 압축한 청크까지 잡는다)과 이 나이 중 늦은 쪽이다.
+#: 이 나이는 조회와 insert 사이에 압축 정책(``compress_after`` 14일)이 돌아도 안전하게 하는 하한이다.
+FAST_PATH_MAX_AGE = timedelta(days=7)
+
+#: ``str(datetime)``·``isoformat()`` 이 내는 모양만 정규화한다. 소수 7자리 이상은 파이썬이 자르고 PG 는
+#: 반올림해서, 정규화하면 PG 가 다르게 보는 두 행을 합쳐 행을 잃는다.
+_NAIVE_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d{1,6})?")
+
+
+def ts_key(value: Any) -> Any:
+    """배치 안 중복을 거를 때 ``timestamp``(tz 없음) 열 값을 PG 가 보는 키에 맞춘다.
+
+    스풀에서 되살린 행의 ts 는 ``str(datetime)`` 문자열이고 라이브 행은 naive ``datetime`` 이다.
+    같은 시각이라도 파이썬 키로는 달라서 중복 제거를 빠져나간다. 그래서 그 모양의 문자열만
+    naive ``datetime`` 으로 읽는다. 그 밖의 문자열(오프셋, 소수 7자리 이상 등)은 그대로 둔다 —
+    덜 합친 것은 :func:`pg_upsert` 의 21000 폴백이 받고, 더 합치면 행을 잃는다.
+    """
+    if isinstance(value, str) and _NAIVE_TS_RE.fullmatch(value):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:  # 24:00:00·23:59:60 처럼 PG 만 받는 값 — 그대로 둬 원래 경로로 보낸다
+            return value
+    return value
+
+
+def _naive_ts(value: Any) -> datetime | None:
+    ts = ts_key(value)
+    return ts if isinstance(ts, datetime) and ts.tzinfo is None else None
+
+
+def _compressed_until(conn: Any, table: str) -> datetime | None:
+    """``table`` 의 압축 청크가 덮는 마지막 시각(naive). 압축 청크가 없거나 TimescaleDB 가 아니면 ``None``."""
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT to_regclass('timescaledb_information.chunks') IS NOT NULL")
+        if not cur.fetchone()[0]:
+            return None
+        # tz 없는 timestamp 차원의 경계는 UTC 로 해석된 timestamptz 로 나온다 → UTC 로 되돌리면 naive 경계.
+        cur.execute(
+            "SELECT max(range_end) AT TIME ZONE 'UTC' FROM timescaledb_information.chunks "
+            "WHERE hypertable_name = %s AND hypertable_schema = ANY(current_schemas(false)) "
+            "AND is_compressed",
+            (table,),
+        )
+        return cur.fetchone()[0]
+    finally:
+        cur.close()
+
+
+def pg_write(
+    conn: Any,
+    head: str,
+    tail: str,
+    payload: Sequence[Sequence[Any]],
+    *,
+    ts_index: int | None,
+    table: str | None = None,
+    key: Any = None,
+    page_size: int = 2000,
+    now: datetime | None = None,
+) -> None:
+    """``INSERT ... VALUES <행들> ON CONFLICT ...`` 를 PG 에 보낸다. 결과는 행마다 ``executemany`` 와 같다.
+
+    - 최근 행(압축 청크 끝 + 1일, :data:`FAST_PATH_MAX_AGE` 둘 다보다 새 naive ts)은 ``execute_values``
+      한 문장으로 보낸다. ``executemany`` 는 행마다 왕복한다.
+    - 옛 행(압축 청크에 닿을 수 있다)은 원래대로 행마다 보낸다. 옛 행과 최근 행은 naive ts 가 달라
+      충돌 키가 겹치지 않으므로 나눠 보내도 결과가 같다.
+    - naive ``datetime`` 으로 읽을 수 없는 ts(오프셋 문자열 등)가 하나라도 있으면 PG 에서 어느 행과
+      같은 키인지 알 수 없어 순서를 지켜야 하므로, 배치 전체를 원래 경로로 보낸다.
+      ``ts_index=None`` 은 압축하지 않는 일반 테이블(테마 스냅샷) — 전부 한 문장으로 보낸다.
+    - ``key`` 가 있으면(``DO UPDATE``) 한 문장에 같은 키가 두 번 나오면 안 되므로(21000) 같은 키는
+      **마지막 행만, 마지막 자리에** 남긴다. 파이썬 키로는 달랐는데 PG 에선 같은 키라 21000 이 나면
+      롤백하고 그 배치를 원래 경로로 다시 넣는다.
+
+    커밋은 호출자가 한다.
+    """
+    from psycopg2.extras import execute_values
+
+    if ts_index is None:
+        recent, old = list(payload), []
+    else:
+        stamps = [_naive_ts(r[ts_index]) for r in payload]
+        if any(t is None for t in stamps):
+            recent, old = [], list(payload)
+        else:
+            cutoff = (now or datetime.now()) - FAST_PATH_MAX_AGE  # noqa: DTZ005 — KST naive, 프로젝트 표준
+            until = _compressed_until(conn, table) if table else None
+            if until is not None:
+                cutoff = max(cutoff, until + timedelta(days=1))
+            is_recent = [t >= cutoff for t in stamps]  # NaT 등 비교가 안 되는 값은 False → 옛 행 쪽
+            recent = [r for r, ok in zip(payload, is_recent, strict=True) if ok]
+            old = [r for r, ok in zip(payload, is_recent, strict=True) if not ok]
+    row_sql = head + "(" + ",".join(["%s"] * len(payload[0])) + ")" + tail if payload else ""
+    if key is not None:
+        last: dict[Any, Sequence[Any]] = {}
+        for r in recent:
+            k = key(r)
+            last.pop(k, None)
+            last[k] = r
+        recent = list(last.values())
+    cur = conn.cursor()
+    try:
+        if recent:
+            execute_values(cur, head + "%s" + tail, recent, page_size=page_size)
+        if old:
+            cur.executemany(row_sql, old)
+    except Exception as exc:
+        if key is None or getattr(exc, "pgcode", None) != _CARDINALITY_VIOLATION:
+            raise
+        cur.close()
+        conn.rollback()
+        cur = conn.cursor()
+        cur.executemany(row_sql, payload)
+    cur.close()
 
 
 def _to_datetime(value: Any) -> datetime | None:
