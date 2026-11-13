@@ -32,6 +32,7 @@ deploy/research_run.sh uv run python <학습·대규모 스크립트>  # 무거�
 ## 라이브 운영: 이 PC(simnode)가 장중 라이브 호스트다 (2026-10-07부터)
 - 평일 08:30~18:30에는 크론이 `~/git/scalp-it` 체크아웃으로 감지기(08:55~15:20)·수집·DART·리포트·`kqc nightly`를 돌린다.
   그 시간에는 이 체크아웃에서 브랜치 전환, pull, `uv sync`, `.venv` 변경을 하지 않는다. 작업은 워크트리에서 한다.
+  전역 가드가 crontab 을 보고 이 체크아웃의 main 이외 전환·브랜치 생성을 막는다.
 - 이 체크아웃은 늘 main·깨끗한 상태로 둔다. 07:50 `pull-all --ci-gate`는 fast-forward만 하고 더러운 트리는 건너뛰며,
   다른 브랜치에 있으면 그 브랜치 코드가 그날 장중에 돈다. 반대로 main에 푸시한 것은 다음 날 07:50에 그대로 라이브가 된다.
 - 키움 App key 1개는 WebSocket 세션 1개다. 장중에 `scalp-pair-detect`, `scalp-tick-collect`, `scalp-intraday`처럼
@@ -62,6 +63,11 @@ deploy/research_run.sh uv run python <학습·대규모 스크립트>  # 무거�
 - 순위·필터는 **전일** 값으로 매긴다. 당일 거래대금 순위를 쓰면 look-ahead가 생겨 부호까지 뒤집혔다(97번).
 - 대용 지수가 유망해 보여도 거래 가능한 실물로 다시 재기 전에는 믿지 않는다(인버스 ETF −16.6bp가 실물에서 −5.0bp, t=−1.59).
 - "표본이 없다"고 말하기 전에 `minute_bars`(분봉 크론 약 1,400종목)를 `information_schema`로 확인한다.
+- 보고·선택은 승률이 아니라 **손익비·기대값**으로 한다(사용자 "승률이 높은 건 중요하지 않아. 난 퀀트야"). 승률이 높은데 손익비 < 1 이면 승자를 일찍 자르는 청산부터 의심한다 — 손절을 좁혀 손익비를 만드는 것은 답이 아니다.
+- 비용은 정가로. 수수료 면제·할인·리베이트처럼 관계나 기간에 묶인 조건은 비용 가정에 넣지 않는다. 정가에서 살아남는 전략만 채택한다.
+- 브로커 API 동작 가설(파라미터명·체결·트리거 방식)은 문서·로그 추론만으로 실매매 코드에 넣지 않는다 — 실서버 조회 스모크(실주문은 사용자 승인)로 먼저 확인한다. 목 테스트는 파라미터명 오류를 못 잡는다.
+- 실험·세대 결과마다 `quant-reviewer` 에이전트를 같이(또는 직후) 띄우고, 거래·사건 재계산은 `haiku-verifier` 10~20개를 한 메시지에서 병렬로. 리뷰의 CRITICAL/MAJOR 를 반영하기 전엔 결론을 보고하지 않는다.
+- 한 실험(세대) = 한 세션이 기본. 결정·결과는 `docs/TRADING_CRITERIA.md` 맨 위와 그 번호의 연구 문서에 바로 적고 새 세션은 그 파일에서 출발한다. 컨텍스트가 60%를 넘으면 그 파일을 갱신한 뒤 새 세션을 제안한다.
 
 ## 데이터 함정
 - `minute_bars`는 기업행동 뒤 재수집 구간이 키움 수정주가로 덮여 있다. 일봉과 섞을 때 전일종가는 그날 **분봉 15:30**으로
@@ -81,6 +87,12 @@ deploy/research_run.sh uv run python <학습·대규모 스크립트>  # 무거�
   전체 테스트를 돌린다.
 - 계좌에 묶인 것(`HELD_STOCK_CODES`)과 주문 HTTP 전송(`KiwoomOrderClient`)은 이 레포에 남긴다.
 - 실시간 피처는 백테스트와 **같은 함수**로 계산한다(PROMOTION_CHECKLIST 8번 피처 패리티).
+- 기사 LLM(`material_llm.py` → `score/provider.py`)을 Anthropic 으로 부를 때:
+  - 모델은 `claude-haiku-5-5` 만. Haiku 4.5 는 쓰지 않는다(4.5 판정은 quant-airflow DB `legacy` 스키마·daytrade-it `data/legacy/` 보관분).
+  - 프롬프트 캐싱 의무 — 고정 지시문은 `cache_control` 붙은 `system` 으로, 건마다 다른 부분(기사·종목·이력)만 user 로. 지시문을 기사 뒤에 두지 않는다. 걸렸는지는 `usage.cache_read_input_tokens` 로 확인(5.5 최소 접두 512토큰).
+  - Batch API 의무 — 동기 `messages.create` 루프로 판정기를 만들지 않는다. 지연이 문제면 먼저 묻는다.
+  - 5.5 는 thinking 기본 켜짐 → `thinking: {type: "disabled"}`, temperature 는 보내지 않는다.
+  - 참고 구현: quant-airflow `collectors/news_judge.py`(배치 원장, create 재시도 금지), swing-it `src/swing_it/news/judge.py`.
 
 ## Git
 - 커밋 신원은 레포 설정(`chyohw97@gmail.com`)을 그대로 쓴다. 세션 컨텍스트의 회사 이메일로 `git -c user.email=...`를
