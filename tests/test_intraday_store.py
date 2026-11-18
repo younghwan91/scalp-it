@@ -241,3 +241,107 @@ def test_cli_intraday_passes_today_as_tick_day(monkeypatch):
     assert seen["tick_day"] == date.today()  # noqa: DTZ011 — KST naive
     ci.resolve_codes(ci.build_parser().parse_args(["--universe-top", "5", "--no-tick-codes"]), None)
     assert seen["tick_day"] is None
+
+
+def test_cli_intraday_skips_a_code_on_gateway_502(monkeypatch, capsys):
+    """키움 502(httpx.HTTPStatusError)는 그 종목만 실패로 두고 나머지를 계속 받는다.
+
+    2026-11-06 15:45 크론이 1,921/2,557 번째 종목의 502 한 번에 통째로 죽었다.
+    """
+    import httpx
+
+    import scalp_it.cli_intraday as ci
+
+    class FakeConn:
+        def close(self):
+            pass
+
+    upserted = []
+    monkeypatch.setattr(ci, "connect", lambda dsn: FakeConn())
+    monkeypatch.setattr(ci, "init_minute_bars", lambda conn: None)
+    monkeypatch.setattr(ci, "latest_ts", lambda conn, code: None)
+    monkeypatch.setattr(ci, "count_bars", lambda conn: 0)
+    monkeypatch.setattr(ci, "upsert_minute_bars", lambda conn, rows: upserted.append(rows) or len(rows))
+    monkeypatch.setattr(ci, "api_credentials", lambda: ("k", "s"))
+
+    req = httpx.Request("POST", "https://api.kiwoom.com/api/dostk/chart")
+
+    class FakeKiwoom:
+        def __init__(self, *a, **kw):
+            pass
+
+        def minute_chart(self, code, **kw):
+            if code == "BAD":
+                raise httpx.HTTPStatusError("502 Bad Gateway", request=req,
+                                            response=httpx.Response(502, request=req))
+            if code == "DROP":
+                raise httpx.ConnectError("Temporary failure in name resolution", request=req)
+            from datetime import datetime
+            return [{"code": code, "ts": datetime(2026, 11, 6, 15, 30)}]  # noqa: DTZ001 — KST naive(프로젝트 표준)
+
+    monkeypatch.setattr(ci, "KiwoomClient", FakeKiwoom)
+    rc = ci.main(["--codes", "AAA,BAD,DROP,ZZZ", "--pages", "1"])
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert [rows[0]["code"] for rows in upserted] == ["AAA", "ZZZ"]
+    assert "실패 2종목: BAD,DROP" in err
+
+
+def _fake_intraday(monkeypatch, fail):
+    """minute_chart 가 ``fail(code)`` 이 돌려주는 예외를 던지는 가짜 환경."""
+    from datetime import datetime
+
+    import scalp_it.cli_intraday as ci
+
+    class FakeConn:
+        def close(self):
+            pass
+
+    calls = []
+    monkeypatch.setattr(ci, "connect", lambda dsn: FakeConn())
+    monkeypatch.setattr(ci, "init_minute_bars", lambda conn: None)
+    monkeypatch.setattr(ci, "latest_ts", lambda conn, code: None)
+    monkeypatch.setattr(ci, "count_bars", lambda conn: 0)
+    monkeypatch.setattr(ci, "upsert_minute_bars", lambda conn, rows: len(rows))
+    monkeypatch.setattr(ci, "api_credentials", lambda: ("k", "s"))
+
+    class FakeKiwoom:
+        def __init__(self, *a, **kw):
+            pass
+
+        def minute_chart(self, code, **kw):
+            calls.append(code)
+            exc = fail(code)
+            if exc is not None:
+                raise exc
+            return [{"code": code, "ts": datetime(2026, 11, 6, 15, 30)}]  # noqa: DTZ001 — KST naive
+
+    monkeypatch.setattr(ci, "KiwoomClient", FakeKiwoom)
+    return ci, calls
+
+
+def test_cli_intraday_stops_after_consecutive_failures(monkeypatch, capsys):
+    """키움이 계속 죽어 있으면 2,500종목을 30초 타임아웃으로 다 돌지 않고 멈춘다."""
+    import httpx
+
+    req = httpx.Request("POST", "https://api.kiwoom.com/api/dostk/chart")
+    ci, calls = _fake_intraday(monkeypatch, lambda code: None if code == "OK1"
+                               else httpx.ReadTimeout("timed out", request=req))
+    codes = ["OK1"] + [f"C{i}" for i in range(10)]
+    rc = ci.main(["--codes", ",".join(codes), "--pages", "1", "--max-consecutive-failures", "3"])
+    assert rc == 1
+    assert calls == ["OK1", "C0", "C1", "C2"]
+    assert "수집 중단 — 연속 3종목 실패" in capsys.readouterr().err
+
+
+def test_cli_intraday_stops_at_once_on_auth_error(monkeypatch, capsys):
+    """401·403 은 종목 탓이 아니다 — 수천 번 토큰을 재발급하지 않고 바로 멈춘다."""
+    import httpx
+
+    req = httpx.Request("POST", "https://api.kiwoom.com/api/dostk/chart")
+    ci, calls = _fake_intraday(monkeypatch, lambda code: httpx.HTTPStatusError(
+        "401", request=req, response=httpx.Response(401, request=req)))
+    rc = ci.main(["--codes", "A,B,C", "--pages", "1"])
+    assert rc == 1
+    assert calls == ["A"]
+    assert "인증 오류 HTTP 401" in capsys.readouterr().err
