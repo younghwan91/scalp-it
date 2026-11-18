@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any
 
 from .realtime.pair_detector import limit_up_price
@@ -119,17 +119,35 @@ def _tail(path: str, n: int) -> str:
         return ""
 
 
+def resolve_day(arg: str, today: date, conn: Any, *,
+                previous_session: Any = None) -> date | None:
+    """``--date`` 를 리포트할 날로 바꾼다.
+
+    ``yesterday`` 는 달력 어제가 아니라 **직전 거래일**이다. 달력 어제로 두면
+    월요일 08:30 크론이 일요일을 집계해 "방아쇠 0개" 를 latest.md 에 쓴다
+    (2026-11-16 실제로 그랬다). 거래일은 관측된 일봉에서 구한다(휴장일 표 없음).
+    """
+    if arg == "today":
+        return today
+    if arg == "yesterday":
+        if previous_session is None:
+            from .market_regime import previous_session
+        day = previous_session(conn, today)
+        if day is None:
+            return None
+        return day if isinstance(day, date) else date.fromisoformat(str(day)[:10])
+    return date.fromisoformat(arg)
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="아침 리포트 — 만쥬 체인이 도는지 한 장으로")
-    p.add_argument("--date", default="today", help="today | yesterday | YYYY-MM-DD")
+    p.add_argument("--date", default="today",
+                   help="today | yesterday(직전 거래일) | YYYY-MM-DD")
     p.add_argument("--ticks", type=int, default=3, help="방아쇠 구간 호가 수(만쥬 §2 = 3)")
     p.add_argument("--out", default=None, help="파일로도 남긴다")
     args = p.parse_args(argv)
 
     today = datetime.now().date()  # noqa: DTZ005 — KST naive(프로젝트 표준)
-    day = (today if args.date == "today" else
-           today - timedelta(days=1) if args.date == "yesterday" else
-           date.fromisoformat(args.date))
 
     from .intraday.store import connect
 
@@ -139,6 +157,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     conn = connect(dsn)
     try:
+        day = resolve_day(args.date, today, conn)
+        if day is None:
+            print("일봉에서 직전 거래일을 못 찾았다", file=sys.stderr)
+            return 1
+        print(f"리포트 대상일 {day} (--date {args.date})", file=sys.stderr)
         metrics = collect(conn, day, ticks=args.ticks)
     finally:
         conn.close()

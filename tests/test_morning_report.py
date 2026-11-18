@@ -27,3 +27,37 @@ def test_already_locked_is_not_the_trigger_zone():
 def test_no_prev_close_is_not_a_zone():
     """전일종가가 없으면 상한가를 계산할 수 없다 — 신규 상장 첫날 등."""
     assert not in_trigger_zone(price=1_000, prev_close=0, ticks=3)
+
+
+def test_yesterday_on_monday_is_friday_not_sunday():
+    """08:30 크론의 ``--date yesterday`` 는 직전 거래일이다.
+
+    달력 어제로 두면 월요일 latest.md 가 일요일 "방아쇠 0개" 가 된다(2026-11-16).
+    """
+    from datetime import date
+
+    from scalp_it.morning_report import resolve_day
+
+    calls = []
+
+    def fake_previous_session(conn, before):
+        calls.append(before)
+        return date(2026, 11, 13)  # 금요일
+
+    monday = date(2026, 11, 16)
+    assert resolve_day("yesterday", monday, object(),
+                       previous_session=fake_previous_session) == date(2026, 11, 13)
+    assert calls == [monday]  # '오늘 미만' 의 최근 거래일을 묻는다
+
+
+def test_today_and_explicit_dates_do_not_touch_the_calendar():
+    from datetime import date
+
+    from scalp_it.morning_report import resolve_day
+
+    def boom(conn, before):
+        raise AssertionError("달력 조회 불필요")
+
+    d = date(2026, 11, 19)
+    assert resolve_day("today", d, None, previous_session=boom) == d
+    assert resolve_day("2026-11-13", d, None, previous_session=boom) == date(2026, 11, 13)
