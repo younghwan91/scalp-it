@@ -21,7 +21,7 @@ set -u
 # quant-airflow/.env로 이관됐다 — 이제 이 파일 하나만 export하면 된다.
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 export $(grep -v '^#' ../quant-airflow/.env | xargs)
-pkill -f "scalp-tick-collect" 2>/dev/null; sleep 2
+pkill -f "[s]calp-tick-collect" 2>/dev/null; sleep 2
 END=$(date -d "15:20" +%s)
 while [ "$(date +%s)" -lt "$END" ]; do
   REMAIN=$(( (END - $(date +%s)) / 60 ))

@@ -6,8 +6,8 @@ simnode 크론(17:45)이 ``kqc nightly .`` 로 ``research/nightly.toml`` 을 돌
 * 날짜: ``daily_bars`` 기준 **오늘 이하 가장 최근 거래일**(:func:`market_regime.previous_session`
   재사용). 17:45 에 당일 일봉이 아직 없으면 직전 거래일이 된다.
 * 쌍: 만쥬 방식은 고정 쌍이 없다(워치리스트 비어 있음). 그래서 **그날 감지기가 실제로
-  알림을 낸 (대장, 후속) 쌍**을 ``data/pair_alerts.log`` 에서 모은다(15:24 크론이 trader
-  에서 당겨 온다). 그날 알림이 없으면 스윕할 대상이 없으니 건너뛰고 0 으로 끝낸다.
+  알림을 낸 (대장, 후속) 쌍**을 ``data/pair_alerts.log`` 에서 모은다(감지기가 같은
+  호스트의 data/ 에 쓴다). 그날 알림이 없으면 스윕할 대상이 없으니 건너뛰고 0 으로 끝낸다.
 * 그리드: ``scripts/pair_sweep.py`` docstring 사용 예 그대로
   (``surge_window=10,15,30`` × ``cosurge_min=0.005,0.002,0.001,0`` = 12조합).
 * 실행: ``pair_sweep.py`` 를 자식 프로세스로 — krx-quant-core ``run_sweep``(병렬·시행 원장).

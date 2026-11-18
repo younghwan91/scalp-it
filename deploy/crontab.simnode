@@ -22,7 +22,10 @@
 45 8 * * 1-5 /home/young/git/scalp-it/scripts/preopen_check.sh >> /home/young/git/scalp-it/data/preopen_check.log 2>&1
 
 55 8 * * 1-5 /home/young/git/scalp-it/scripts/pair_detect_daily.sh >> /home/young/git/scalp-it/data/pair_detect_cron.log 2>&1
-40 15 * * 1-5 pkill -f 'scalp-tick-collect'; pkill -f 'scalp-pair-detect'; pkill -f pair_detect_daily
+# 15:40 잔류 정리. 패턴은 첫 글자를 [] 로 감싼다 — 크론은 이 줄 전체를 sh -c 로 돌리므로 맨 패턴이면
+# 첫 pkill 이 자기 부모 셸의 명령줄(나머지 패턴이 다 들어 있다)을 맞혀 죽이고, 뒤의 두 pkill 은 안 돈다
+# (2026-11-19 재현: rc=143). tests/test_process_patterns.py 가 맨 패턴을 막는다.
+40 15 * * 1-5 pkill -f '[s]calp-tick-collect'; pkill -f '[s]calp-pair-detect'; pkill -f '[p]air_detect_daily'
 
 # 만쥬 §2-1 재료 — DART 공시를 매일 최신화한다(유니버스 선정의 세 번째 요건).
 # 뉴스 크롤러는 정책상 금지(ToS·저작권, docs/research/manju/17) — 공시가 현실 경로다.
@@ -67,7 +70,7 @@
 # 전용 venv(~/of80/.rlvenv)·학습 산출물(~/of80/*)은 simnode 에만 있다.
 # 86번 실시간 호랑이 그림자용 전일 문턱 — 17:00 계산(83번 캐시가 없으면 스스로 짓는다). 감지기가 다음 날 09:35 전 문턱으로 같은 data/ 에서 읽는다.
 0 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && /home/young/of80/.rlvenv/bin/python -W ignore scripts/tiger_86/prevq.py >> data/tiger86_prevq.cron.log 2>&1
-# 짝꿍 파라미터 스윕 등 nightly job(research/nightly.toml) — 17:45(17:15 밴딧 전진 뒤).
+# 짝꿍 파라미터 스윕 등 nightly job(research/nightly.toml) — 17:45(17:00 호랑이 문턱 뒤).
 # kqc nightly 가 job 마다 격리·timeout 을 건다. 스윕은 krx-quant-core run_sweep(시행 원장 research/runs/).
 45 17 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && deploy/research_run.sh /home/young/.local/bin/uv run kqc nightly . >> data/nightly.cron.log 2>&1
 
@@ -78,5 +81,5 @@
 
 # 수집 건강 점검 — 하루 분커버를 재고 문턱(90%) 아래면 research/bad_days.json 에 자동 등록한다.
 # 09-28~10-02 의 커버리지 붕괴(37~52%)를 12일 뒤에 알았다. 사람이 안 보면 아무도 안 본다.
-# 16:10 — 수집이 끝난 뒤, 전진 판정(16:30~) 전에 돈다.
+# 16:10 — 15:40 틱 수집이 끝난 뒤 돈다.
 10 16 * * 1-5 cd /home/young/git/scalp-it && export $(grep -v "^#" ../quant-airflow/.env | xargs) && nice -n 15 /home/young/of80/.rlvenv/bin/python -W ignore scripts/collect_health.py $(date +\%Y-\%m-\%d) >> data/collect_health.cron.log 2>&1
