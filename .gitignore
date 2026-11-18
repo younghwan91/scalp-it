@@ -42,3 +42,8 @@ graphify-out/
 research/autoresearch/ledger/
 /results.tsv
 /run.log
+
+# archify 검사 영수증 — 다시 만들 때마다 바뀐다. 원본(*.workflow.json)과 HTML 만 추적한다.
+docs/process/*.finalize*.json
+docs/process/*.delivery.json
+docs/process/*.browser-check.json
