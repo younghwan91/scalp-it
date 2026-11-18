@@ -1,0 +1,480 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "scalp-it 평일 운영 프로세스 (simnode 크론)",
+    "locale": "ko",
+    "quality_profile": "showcase",
+    "output": "docs/process/daily-ops.html",
+    "repository": {
+      "url": "https://github.com/younghwan91/scalp-it.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "4752a6667d4265acb5a134bf199d3a33a8fd3ad7"
+    },
+    "legend": {
+      "entries": {
+        "backend": {
+          "label": "크론 작업"
+        },
+        "security": {
+          "label": "운영 가드"
+        },
+        "database": {
+          "label": "저장소"
+        },
+        "external": {
+          "label": "레포 밖 (dotfiles)"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "ops",
+      "label": "운영 가드",
+      "variant": "exception"
+    },
+    {
+      "id": "live",
+      "label": "키움 실시간 (앱키 1세션)"
+    },
+    {
+      "id": "reports",
+      "label": "리포트·점검"
+    },
+    {
+      "id": "collect",
+      "label": "수집"
+    },
+    {
+      "id": "stores",
+      "label": "저장소"
+    },
+    {
+      "id": "research",
+      "label": "연구·그림자"
+    }
+  ],
+  "phases": [
+    {
+      "id": "prep",
+      "label": "준비 07:50–08:40",
+      "fromCol": 0,
+      "toCol": 0
+    },
+    {
+      "id": "open",
+      "label": "개장 직전 08:45–08:55",
+      "fromCol": 1,
+      "toCol": 1
+    },
+    {
+      "id": "session",
+      "label": "장중 09:00–15:20",
+      "fromCol": 2,
+      "toCol": 2,
+      "variant": "emphasis"
+    },
+    {
+      "id": "close",
+      "label": "마감 15:20–15:45",
+      "fromCol": 3,
+      "toCol": 3
+    },
+    {
+      "id": "after",
+      "label": "장 후 16:00–16:20",
+      "fromCol": 4,
+      "toCol": 4
+    },
+    {
+      "id": "evening",
+      "label": "저녁 17:00–18:30",
+      "fromCol": 5,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "sync",
+    "preopen",
+    "launcher",
+    "detector",
+    "closerep"
+  ],
+  "nodes": [
+    {
+      "id": "sync",
+      "lane": "ops",
+      "col": 0,
+      "type": "external",
+      "label": "07:50 동기화",
+      "sublabel": "pull-all → cron-install",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 1,
+          "end_line": 3
+        }
+      ]
+    },
+    {
+      "id": "preopen",
+      "lane": "ops",
+      "col": 1,
+      "type": "security",
+      "label": "08:45 개장 전 점검",
+      "sublabel": "preopen_check.sh",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 22
+        },
+        {
+          "path": "scripts/preopen_check.sh",
+          "line": 155,
+          "end_line": 171
+        }
+      ]
+    },
+    {
+      "id": "killer",
+      "lane": "ops",
+      "col": 3,
+      "type": "security",
+      "label": "15:40 잔류 정리",
+      "sublabel": "pkill 감지기·수집기",
+      "tag": "결함: 자기 셸 종료",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 25
+        }
+      ]
+    },
+    {
+      "id": "nightly",
+      "lane": "ops",
+      "col": 5,
+      "type": "backend",
+      "label": "17:45 kqc nightly",
+      "sublabel": "research_run.sh · 짝꿍 스윕",
+      "tag": "결함: bus 실패 시 미실행",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 72
+        },
+        {
+          "path": "deploy/research_run.sh",
+          "line": 9,
+          "end_line": 14
+        },
+        {
+          "path": "research/nightly.toml",
+          "line": 4,
+          "end_line": 8
+        }
+      ]
+    },
+    {
+      "id": "launcher",
+      "lane": "live",
+      "col": 1,
+      "type": "backend",
+      "label": "08:55 런처",
+      "sublabel": "재시작 루프 ~15:20",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 24
+        },
+        {
+          "path": "scripts/pair_detect_daily.sh",
+          "line": 22,
+          "end_line": 29
+        }
+      ]
+    },
+    {
+      "id": "detector",
+      "lane": "live",
+      "col": 2,
+      "type": "backend",
+      "label": "짝꿍 감지기",
+      "sublabel": "dry-run · 틱 저장 겸함",
+      "sources": [
+        {
+          "path": "scripts/pair_detect_daily.sh",
+          "line": 207,
+          "end_line": 236
+        }
+      ]
+    },
+    {
+      "id": "dart",
+      "lane": "collect",
+      "col": 0,
+      "type": "backend",
+      "label": "DART 공시",
+      "sublabel": "08:40 7일 · 장중 10분",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 29
+        },
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 32
+        },
+        {
+          "path": "src/scalp_it/cli_pair_detect.py",
+          "line": 1069,
+          "end_line": 1075
+        }
+      ]
+    },
+    {
+      "id": "minute",
+      "lane": "collect",
+      "col": 3,
+      "type": "backend",
+      "label": "15:45 분봉 수집",
+      "sublabel": "약 2,550종목",
+      "tag": "결함: 502 한 번에 중단",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 77
+        },
+        {
+          "path": "src/scalp_it/cli_intraday.py",
+          "line": 104,
+          "end_line": 117
+        }
+      ]
+    },
+    {
+      "id": "theme",
+      "lane": "collect",
+      "col": 4,
+      "type": "backend",
+      "label": "16:10 테마 스냅샷",
+      "sublabel": "scalp-theme-snapshot",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 13
+        }
+      ]
+    },
+    {
+      "id": "morning",
+      "lane": "reports",
+      "col": 0,
+      "type": "backend",
+      "label": "08:30 아침 리포트",
+      "sublabel": "--date yesterday",
+      "tag": "결함: 월요일=일요일",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 38
+        },
+        {
+          "path": "src/scalp_it/morning_report.py",
+          "line": 124,
+          "end_line": 132
+        }
+      ]
+    },
+    {
+      "id": "tickhealth",
+      "lane": "ops",
+      "col": 2,
+      "type": "backend",
+      "label": "틱 헬스 09:10·10:00",
+      "sublabel": "최근 20분",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 11,
+          "end_line": 12
+        }
+      ]
+    },
+    {
+      "id": "closerep",
+      "lane": "reports",
+      "col": 3,
+      "type": "backend",
+      "label": "마감 리포트",
+      "sublabel": "집계·일지·반사실 15:25–27",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 44,
+          "end_line": 46
+        },
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 53
+        }
+      ]
+    },
+    {
+      "id": "postcheck",
+      "lane": "reports",
+      "col": 4,
+      "type": "backend",
+      "label": "장 후 점검",
+      "sublabel": "tick_sanity · collect_health",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 16
+        },
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 82
+        }
+      ]
+    },
+    {
+      "id": "coverage",
+      "lane": "reports",
+      "col": 5,
+      "type": "backend",
+      "label": "18:30 커버리지",
+      "sublabel": "scalp-coverage",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 47
+        }
+      ]
+    },
+    {
+      "id": "shadow",
+      "lane": "research",
+      "col": 4,
+      "type": "backend",
+      "label": "그림자 리포트",
+      "sublabel": "뉴스 16:05 · ETF81 16:20",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 52
+        },
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 57
+        }
+      ]
+    },
+    {
+      "id": "tiger",
+      "lane": "research",
+      "col": 5,
+      "type": "backend",
+      "label": "17:00 호랑이 문턱",
+      "sublabel": "다음 날 감지기가 읽음",
+      "sources": [
+        {
+          "path": "deploy/crontab.simnode",
+          "line": 69
+        },
+        {
+          "path": "src/scalp_it/cli_pair_detect.py",
+          "line": 2034
+        }
+      ]
+    },
+    {
+      "id": "db",
+      "lane": "stores",
+      "col": 2,
+      "type": "database",
+      "label": "KR_QUANT_DB",
+      "sublabel": "ticks · minute_bars",
+      "sources": [
+        {
+          "path": "scripts/preopen_check.sh",
+          "line": 128,
+          "end_line": 152
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-sync-pre",
+      "from": "sync",
+      "to": "preopen",
+      "label": "크론 설치"
+    },
+    {
+      "id": "e-pre-launch",
+      "from": "preopen",
+      "to": "launcher",
+      "label": "전제 확인"
+    },
+    {
+      "id": "e-launch-det",
+      "from": "launcher",
+      "to": "detector",
+      "label": "기동",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-det-close",
+      "from": "detector",
+      "to": "closerep",
+      "label": "pair_*.log",
+      "fromSide": "right",
+      "toSide": "top"
+    },
+    {
+      "id": "e-det-db",
+      "from": "detector",
+      "to": "db",
+      "label": "틱·호가",
+      "variant": "emphasis",
+      "role": "branch",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e-min-db",
+      "from": "minute",
+      "to": "db",
+      "label": "분봉",
+      "variant": "dashed",
+      "role": "async",
+      "fromSide": "bottom",
+      "toSide": "right"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "찾은 결함 (그림은 4752a66 기준 · 같은 PR 에서 수정)",
+      "items": [
+        "15:40 정리: 크론 sh -c 명령줄에 패턴이 들어 있어 첫 pkill 이 자기 셸을 죽인다(재현 rc=143). 나머지 두 pkill 은 한 번도 안 돌았다",
+        "15:45 분봉: httpx 502·연결 오류는 KiwoomError 가 아니라 잡히지 않는다. 11-06 1,921/2,557 에서 통째로 멈췄다",
+        "08:30 아침 리포트: yesterday = 달력 어제. 월요일 latest.md 가 일요일 '방아쇠 0개' 를 낸다(11-16 확인)",
+        "17:45 research_run.sh: bus 소켓은 있는데 연결이 거부되면 exec systemd-run 이 실패해 nightly 가 아예 안 돈다"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "읽는 법",
+      "items": [
+        "열 = 시간대, 레인 = 역할. 선은 핵심 데이터 흐름만 그렸다 — 리포트·점검·그림자 노드는 대부분 KR_QUANT_DB 를 읽는다",
+        "DART 공시는 data/dart.db 를 거쳐 감지기 구독에 들어가고, 17:00 호랑이 문턱은 다음 날 감지기가 읽는다",
+        "키움 앱키 1개 = WebSocket 1세션: 장중엔 감지기만 키움 소켓을 쓴다"
+      ]
+    }
+  ]
+}

@@ -162,7 +162,7 @@ else
 fi
 
 # 어제 것이 남아 있으면 08:55 런처와 겹쳐 중복 주문이 날 수 있다.
-LEFT="$(pgrep -fa 'scalp-pair-detect|pair_detect_daily' 2>/dev/null | grep -v preopen_check || true)"
+LEFT="$(pgrep -fa '[s]calp-pair-detect|[p]air_detect_daily' 2>/dev/null | grep -v preopen_check || true)"
 if [ -n "$LEFT" ]; then
   bad "감지기가 이미 돌고 있다 — 08:55 런처와 겹치면 중복 주문 위험"
   echo "$LEFT" | sed 's/^/       /' | cut -c1-120

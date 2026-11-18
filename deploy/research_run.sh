@@ -6,9 +6,14 @@
 set -euo pipefail
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 CORES=$(nproc); QUOTA=$(( (CORES - 1) * 100 ))
-if [ -S "$XDG_RUNTIME_DIR/bus" ] && command -v systemd-run >/dev/null; then
+# 소켓 파일이 있어도 user bus 가 연결을 거부할 수 있다("Failed to connect to user scope bus").
+# 그때 바로 exec systemd-run 하면 명령이 아예 안 돌고 끝난다 — data/nightly.cron.log 에 그 오류만
+# 남고 그날 kqc nightly 가 돌지 않았다. 빈 scope 를 먼저 띄워 보고, 되는 경우에만 slice 로 간다.
+if [ -S "$XDG_RUNTIME_DIR/bus" ] && command -v systemd-run >/dev/null \
+   && systemd-run --user --scope --quiet -- true >/dev/null 2>&1; then
   exec systemd-run --user --scope --quiet \
     -p CPUWeight=10 -p IOWeight=10 -p CPUQuota=${QUOTA}% \
     --nice=15 -- "$@"
 fi
+echo "[research_run] systemd scope 를 못 써서 nice+ionice 로 돈다(research.slice 보호 없음)" >&2
 exec nice -n 15 ionice -c3 "$@"

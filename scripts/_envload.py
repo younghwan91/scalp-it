@@ -7,12 +7,26 @@ trader가 이미 갖고 있는 quant-airflow/.env로 옮겨졌다.
 import os
 from pathlib import Path
 
-_env = Path(__file__).resolve().parents[2] / "quant-airflow" / ".env"
-if not _env.exists():
-    # 예전엔 여기서 /home/young/Documents/git/kr-quant/.env 로 폴백했는데,
-    # 2026-09-11 레포가 ~/git 으로 옮겨져 그 경로가 사라졌다 — 죽은 경로로
-    # 폴백하면 다음 줄에서 FileNotFoundError 로 터지니 차라리 명확히 알린다.
-    raise FileNotFoundError(f"quant-airflow/.env 를 찾을 수 없다: {_env}")
+
+def find_env(start: Path) -> Path:
+    """``start`` 의 조상 폴더마다 형제 ``quant-airflow/.env`` 를 찾는다(가까운 쪽 먼저).
+
+    운영 체크아웃(``~/git/scalp-it``)은 바로 위에서 찾는다. 워크트리는
+    ``~/git/.harness-wt/scalp-it/<이름>`` 처럼 더 깊이 있어서, 예전처럼 한 단계 위만
+    보면 ``FileNotFoundError`` 로 pytest 수집이 0건에서 멈췄다.
+    """
+    tried = []
+    for parent in start.resolve().parents:
+        cand = parent / "quant-airflow" / ".env"
+        tried.append(cand)
+        if cand.exists():
+            return cand
+    # 예전엔 /home/young/Documents/git/kr-quant/.env 로 폴백했는데, 2026-09-11 레포가
+    # ~/git 으로 옮겨져 그 경로가 사라졌다 — 죽은 경로로 폴백하지 않고 명확히 알린다.
+    raise FileNotFoundError(f"quant-airflow/.env 를 찾을 수 없다: {tried[1] if len(tried) > 1 else start}")
+
+
+_env = find_env(Path(__file__).resolve().parent)
 for line in _env.read_text().splitlines():
     line = line.strip()
     if not line or line.startswith("#") or "=" not in line:

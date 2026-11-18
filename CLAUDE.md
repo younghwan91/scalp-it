@@ -9,6 +9,10 @@
 - `docs/PROMOTION_CHECKLIST.md`: 실주문 재개나 라이브 규칙 변경을 논할 때. A·B 게이트 11개를 전부 통과해야 승격한다.
 - `docs/PAIR_TRADING_RUNBOOK.md`: 감지기를 직접 다룰 때. `scripts/README.md`: 스크립트 색인.
 - `docs/archive/README.md` "반드시 기억할 실패 다섯": 새 아이디어를 내기 전에 본다.
+- `docs/process/daily-ops.html`: 평일 크론 전체를 시간대×역할로 그린 프로세스 그래프(archify). 원본은 같은 폴더의
+  `daily-ops.workflow.json`이다. 크론을 바꾸면 JSON을 고쳐 `finalize`로 다시 만든다. archify 스킬은 커밋하지 않는다(18MB) —
+  `npx -y skills@latest add https://archify.si --skill archify --agent claude-code --copy --yes`로 `.claude/skills/`에 설치한다
+  (`skills-lock.json`이 출처를 고정). 헤드리스 검사는 AppArmor 때문에 `--no-sandbox` 래퍼를 `ARCHIFY_CHROME`으로 준다.
 - 낡은 문서: `docs/STATUS.md`(2026-08-29)와 README의 운영표·"실주문 1주" 문구는 옛 내용이다. 운영의 정본은
   `deploy/crontab.simnode`와 `scripts/pair_detect_daily.sh`다.
 
@@ -24,10 +28,9 @@ deploy/research_run.sh uv run python <학습·대규모 스크립트>  # 무거�
 - `.venv`를 activate하지 않는다. `VIRTUAL_ENV`가 아직 옛 경로 `~/Documents/git/...`를 가리킨다. 항상 `uv run`을 쓴다.
 - RL·밴딧 연구 스크립트(`forward_gate.py`, `tiger_86/`, `collect_health.py`)는 전용 venv `~/of80/.rlvenv/bin/python`으로
   돈다. 학습 산출물은 `~/of80/*`에 있다.
-- **워크트리는 `~/git/<이름>`처럼 `quant-airflow`의 형제 위치에 만든다.** `scripts/_envload.py`가
-  `../quant-airflow/.env`를 import 시점에 읽기 때문이다. `.claude/worktrees/`나 다른 깊이에 만들면 `uv run pytest -q`가
-  `FileNotFoundError: quant-airflow/.env` 수집 오류로 0건에서 중단된다(`--continue-on-collection-errors`로 돌리면 실패 21,
-  수집 오류 1). 위치 탓이지 내가 바꾼 코드 탓이 아니다.
+- 워크트리는 전역 규칙대로 `~/git/.harness-wt/scalp-it/<이름>`에 만든다. `scripts/_envload.py`가 조상 폴더마다
+  형제 `quant-airflow/.env`를 찾으므로 그 깊이에서도 `uv run pytest -q`가 돈다(2026-11-19 전엔 한 단계 위만 봐서
+  수집 오류로 0건에서 멈췄다).
 
 ## 라이브 운영: 이 PC(simnode)가 장중 라이브 호스트다 (2026-10-07부터)
 - 평일 08:30~18:30에는 크론이 `~/git/scalp-it` 체크아웃으로 감지기(08:55~15:20)·수집·DART·리포트·`kqc nightly`를 돌린다.
