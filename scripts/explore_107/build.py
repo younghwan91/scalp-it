@@ -8,7 +8,6 @@
 """
 from __future__ import annotations
 
-import json
 import os
 import pickle
 import sys
@@ -28,8 +27,10 @@ START, END = "2025-08-01", "2026-10-02"
 
 
 def bad_days() -> set[str]:
-    f = ROOT / "research" / "bad_days.json"
-    return set(json.loads(f.read_text(encoding="utf-8"))["days"])
+    """불량일 — 추적 목록 + 자동 등록분(scripts/_bad_days.py 가 정문)."""
+    import _bad_days
+
+    return set(_bad_days.load())
 
 
 def window_timestamps(day: str) -> list[str]:

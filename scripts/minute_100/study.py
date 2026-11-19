@@ -36,11 +36,10 @@ NON_FEATS = ("y", "code", "ts", "date", "vol_q", "tv_q", "cell")
 
 
 def bad_days() -> set[str]:
-    f = ROOT / "research" / "bad_days.json"
-    try:
-        return set(json.loads(f.read_text(encoding="utf-8"))["days"])
-    except (OSError, KeyError, ValueError):
-        return set()
+    """불량일 — 추적 목록 + 자동 등록분(scripts/_bad_days.py 가 정문)."""
+    import _bad_days
+
+    return set(_bad_days.load())
 
 
 def split(days: list[str]) -> tuple[list[str], list[str], list[str]]:

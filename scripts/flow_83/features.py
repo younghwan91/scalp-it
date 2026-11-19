@@ -345,18 +345,17 @@ def build_code(tk: pd.DataFrame, qt: pd.DataFrame) -> tuple[dict, dict]:
 
 
 def bad_days() -> dict:
-    """수집이 덜 된 거래일(research/bad_days.json). 원본은 지우지 않고 **여기서 뺀다**.
+    """수집이 덜 된 거래일(scripts/_bad_days.py). 원본은 지우지 않고 **여기서 뺀다**.
 
     부분 수집된 날은 틱이 있어도 하루의 일부뿐이라 표본에 섞이면 조용히 편향된다
     (2026-08-31 은 11:40 에 수집이 죽었고 분커버 41% 였다).
     """
-    import json
+    scripts = str(Path(__file__).resolve().parents[1])
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import _bad_days
 
-    f = Path(__file__).resolve().parents[2] / "research" / "bad_days.json"
-    try:
-        return json.loads(f.read_text(encoding="utf-8"))["days"]
-    except (OSError, KeyError, ValueError):
-        return {}
+    return _bad_days.load()  # 추적 목록 + data/bad_days_auto.json
 
 
 def build_day(conn, day: str, *, forward_ok: bool = False) -> Path:
