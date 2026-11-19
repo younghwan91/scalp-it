@@ -82,7 +82,11 @@ deploy/research_run.sh uv run python <학습·대규모 스크립트>  # 무거�
   `daily_bars`·`daily_bars_adjusted`·`supply_demand` 의 종가를 직접 SELECT하면 `tests/test_regular_session.py` 정적 규칙이
   실패한다. `daily_bars`는 원주가도 아니다(분할 소급 반영). 장 전 기준가는 전일 분봉(15:45 크론)뿐이라 그 크론이 실패하거나
   종목이 수집 대상 밖이면 기준가가 빈다 — 유니버스가 원인과 함께 `[경고] 기준가 미상` 을 찍는다.
-- 수집 불량일은 `research/bad_days.json`으로 캐시에서만 뺀다. 원본 행은 지우지 않는다. 사람이 적은 항목은 덮어쓰지 않는다.
+- 수집 불량일은 캐시에서만 뺀다. 원본 행은 지우지 않는다. 사람이 적은 항목은 덮어쓰지 않는다. 읽기·쓰기는 `scripts/_bad_days.py` 하나로:
+  추적 파일 `research/bad_days.json`(사람·승격) + 16:10 크론이 쓰는 `data/bad_days_auto.json`(추적 안 함). 자동 등록분은
+  `~/of80/.rlvenv/bin/python scripts/collect_health.py --promote` 후 커밋한다.
+- **크론은 추적 파일에 쓰지 않는다.** 운영 체크아웃이 더러우면 07:50 pull-all 이 그 레포를 건너뛰고, CI 가 초록이 아니면
+  보류한다 — 둘 다 조용하다(11-13~19 GitHub Actions 결제 문제로 엿새 보류). 개장 전 점검 8) 이 이를 경고한다.
 
 ## 코드 규칙
 - 시장 규칙, 주문 가드, 체결 판정, 검증 통계의 정본은 `krx-quant-core`다(README "공통 코어 의존성" 표). 여기에 사본을 두지
