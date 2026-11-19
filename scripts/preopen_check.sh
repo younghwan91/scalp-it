@@ -257,6 +257,31 @@ else
   ok "크론에 옛 경로 없음"
 fi
 
+# ─────────────────────────────────────────────────────────── 8. 배포
+# 07:50 pull-all --ci-gate 는 더러운 트리를 건너뛰고, CI 가 초록이 아니면 보류한다. 둘 다 조용하다.
+# 2026-11-13~19 엔 GitHub Actions 결제 문제로 CI 가 아예 안 돌아 main 의 수정이 엿새째 라이브에
+# 안 들어갔는데 아무도 몰랐다. 런처가 실제로 어떤 코드로 뜨는지 여기서 한 번 더 본다(읽기 전용).
+sec "8) 배포 상태(이 체크아웃이 main 과 같은가)"
+
+BRANCH="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+[ "$BRANCH" = "main" ] && ok "브랜치 main" || warn "브랜치가 '$BRANCH' 다 — 그 브랜치 코드가 오늘 장중에 돈다"
+DIRTY="$(git -C "$REPO" status --porcelain --untracked-files=no 2>/dev/null)"
+if [ -z "$DIRTY" ]; then
+  ok "추적 파일 변경 없음"
+else
+  warn "추적 파일이 바뀌어 있다 — 07:50 pull-all 이 동기화를 건너뛴다:"
+  printf '%s\n' "$DIRTY" | head -5 | sed 's/^/       /'
+fi
+LOCAL="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)"
+REMOTE="$(timeout 15 git -C "$REPO" ls-remote origin refs/heads/main 2>/dev/null | cut -f1)"
+if [ -z "$REMOTE" ]; then
+  warn "origin/main 조회 실패 — 배포 상태를 모른다"
+elif [ "$LOCAL" = "$REMOTE" ]; then
+  ok "origin/main 과 같다 (${LOCAL:0:7})"
+else
+  warn "origin/main(${REMOTE:0:7}) 과 다르다 — 지금 ${LOCAL:0:7} 로 돈다. ~/logs/morning-sync.log 의 scalp-it 줄 확인"
+fi
+
 # ─────────────────────────────────────────────────────────── 요약
 printf '\n──────────────────────────────────────────\n'
 if [ "$FAIL" -gt 0 ]; then

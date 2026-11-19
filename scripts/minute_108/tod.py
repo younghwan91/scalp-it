@@ -48,7 +48,6 @@ from krx_quant_core.backtest.drift import drift_summary, rank_buckets
 from krx_quant_core.stats.trials import record_trial
 
 ROOT = Path(__file__).resolve().parents[2]
-BAD_DAYS = ROOT / "research" / "bad_days.json"
 CACHE = Path.home() / "of80" / "tod108"
 
 COST_CONT_BP = 41.5      # 연속 체결 왕복: 세금 20 + 수수료 3 + 스프레드 18.5
@@ -291,7 +290,9 @@ def main() -> int:
 
     conn = psycopg2.connect(os.environ["KR_QUANT_DB"])
     conn.set_session(readonly=True)
-    bad = set(json.loads(BAD_DAYS.read_text(encoding="utf-8"))["days"])
+    import _bad_days
+
+    bad = set(_bad_days.load())
     lo = (pd.Timestamp(a.d0) - pd.Timedelta(days=10)).date().isoformat()
     hi = a.extra_to or a.d1
     days = pd.read_sql("select distinct ts::date d from minute_bars where ts >= %s and ts < %s::date + 1 order by d",
