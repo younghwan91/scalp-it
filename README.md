@@ -9,7 +9,7 @@
 > `--confirm-real` 로 1주 실주문이 나갔다(`scripts/pair_detect_daily.sh` 헤더 참고).
 > 2026년 10월 사전등록 연구 프로그램(호가 흐름 스캘핑, LightGBM, Double-DQN, 대기열 인지 지정가 엔진)은
 > **전진 판정 전부 기각으로 공식 종결**(소매 왕복비용 미달성). 현재는 장중 틱·분봉 실시간 수집 및 헬스체크만 운영.
-> 현재 상태·판정 현황은 [`docs/STATUS.md`](docs/STATUS.md) 부터.
+> 현재 판정·결정은 [`docs/TRADING_CRITERIA.md`](docs/TRADING_CRITERIA.md)(날짜별로 위에 쌓이는 문서)에서 본다.
 
 핵심 규율은 하나다 — **사전등록하고, 한 번만 재고, 결과를 그대로 기록한다.**
 기각된 것을 살리려고 파라미터를 바꾸지 않는다.
@@ -20,9 +20,11 @@
   [kiwoom-client](https://github.com/younghwan91/kiwoom-client) 로 접근한다.
 - **형제 레포 클론**: 이 레포와 같은 부모 디렉터리에 `quant-airflow` 가 있어야 한다.
   DB 접속정보(`KR_QUANT_DB`)와 키움 App key/secret 을 그 `.env` 에서 읽어온다.
-- **TimescaleDB 컨테이너**: `quant-airflow` 가 띄우는
-  `quant-airflow-timescaledb-replica-1` 컨테이너를 공유해서 쓴다(:5433/kr_quant).
+- **TimescaleDB**: `quant-airflow` 가 운영하는 `kr_quant` DB 를 공유해서 쓴다(`KR_QUANT_DB`).
   자세한 주의사항은 아래 [DB 의존성](#db-의존성-주의) 참고.
+- **설정은 전부 환경변수**다(`.env.example` 은 없다). `KR_QUANT_DB`·`KIWOOM_APP_KEY`·`KIWOOM_APP_SECRET`·`DART_API_KEY` 는
+  `quant-airflow` 의 `.env` 에서 읽어 오고, 값을 이 레포에 적지 않는다. 실주문 경로(`--confirm-real`)는 추가로
+  `SCALP_HELD_STOCK_CODES`(계좌에 이미 있는 종목 코드, 쉼표 구분 — 이 종목은 주문 차단)가 없으면 주문 클라이언트가 거부한다(fail-closed).
 
 ## 설치 · 실행
 
@@ -129,7 +131,7 @@ flowchart TD
 
 ## 운영 (cron, 평일)
 
-**2026-10-07 trader(N100) 처분 이후 simnode 단일 호스트**에서 전부 돈다 — 크론 정본은
+**단일 호스트(simnode)**에서 전부 돈다 — 크론 정본은
 [`deploy/crontab.simnode`](deploy/crontab.simnode)(dotfiles 의 cron-install 이 설치, 손으로 고치지 말 것).
 아래는 주요 줄만 추린 것이다.
 
@@ -153,7 +155,7 @@ flowchart TD
 
 ## DB 의존성 (주의)
 
-2026-10-07 trader(N100) 처분 이후 **simnode 단일 호스트**에서 수집기·감지기가 돌며, 같은 호스트의 TimescaleDB PRIMARY(`192.168.45.9:5433` / `quant-airflow-timescaledb-1`)에 직접 쓴다.
+수집기·감지기는 단일 호스트에서 돌며 `quant-airflow` 의 TimescaleDB PRIMARY(`KR_QUANT_DB`)에 직접 쓴다.
 
 **틱·호가는 소급 수집이 불가능**하므로, DB 가 장중에 완전히 죽으면 그날 데이터는 영구 손실이다.
 
@@ -185,7 +187,8 @@ flowchart TD
 
 | | |
 |---|---|
-| [`docs/STATUS.md`](docs/STATUS.md) | **여기부터** — 현재 상태·판정 현황·다음 할 일 |
+| [`docs/TRADING_CRITERIA.md`](docs/TRADING_CRITERIA.md) | **여기부터** — 날짜별 결정·현재 판정 상태 |
+| [`docs/PROMOTION_CHECKLIST.md`](docs/PROMOTION_CHECKLIST.md) | 실주문 재개 전 통과해야 하는 게이트 |
 | [`docs/PAIR_TRADING_RUNBOOK.md`](docs/PAIR_TRADING_RUNBOOK.md) | 짝꿍 실시간 매매 런북 — dry-run→실발주 순서, 안전장치 |
 | `docs/research/manju/` | 만쥬·스승 리서치, 사전등록, 판정 결과 |
 |  `docs/archive/` | v1·v2 시기 기록 + **반드시 기억할 실패 5가지** |
