@@ -371,7 +371,7 @@ class KiwoomClient:
     def fetch_program_rows(self, *, day: str, market: str = "P101") -> list[dict]:
         """``ka90005`` 프로그램매매추이 — 분 단위 시장 전체 프로그램 수급.
 
-        만쥬가 "외인/기관 프로그램이 쏟아내는 장세면 진입을 거른다"고 한 자리다.
+        프로그램이 쏟아내는 장세에 신규 진입을 거르는 필터가 쓴다.
         장중에는 첫 행이 직전 분이라 첫 페이지만 받으면 된다.
 
         2026-09-12: ``kiwoom_client.KiwoomAPI.market.program_trading_by_time``

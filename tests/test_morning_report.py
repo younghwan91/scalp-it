@@ -8,7 +8,7 @@ from scalp_it.morning_report import in_trigger_zone
 
 
 def test_three_ticks_below_limit_is_the_trigger_zone():
-    """만쥬 §2 — "상한가 호가를 3개 남겨둔 3~5초 사이에 매수"."""
+    """방아쇠 구간 = 상한가 호가를 3개 남긴 구간."""
     # 전일종가 10,000 → 상한가 13,000. 5천~2만원 구간 호가단위는 10원(2023 개편)이라
     # 3호가 아래 = 12,970. 만쥬가 말한 구간은 여기부터 상한가 직전까지다.
     assert in_trigger_zone(price=12_970, prev_close=10_000, ticks=3)

@@ -11,12 +11,21 @@ import pytest
 
 from scalp_it.adapters.kiwoom import KiwoomError
 from scalp_it.adapters.kiwoom_order import (
-    HELD_STOCK_CODES,
+    HELD_CODES_ENV,
+    HeldStockConfigError,
     KiwoomOrderClient,
     OrderGuardConfig,
     OrderIntent,
     normalize_code,
 )
+
+FAKE_HELD = ("000010", "000020", "222222")  # 가짜 코드 — 실보유는 레포에 두지 않는다
+
+
+@pytest.fixture(autouse=True)
+def _held_env(monkeypatch):
+    monkeypatch.setenv(HELD_CODES_ENV, ",".join(FAKE_HELD))
+
 
 _TOKEN_BODY = {"return_code": 0, "return_msg": "ok", "token": "tok-xyz", "token_type": "bearer"}
 
@@ -70,9 +79,9 @@ def test_normalize_code_strips_a_prefix_and_pads():
     assert normalize_code("A000020") == "000020"
 
 
-# ------------------------------------------------------------------ 보유 3종목 하드 차단
+# ------------------------------------------------------------------ 보유 종목 하드 차단
 
-@pytest.mark.parametrize("code", ["000010", "000020", "222222", "A000010"])
+@pytest.mark.parametrize("code", [*FAKE_HELD, "A000010"])
 def test_held_stocks_hard_blocked_dry_run(code):
     rec = Recorder()
     c = _client(rec)
@@ -90,8 +99,31 @@ def test_held_stocks_hard_blocked_even_live():
     assert rec.order_posts == []          # live 라도 절대 POST 안 함
 
 
-def test_held_codes_constant():
-    assert HELD_STOCK_CODES == frozenset({"000010", "000020", "222222"})
+def test_held_codes_loaded_from_env():
+    from scalp_it.adapters.kiwoom_order import held_stock_codes
+
+    assert held_stock_codes() == frozenset(FAKE_HELD)
+    assert OrderGuardConfig().blocklist >= frozenset(FAKE_HELD)
+
+
+@pytest.mark.parametrize("value", [None, "", "  ", ",", ", ,", "1234567", "abcdef"])
+def test_live_client_refuses_without_valid_held_env(monkeypatch, value):
+    """fail-closed — 차단 목록 환경변수가 없거나 비었거나 깨졌으면 클라이언트를 만들지 않는다."""
+    if value is None:
+        monkeypatch.delenv(HELD_CODES_ENV, raising=False)
+    else:
+        monkeypatch.setenv(HELD_CODES_ENV, value)
+    rec = Recorder()
+    with pytest.raises(HeldStockConfigError):
+        _client(rec)
+    with pytest.raises(HeldStockConfigError):
+        OrderGuardConfig()
+    assert rec.order_posts == []
+
+
+def test_held_env_is_read_on_every_guard_build(monkeypatch):
+    monkeypatch.setenv(HELD_CODES_ENV, "333333")
+    assert OrderGuardConfig().blocklist == frozenset({"333333"})
 
 
 # ------------------------------------------------------------------ 화이트리스트
@@ -201,7 +233,7 @@ def test_account_number_and_masking():
 
 def test_holdings_parses_a_prefix_and_pads():
     rec = Recorder(holdings=[
-        {"stk_cd": "A000010", "stk_nm": "보유A", "rmnd_qty": "000000000000007",
+        {"stk_cd": "A000010", "stk_nm": "가짜A", "rmnd_qty": "000000000000007",
          "trde_able_qty": "000000000000007", "cur_prc": "000000012300"},
     ])
     c = _client(rec)
@@ -282,7 +314,7 @@ def test_preorder_verify_blocks_buy_but_sell_unaffected():
 
 
 def test_hardcoded_held_blocks_sell_too():
-    """하드코딩 3종목은 매도까지 양방향 차단(우리가 안 파는 종목이라 무해)."""
+    """환경변수 보유 종목은 매도까지 양방향 차단(우리가 안 파는 종목이라 무해)."""
     rec = Recorder()
     c = _client(rec)
     assert c.sell_limit("000010", 1, 10000, live=False, ref_price=10000).blocked is True

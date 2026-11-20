@@ -49,7 +49,7 @@ def test_locked_reads_the_limit_up_wall():
 
 
 def test_leader_candidates_take_the_twenty_percent_movers():
-    """만쥬: (비공개 회신 — 공개본에서 뺐다)
+    """등락률 20% 이상 종목을 대장 후보로 낙점한다."""
     got = leader_candidates(parse_scan_rows(RAW), min_flu_rt=20.0, prefer_unlocked=False)
     assert [r.code for r in got] == ["043200", "457600"]
     assert got[0].flu_rt > got[1].flu_rt, "등락률 내림차순이어야 한다"

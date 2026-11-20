@@ -26,8 +26,15 @@ def find_env(start: Path) -> Path:
     raise FileNotFoundError(f"quant-airflow/.env 를 찾을 수 없다: {tried[1] if len(tried) > 1 else start}")
 
 
-_env = find_env(Path(__file__).resolve().parent)
-for line in _env.read_text().splitlines():
+try:
+    _env = find_env(Path(__file__).resolve().parent)
+except FileNotFoundError:
+    # 공개본·CI 처럼 형제 quant-airflow 가 없는 환경에서 테스트가 스크립트를 import 할 수 있게
+    # 하는 명시적 선택(tests/conftest.py 가 켠다). 운영에서는 켜지 않으므로 여전히 큰 소리로 죽는다.
+    if os.environ.get("SCALP_ENVLOAD_OPTIONAL") != "1":
+        raise
+    _env = None
+for line in (_env.read_text().splitlines() if _env else []):
     line = line.strip()
     if not line or line.startswith("#") or "=" not in line:
         continue

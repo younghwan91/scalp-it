@@ -1,11 +1,10 @@
-"""정점 이익 50% 반납 = 그날 하드스톱 — **타 트레이더 B B-3**(51번 명세).
+"""정점 이익 50% 반납 = 그날 하드스톱 — **타 트레이더 B B-3**.
 
 > Track intraday peak net profit (P_peak).
 > If (P_current <= P_peak * 0.50) after achieving significant P_peak:
 >   -> **HARD STOP. Terminate all open positions and shutdown trading for the day.**
 
-종전 `drawdown_krw`(정점 대비 10만원 반납)는 **킬이 아니라 비중 축소**였다(46 §10
-"예수금 1/3~1/5로 축소"). 지시서는 그것과 별개로 **비율 기준 하드스톱**을 요구한다 —
+종전 `drawdown_krw`(정점 대비 10만원 반납)는 **킬이 아니라 비중 축소**였다. 지시서는 그것과 별개로 **비율 기준 하드스톱**을 요구한다 —
 번 걸 절반 뱉으면 그날 끝이다.
 """
 from datetime import datetime  # noqa: F401

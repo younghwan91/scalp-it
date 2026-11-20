@@ -111,9 +111,9 @@ def pyramid_multiplier(ret: float, *, arm: float, max_mult: float) -> float:
 KILL_DAILY_LOSS = "daily_loss"
 KILL_CONSECUTIVE = "consecutive_losses"
 KILL_MANUAL = "manual_stop"
-#: 정점 이익의 절반을 반납하면 그날 끝. **타 트레이더 B 엔진 B-3**(51번 명세)
-#: "INTRADAY PROFIT TRAILING STOP (50% RULE)". 만쥬가 아니다 — 46 §10 의 만쥬 원문은
-#: "1/3~1/5 **축소**"였고 킬이 아니었다. 조이는 방향이라 채택하되 출처는 정확히 둔다.
+#: 정점 이익의 절반을 반납하면 그날 끝. **타 트레이더 B 엔진 B-3**
+#: "INTRADAY PROFIT TRAILING STOP (50% RULE)". 만쥬 규칙이 아니다.
+#: 종전 `drawdown_krw` 는 비중 축소였고 킬이 아니었다. 조이는 방향이라 채택하되 출처는 정확히 둔다.
 #: 원문 "TRAILING PROFIT DRAWDOWN
 #: (50% Rule) — HARD STOP. Terminate all open positions and shutdown trading."
 #: `drawdown_krw`(비중 축소)와 **다른 축**이다 — 이쪽은 진짜 킬이다.
@@ -127,7 +127,7 @@ LEADER_LOST = "lost"         # 상한가를 못 말거나 풀리고 꺾임 = 매
 # 신규 알림 억제 사유 — 킬스위치가 **아니다**. 국면 배수가 0(극침체)이면 그날 신규
 # 진입만 막고, 배수를 되돌리면 즉시 재개된다. 킬은 하루를 접는 것이라 성격이 다르다.
 BLOCK_REGIME_ZERO = "regime_zero"
-#: 프로그램이 쏟아내는 장세라 신규 진입만 막는다 — 만쥬 "진입을 거릅니다".
+#: 프로그램이 쏟아내는 장세라 신규 진입만 막는다.
 #: 킬이 아니다. 수급이 돌아오면 그 자리에서 다시 통과한다.
 BLOCK_PROGRAM_DUMP = "program_dump"
 
@@ -177,10 +177,10 @@ class RiskGuardConfig:
     # **수익이 난 뒤에야** 켜진다 — 진입부터 켜면 2등주 자체 가격 노이즈에 털린다.
     trail_arm: float = 0.0                    # 이만큼 오르면 트레일링 무장. 0 = 끔
     trail_pct: float = 0.0                    # 무장 후 고점 대비 이만큼 밀리면 청산
-    # 낙폭 방어(만쥬): (비공개 회신 — 공개본에서 뺐다) 연속손절 킬스위치가 "오늘 그만"이라면 이건 "덜 걸고 계속"이다 — 정점을
+    # 낙폭 방어: 정점 대비 계좌가 꺾이면 운용 비중을 줄인다. 연속손절 킬스위치가 "오늘 그만"이라면 이건 "덜 걸고 계속"이다 — 정점을
     # 찍고 밀리는 중인데 같은 크기로 계속 거는 걸 막는다. 0 = 끔.
     drawdown_krw: float = 0.0                 # 실현손익이 정점 대비 이만큼 밀리면
-    drawdown_size_multiplier: float = 1.0 / 3  # 명목을 이 배수로 줄인다(만쥬: 1/3~1/5)
+    drawdown_size_multiplier: float = 1.0 / 3  # 명목을 이 배수로 줄인다
     # 국면이 나빠 진입을 막은 신호도 **그림자로는 굴린다**. 만쥬 규칙대로 안 사는 건
     # 그대로이고(실현손익·승패·연속손절·킬스위치·주문 어디에도 안 닿는다), 대신
     # "샀으면 어땠나"가 기록으로 남는다. 쉬는 국면이 몇 달 이어지면 표본이 0 이라
@@ -372,7 +372,7 @@ class RiskGuard:
         # 지금 상한가를 말고 있는 대장. 굳힘 통보는 전이 순간 한 번만 오므로, 그 뒤에 연
         # 포지션도 손절 잠금을 받으려면 상태를 기억해야 한다(79번 측정에서 발견).
         self._holding_leaders: set[str] = set()
-        # 프로그램이 쏟아내는 장세인가(만쥬). 외부에서 주입받는다 — 가드는 시장
+        # 프로그램이 쏟아내는 장세인가. 외부에서 주입받는다 — 가드는 시장
         # 수급을 조회할 방법이 없다(DB·네트워크를 모르는 게 이 모듈의 계약이다).
         self.program_dumping: bool = False
         self.drawdown_capped: bool = False
@@ -465,7 +465,7 @@ class RiskGuard:
         return self.effective_notional() * mult
 
     def set_program_dumping(self, dumping: bool) -> None:
-        """프로그램 수급 상태를 주입한다(만쥬 — 쏟아내는 장세면 진입을 거른다).
+        """프로그램 수급 상태를 주입한다(쏟아내는 장세면 진입을 거른다).
 
         **킬이 아니다.** 신규 진입만 막고, 이미 열린 포지션의 청산 경로는 여기를
         안 지나므로 규칙대로 계속 나간다. 수급이 돌아오면 그 자리에서 다시 통과한다.

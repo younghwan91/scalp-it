@@ -92,7 +92,7 @@ deploy/research_run.sh uv run python <학습·대규모 스크립트>  # 무거�
 - 시장 규칙, 주문 가드, 체결 판정, 검증 통계의 정본은 `krx-quant-core`다(README "공통 코어 의존성" 표). 여기에 사본을 두지
   않는다. daytrade-it과 겹치는 새 로직은 코어로 보낸다. 코어를 올릴 때는 `pyproject.toml` 핀을 바꾸고 `uv lock`을 한 다음
   전체 테스트를 돌린다.
-- 계좌에 묶인 것(`HELD_STOCK_CODES`)과 주문 HTTP 전송(`KiwoomOrderClient`)은 이 레포에 남긴다.
+- 계좌에 묶인 것(보유 종목 차단 목록 — 환경변수 `SCALP_HELD_STOCK_CODES`, 쉼표 구분 6자리 코드, 레포 밖 `~/.config/scalp-it/held.env`; 비면 클라이언트 생성 거부)과 주문 HTTP 전송(`KiwoomOrderClient`)은 이 레포에 남긴다.
 - 실시간 피처는 백테스트와 **같은 함수**로 계산한다(PROMOTION_CHECKLIST 8번 피처 패리티).
 - 기사 LLM(`material_llm.py` → `score/provider.py`)을 Anthropic 으로 부를 때:
   - 모델은 `claude-haiku-5-5` 만. Haiku 4.5 는 쓰지 않는다(4.5 판정은 quant-airflow DB `legacy` 스키마·daytrade-it `data/legacy/` 보관분).
@@ -102,7 +102,7 @@ deploy/research_run.sh uv run python <학습·대규모 스크립트>  # 무거�
   - 참고 구현: quant-airflow `collectors/news_judge.py`(배치 원장, create 재시도 금지), swing-it `src/swing_it/news/judge.py`.
 
 ## Git
-- 커밋 신원은 레포 설정(`chyohw97@gmail.com`)을 그대로 쓴다. 세션 컨텍스트의 회사 이메일로 `git -c user.email=...`를
+- 커밋 신원은 레포 설정(`you@example.com`)을 그대로 쓴다. 세션 컨텍스트의 다른 이메일로 `git -c user.email=...`를
   쓰지 않는다. `.githooks/pre-commit`이 막는다(2026-08-29 사고). 새 클론에서는 `git config core.hooksPath .githooks`를 실행한다.
 - 커밋 메시지는 한국어 conventional 형식을 쓴다. 예: `fix(realtime): ...`, `research(106): ...`, `docs(108): ...`, `chore(cron): ...`
 - 데이터(`data/`, csv, parquet, jsonl)는 커밋하지 않는다. 예외는 `research/runs/*/RUNS.jsonl`과 연구 원장이다.

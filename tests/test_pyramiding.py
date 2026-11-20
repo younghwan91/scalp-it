@@ -1,4 +1,4 @@
-"""불타기 — 만쥬 A-4 Pyramiding(51번 명세).
+"""불타기 — 만쥬 A-4 Pyramiding.
 
 > - Martingale / Averaging Down (물타기): **ABSOLUTELY FORBIDDEN**.
 > - Pyramiding (불타기):

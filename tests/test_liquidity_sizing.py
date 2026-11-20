@@ -1,4 +1,4 @@
-"""호가가 얇으면 비중을 줄인다 — 만쥬 A-2 Thin Orderbook Restriction(51번 명세).
+"""호가가 얇으면 비중을 줄인다 — 만쥬 A-2 Thin Orderbook Restriction.
 
 > - Thick Orderbook (e.g., Large Group Stocks): Normal allocation.
 > - Thin Orderbook (e.g., Small Theme Followers): Cap size to prevent slippage

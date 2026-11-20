@@ -53,6 +53,14 @@ else
   bad "읽을 수 없음: $KW_ENV — 런처의 export 가 조용히 빈 값이 된다"
 fi
 
+# 보유 종목 하드 차단 목록 — 레포 밖 파일. 없으면 주문 실행기가 fail-closed 로 꺼진다.
+HELD_ENV="$HOME/.config/scalp-it/held.env"
+if grep -qE '^SCALP_HELD_STOCK_CODES=.+' "$HELD_ENV" 2>/dev/null; then
+  ok "SCALP_HELD_STOCK_CODES 선언됨($HELD_ENV)"
+else
+  warn "SCALP_HELD_STOCK_CODES 없음($HELD_ENV) — 주문 실행기가 꺼진다(fail-closed, 감지·수집은 계속)"
+fi
+
 # 런처가 **절대경로로 박아 쓰는** uv. PATH 와 무관하게 이 파일이 있어야 한다.
 UV=/home/young/.local/bin/uv
 [ -x "$UV" ] && ok "uv 실행 가능: $UV" || bad "uv 없음/실행 불가: $UV — 런처가 못 뜬다"
@@ -179,7 +187,7 @@ fi
 # 사람이 판단할 몫이라 FAIL 이 아니라 WARN 이다.
 HOLD_OUT="ENV_MISSING"
 if [ -r "$KW_ENV" ]; then
-  HOLD_OUT="$(set -a; . "$KW_ENV"; set +a; "$UV" run --extra pg python -c '
+  HOLD_OUT="$(set -a; . "$KW_ENV"; [ -f "$HOME/.config/scalp-it/held.env" ] && . "$HOME/.config/scalp-it/held.env"; set +a; "$UV" run --extra pg python -c '
 from scalp_it.adapters.kiwoom import api_credentials
 from scalp_it.adapters.kiwoom_order import KiwoomOrderClient
 try:

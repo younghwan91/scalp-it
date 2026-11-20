@@ -38,14 +38,14 @@ _TOKEN_BODY = {"return_code": 0, "return_msg": "정상", "token_type": "bearer",
 _GROUP_ROW = {
     "thema_grp_cd": "141", "thema_nm": "2차전지_소재(양극화물질등)", "stk_num": "14",
     "flu_sig": "5", "flu_rt": "-3.74", "rising_stk_num": "2", "fall_stk_num": "12",
-    "dt_prft_rt": "+25.22", "main_stk": "보유B, 티엔엔터테인먼트",
+    "dt_prft_rt": "+25.22", "main_stk": "가짜B, 티엔엔터테인먼트",
 }
 _GROUP_ROW2 = dict(_GROUP_ROW, thema_grp_cd="420", thema_nm="보험_생명보험", stk_num="3",
                    flu_sig="2", flu_rt="+3.29", rising_stk_num="1", fall_stk_num="1",
                    dt_prft_rt="+3.29", main_stk="삼성생명, 동양생명")
 #: ka90002 실측 행.
 _MEMBER_ROW = {
-    "stk_cd": "000020", "stk_nm": "보유B", "cur_prc": "+116200", "flu_sig": "2",
+    "stk_cd": "000020", "stk_nm": "가짜B", "cur_prc": "+116200", "flu_sig": "2",
     "pred_pre": "+2600", "flu_rt": "+2.29", "acc_trde_qty": "575218", "sel_bid": "+116200",
     "sel_req": "153", "buy_bid": "+116100", "buy_req": "627", "dt_prft_rt_n": "-2.92",
 }
@@ -143,7 +143,7 @@ def test_normalize_theme_group_maps_fields_and_keeps_raw():
     assert got["flu_rt"] == -3.74
     assert got["dt_prft_rt"] == 25.22
     assert (got["rising_stk_num"], got["fall_stk_num"]) == (2, 12)
-    assert got["main_stk"] == "보유B, 티엔엔터테인먼트"
+    assert got["main_stk"] == "가짜B, 티엔엔터테인먼트"
     assert got["raw"] == _GROUP_ROW
 
 
@@ -151,7 +151,7 @@ def test_normalize_theme_member_strips_price_sign_but_keeps_rate_sign():
     got = normalize_theme_member("141", _MEMBER_ROW)
     assert got["theme_code"] == "141"
     assert got["code"] == "000020"
-    assert got["name"] == "보유B"
+    assert got["name"] == "가짜B"
     assert got["cur_prc"] == 116200
     assert got["flu_rt"] == 2.29
     assert got["acc_trde_qty"] == 575218
@@ -289,7 +289,7 @@ def test_upsert_members_pk_is_date_theme_code(conn):
     got = conn.execute(
         "select code, name, cur_prc, flu_rt, acc_trde_qty, dt_prft_rt_n from theme_members "
         "where theme_code='141' order by code").fetchall()
-    assert got[0] == ("000020", "보유B", 116200, 2.29, 575218, -2.92)
+    assert got[0] == ("000020", "가짜B", 116200, 2.29, 575218, -2.92)
 
 
 def test_upsert_empty_is_zero(conn):

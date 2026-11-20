@@ -1,6 +1,10 @@
+import os
 import sqlite3
 
 import pytest
+
+# 형제 quant-airflow/.env 가 없는 환경(공개본 클론)에서도 scripts/_envload.py 를 import 하는 테스트가 수집된다.
+os.environ.setdefault("SCALP_ENVLOAD_OPTIONAL", "1")
 
 
 @pytest.fixture(autouse=True)
@@ -13,6 +17,16 @@ def _no_production_db(monkeypatch):
     sqlite 경로 등을 ``monkeypatch.setenv`` 로 직접 준다.
     """
     monkeypatch.delenv("KR_QUANT_DB", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _fake_held_codes(monkeypatch):
+    """주문 클라이언트는 보유 종목 차단 목록이 없으면 만들어지지 않는다(fail-closed).
+
+    테스트는 가짜 코드를 준다 — 실보유 코드는 레포에 없다. 없는 경우를 시험하는 테스트는
+    ``monkeypatch.delenv`` 로 지운다.
+    """
+    monkeypatch.setenv("SCALP_HELD_STOCK_CODES", "000010,000020,222222")
 
 
 @pytest.fixture()

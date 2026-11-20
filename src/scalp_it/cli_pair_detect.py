@@ -314,12 +314,12 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
             if args.halt_below_jo > 0 and gate.turnover_jo < args.halt_below_jo:
                 args.size_multiplier = 0.0
                 print(f"#   ↑ 거래대금 {gate.turnover_jo:.2f}조 < "
-                      f"{args.halt_below_jo:g}조 — 만쥬 기준 진입 금지. 신규 진입을 "
+                      f"{args.halt_below_jo:g}조 — 진입 금지. 신규 진입을 "
                       f"막는다(청산은 계속).", file=sys.stderr)
             elif args.scout_gate_jo > 0 and gate.turnover_jo < args.scout_gate_jo:
-                # 만쥬 A1(2026-08-30) — Gate 0(7~8조) 아래는 "쉬거나 극소액". 우리는
+                # Gate 0(7~8조) 아래는 쉬거나 극소액(비공개 출처). 우리는
                 # 실측 데이터를 얻으려 게이트를 5조로 낮춰 뒀는데(2026-08-27 사용자
-                # 결정), 그 구간의 **비중은 1/10 이어야** 만쥬 기준에 맞는다. 실주문은
+                # 결정), 그 구간의 **비중은 1/10 이어야** 기준에 맞는다. 실주문은
                 # 이미 1주지만 가상 회계 명목이 1천만원 그대로면 회계가 '평소 비중'으로
                 # 기록돼 성과 해석이 틀어진다.
                 from .market_regime import scout_multiplier
@@ -328,7 +328,7 @@ def build_universe_inputs(args: argparse.Namespace) -> dict[str, Any]:
                     turnover_jo=gate.turnover_jo, gate_jo=args.scout_gate_jo)
                 print(f"#   ↑ 거래대금 {gate.turnover_jo:.2f}조 < Gate 0 "
                       f"{args.scout_gate_jo:g}조 — 정찰병 비중 "
-                      f"{args.size_multiplier:g} 배(만쥬 A1).", file=sys.stderr)
+                      f"{args.size_multiplier:g} 배.", file=sys.stderr)
             elif args.size_by_regime:
                 # 만쥬 §8-1 — 국면이 나빠지면 시드를 줄인다("1억을 그대로 베팅하지
                 # 않고 3천만 이하로"). 배수 0 이면 신규 진입만 막고 기존 청산은 돈다.
@@ -633,9 +633,9 @@ def codes_to_enter(wanted: Sequence[str], added: Sequence[str],
 async def _watch_program_flow(
     guard: RiskGuard | None, bus: AlertBus, args: argparse.Namespace,
 ) -> None:
-    """장중 프로그램 수급 감시 — 만쥬 "쏟아내는 장세면 진입을 거릅니다".
+    """장중 프로그램 수급 감시 — 쏟아내는 장세면 신규 진입을 거른다.
 
-    우리는 지금까지 **대장 종목**의 매도 폭탄(`--dump-krw`)만 봤다. 만쥬가 말한 건
+    우리는 지금까지 **대장 종목**의 매도 폭탄(`--dump-krw`)만 봤다. 이 감시가 보는 건
     시장 전체 프로그램 수급이라 종목 단위로는 표현이 안 된다.
 
     **킬이 아니다** — 신규 진입만 막고 열린 포지션은 규칙대로 청산된다. 수급이
@@ -912,8 +912,7 @@ async def _watch_entry_cutoff(
 ) -> None:
     """오후가 되면 **신규 진입만** 막는다 — 청산은 계속 돈다.
 
-    만쥬 통합 매뉴얼(49 §1-5): "오전 핵심 구간 매매 후 오후 추격 매매는 철저히 배제."
-    45번 대조표에 "미결정"으로 남겨뒀던 자리를 이 답변이 확정지었다.
+    오전 핵심 구간 매매 후 오후 추격 매매는 배제한다(비공개 출처 — 공개본에서 뺐다).
 
     시황 게이트와 **같은 경로**를 쓴다(`size_multiplier = 0`) — 이미 검증된 길이고,
     신규 진입만 막고 열린 포지션의 손절·대장이탈 청산은 그대로 돈다.
@@ -1219,6 +1218,7 @@ def build_order_executor(
     if not args.live_order:
         return None
     from .adapters.kiwoom_order import (
+        HeldStockConfigError,
         OrderGuardConfig,
     )
 
@@ -1229,13 +1229,19 @@ def build_order_executor(
     # 감지기가 후속주로 고를 수 있는 범위와 정확히 같은 집합이다.
     whitelist = frozenset(p.follower for p in pairs) | frozenset(
         str(c) for c in universe if c)
-    guard = OrderGuardConfig(
-        max_qty=args.qty,
-        price_band_pct=args.order_band_pct,
-        max_orders_per_code=args.max_orders_per_code,
-        max_orders_total=args.max_orders_total,
-        whitelist=whitelist,
-    )
+    try:
+        guard = OrderGuardConfig(
+            max_qty=args.qty,
+            price_band_pct=args.order_band_pct,
+            max_orders_per_code=args.max_orders_per_code,
+            max_orders_total=args.max_orders_total,
+            whitelist=whitelist,
+        )
+    except HeldStockConfigError as exc:
+        # fail-closed: 보유 종목 차단 목록 없이는 주문 실행기를 켜지 않는다(감지·수집은 계속).
+        print(f"[주문] 보유 종목 차단 목록 없음 → 주문 실행기 비활성(fail-closed): {exc}",
+              file=sys.stderr, flush=True)
+        return None
     if client is not None:
         # 주입된 클라이언트 — 인증·계좌조회를 건너뛴다(배선 스모크 테스트용).
         held = ()
@@ -1247,7 +1253,7 @@ def build_order_executor(
     mode = "🔴 실발주(LIVE)" if real else "🧪 DRY-RUN(발주 안 함)"
     print(f"# 주문 실행기 ON — {mode} · 계좌 {client.masked_account()} · 수량 {args.qty}주 "
           f"· 화이트리스트 {len(whitelist)}종목 · 보유차단 {len(held)}종목 "
-          f"(하드 3 + 실시간) · 가격밴드 ±{args.order_band_pct:.1%}"
+          f"(환경변수 + 실시간) · 가격밴드 ±{args.order_band_pct:.1%}"
           + ("  ← --confirm-real 켜짐! 진짜 주문이 나갑니다." if real else ""),
           file=sys.stderr, flush=True)
     return OrderExecutor(client, qty=args.qty, live=real,
@@ -1298,6 +1304,7 @@ def _connect_order_client(args: argparse.Namespace, guard: Any) -> tuple[Any, An
     from .adapters.kiwoom_order import (
         KIWOOM_BASE,
         KIWOOM_MOCK_BASE,
+        HeldStockConfigError,
         KiwoomOrderClient,
         OrderLogSink,
     )
@@ -1314,10 +1321,15 @@ def _connect_order_client(args: argparse.Namespace, guard: Any) -> tuple[Any, An
         return None, ()
     base = KIWOOM_MOCK_BASE if args.mock else KIWOOM_BASE
     log = OrderLogSink(args.order_log)
-    client = KiwoomOrderClient(
-        appkey, secret, guard=guard, base_url=base,
-        on_order=lambda r: log.emit(r, timing=client.last_timing),
-    )
+    try:
+        client = KiwoomOrderClient(
+            appkey, secret, guard=guard, base_url=base,
+            on_order=lambda r: log.emit(r, timing=client.last_timing),
+        )
+    except HeldStockConfigError as exc:
+        print(f"[주문] 보유 종목 차단 목록 없음 → 주문 실행기 비활성(fail-closed): {exc}",
+              file=sys.stderr)
+        return None, ()
     # 계좌 자동조회 + 실시간 보유 병합(fail-closed): 실패하면 주문 실행기를 끈다.
     try:
         client.account_number()
@@ -1964,12 +1976,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--hold", type=float, default=None, help="시간청산 초 덮기 (기본 90)")
     p.add_argument("--surge", type=float, default=None, help="대장 서지 임계 덮기 (기본 0.015)")
     p.add_argument("--cosurge", type=float, default=None,
-                   help="후속 동반급등 하한 (기본 0.005). **0 = 요구 안 함** — 만쥬는 "
-                        "동반 급등을 진입 조건으로 말한 적이 없다. 반응 속도는 짝꿍 "
+                   help="후속 동반급등 하한 (기본 0.005). **0 = 요구 안 함** — "
+                        "동반 급등은 진입 조건이 아니다. 반응 속도는 짝꿍 "
                         "'선정' 기준이지(--follower-priority manju) 게이트가 아니다")
     p.add_argument("--premove", type=float, default=None,
-                   help="후속 프리무브 상한 (기본 0.002 = +0.2%%). 만쥬 \"이미 2~4%% "
-                        "튀어 오른 뒤라 추격 매수 시 100%% 물립니다\"")
+                   help="후속 프리무브 상한 (기본 0.002 = +0.2%%). 이미 튀어 오른 "
+                        "후속주를 추격하지 않는다")
     p.add_argument("--cooldown", type=float, default=None, help="쌍 재알림 억제 초 (기본 90)")
     p.add_argument("--halt-below-jo", type=float, default=0.0,
                    help="코스닥 전일 거래대금이 이 조원 미만이면 신규 진입 금지 "
@@ -2037,17 +2049,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="수집 후보 풀 크기(전일 거래대금 상위 N종목)")
     p.add_argument("--thin-book-bp", type=float, default=0.0,
                    help="왕복 충격이 이 bp 를 넘으면 호가가 얇다고 보고 비중을 줄인다. "
-                        "만쥬 A-2 Thin Orderbook Restriction(51번). 0 = 끔")
+                        "만쥬 A-2 Thin Orderbook Restriction. 0 = 끔")
     p.add_argument("--thin-book-size", type=float, default=0.2,
                    help="얇을 때 곱할 비중 배수(지시서 10~20%%)")
     p.add_argument("--scratch-ticks", type=int, default=0,
                    help="진입 후 후속주가 진입가 위로 이만큼(호가) 못 뜨면 본절 탈출. "
-                        "타 트레이더 B B-2 Immediate Acceleration Rule(51번). 0 = 끔")
+                        "타 트레이더 B B-2 Immediate Acceleration Rule. 0 = 끔")
     p.add_argument("--scratch-secs", type=float, default=0.0,
                    help="본절 탈출 판정까지 기다리는 시간(초). 원문에 없는 우리 값")
     p.add_argument("--profit-giveback", type=float, default=0.0,
                    help="정점 이익 대비 이 비율 이하로 반납하면 그날 하드스톱(0.5 = 절반). "
-                        "타 트레이더 B B-3 '50%% Rule'(51번). 0 = 끔")
+                        "타 트레이더 B B-3 '50%% Rule'. 0 = 끔")
     p.add_argument("--profit-giveback-min", type=float, default=0.0,
                    help="위 규칙을 적용하기 시작하는 최소 정점 이익(원). "
                         "'significant P_peak' 단서 — 작은 정점으로 하루를 끝내지 않는다")
@@ -2056,23 +2068,23 @@ def build_parser() -> argparse.ArgumentParser:
                         "만쥬 A1 의 Gate 0(7~8조). 0 = 끔")
     p.add_argument("--no-entry-after", default="",
                    help="이 시각(HHMM) 뒤로는 신규 진입을 막는다. 청산은 계속 돈다. "
-                        "만쥬 49 §1-5 '오후 추격 매매는 철저히 배제'. 빈 값 = 끔")
+                        "오후 추격 매매 배제. 빈 값 = 끔")
     p.add_argument("--lock-wall-window", type=float, default=None,
-                   help="상한가 매수벽 감소를 재는 창(초). 만쥬 원문은 '직전 3초 피크 대비'")
+                   help="상한가 매수벽 감소를 재는 창(초). 기본 3")
     p.add_argument("--leader-stall", type=float, default=None,
-                   help="대장이 이 초 동안 신고가를 못 내면 이탈로 본다(만쥬 2026-08-29: "
-                        "'더 이상 올라가지 못하는 순간'). 0 = 끔. 원문에 수치 없음 — 임의값")
+                   help="대장이 이 초 동안 신고가를 못 내면 이탈로 본다. "
+                        "0 = 끔. 수치 근거 없음 — 임의값")
     p.add_argument("--leader-drop-ticks", type=int, default=None,
                    help="대장이 당일 고점 대비 이 호가 아래로 밀리면 이탈로 본다"
-                        "(만쥬: '하락하는 순간'). 0 = 끔. 원문에 수치 없음 — 임의값")
+                        "0 = 끔. 수치 근거 없음 — 임의값")
     p.add_argument("--big-trades", type=int, default=None,
                    help="대장에 필요한 대량체결(기본 5천만원↑) 최소 건수 — 만쥬 §5-1 "
                         "순간 체결량 확인. 0 = 끔")
     p.add_argument("--program-interval", type=float, default=0.0,
-                   help="장중 프로그램 수급 감시 주기(초) — 만쥬 \"쏟아내는 장세면 "
-                        "진입을 거릅니다\". 0 = 끔")
+                   help="장중 프로그램 수급 감시 주기(초) — 쏟아내는 장세면 "
+                        "신규 진입을 거른다. 0 = 끔")
     p.add_argument("--program-dump-qty", type=float, default=700.0,
-                   help="이만큼(천주) 이상 순매도면 신규 진입 차단. 만쥬 (비공개 회신 — 공개본에서 뺐다) = 700~800")
+                   help="이만큼(천주) 이상 순매도면 신규 진입 차단. 기본 700")
     p.add_argument("--program-market", default="P101",
                    help="P001 코스피 · P101 코스닥(기본)")
     p.add_argument("--no-themes", action="store_true",
@@ -2081,7 +2093,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="장중 시장 전체 대장 스캔 주기(초) — 만쥬 §2. ka10027 등락률 "
                         "상위를 훑어 대장·짝꿍을 구독에 추가한다. 0 = 끔")
     p.add_argument("--leader-scan-min-rt", type=float, default=20.0,
-                   help="대장 후보 최소 등락률(%%). 만쥬 \"20%% 이상으로 수직 상승\"")
+                   help="대장 후보 최소 등락률(%%)")
     p.add_argument("--leader-scan-min-wall", type=float, default=0.0,
                    help="상한가에 잠긴 종목에 요구할 최소 매수 잔량(주). 0 = 끔")
     p.add_argument("--leader-scan-max", type=int, default=6,
@@ -2124,7 +2136,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "(만쥬 §5-5). 0 = 끔 — 문턱이 낮으면 유니버스가 거덜난다")
     p.add_argument("--vi-near", type=float, default=None,
                    help="정적 VI 상단(당일 기준가 +10%%)까지 이 비율 이내면 발동 — "
-                        "만쥬 §5-1 \"VI 에 들어가는 순간\". VI 는 +10%%라 상한가(+30%%)"
+                        "VI 진입 순간 트리거. VI 는 +10%%라 상한가(+30%%)"
                         "보다 훨씬 이르다. 실시간 VI 피드 없이 가격으로 계산한다. 0 = 끔")
     p.add_argument("--limitup-require-surge", action="store_true",
                    help="상한가 방아쇠에 서지 조건까지 AND — 상한가 근처에서 정체된 "
@@ -2159,20 +2171,19 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--position-notional", type=float, default=100_000.0,
                    help="가상 포지션 1건 명목(원) — 수익률→원 환산. 기본 10만")
     g.add_argument("--stop-needs-leader-weak", action="store_true",
-                   help="대장이 상한가를 굳히고 있는 동안은 가격 손절을 잠근다 — 만쥬 "
-                        "\"2등주 가격 지표로 손절하지 말고 대장 이탈을 트리거로\". "
+                   help="대장이 상한가를 굳히고 있는 동안은 가격 손절을 잠근다 — "
+                        "대장 이탈을 청산 트리거로 쓴다. "
                         "재난선은 그대로 산다")
     g.add_argument("--shadow-when-blocked", action="store_true",
                    help="국면 차단(거래대금 미달)으로 안 산 신호도 그림자로 굴려 "
                         "\"샀으면 어땠나\"를 기록한다. 실현손익·킬스위치·주문엔 "
-                        "안 닿는다 — 만쥬 규칙대로 안 사는 건 그대로다")
+                        "안 닿는다 — 규칙대로 안 사는 건 그대로다")
     g.add_argument("--drawdown-krw", type=float, default=0.0,
-                   help="실현손익이 그날 정점 대비 이만큼(원) 밀리면 비중 축소 — 만쥬 "
-                        "\"과거 정점 대비 계좌가 꺾일 때 예수금을 1/3~1/5로\". 0 = 끔")
+                   help="실현손익이 그날 정점 대비 이만큼(원) 밀리면 비중 축소. 0 = 끔")
     g.add_argument("--drawdown-size", type=float, default=1.0 / 3,
-                   help="낙폭 방어 발동 시 명목 배수(만쥬: 1/3~1/5). 기본 1/3")
+                   help="낙폭 방어 발동 시 명목 배수. 기본 1/3")
     g.add_argument("--trail-arm", type=float, default=0.0,
-                   help="이만큼 오르면 트레일링 무장(만쥬: 0.03 = +3%%). 0 = 끔")
+                   help="이만큼 오르면 트레일링 무장(예 0.03 = +3%%). 0 = 끔")
     g.add_argument("--trail", type=float, default=0.0,
                    help="무장 후 고점 대비 이만큼 밀리면 청산. 0 = 끔")
     g.add_argument("--max-consecutive-losses", type=int, default=3,

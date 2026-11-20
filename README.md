@@ -176,7 +176,7 @@ flowchart TD
 | `validate.compare.paired_bootstrap` | `stats.paired_date_bootstrap` |
 | `cli_closebet` simnode 가드 | `runtime.require_host` |
 
-**계좌에 묶인 것(보유 3종목 `HELD_STOCK_CODES`)과 주문 HTTP 전송(`KiwoomOrderClient`)은 여기 남는다** —
+**계좌에 묶인 것(보유 종목 차단 목록 — 환경변수 `SCALP_HELD_STOCK_CODES`, 비면 주문 클라이언트가 거부)과 주문 HTTP 전송(`KiwoomOrderClient`)은 여기 남는다** —
 `OrderGuardConfig`/`OrderIntent` 는 코어 클래스를 서브클래스해 보유 종목 차단·종목명을 채운다.
 코어를 올릴 때는 태그를 바꾸고 `uv lock` 후 전체 테스트(`tests/test_kiwoom_order.py` 포함)를 돌린다.
 비용 상수(`COST_*`)는 각 스크립트의 고정 가정값이고, 일자별 거래세 스케줄은 `krx_quant_core.costs` 에 있다.
@@ -207,3 +207,7 @@ flowchart TD
 - **데이터는 커밋하지 않는다**
 
 
+
+## 라이선스
+
+[MIT](LICENSE)

@@ -1,12 +1,12 @@
 """체결 가속도(accel) 필터 문턱 sanity — 사전등록 `docs/research/manju/56`.
 
 `PairDetector.accel_min_ratio`(`src/scalp_it/realtime/pair_detector.py`)는
-배선돼 있으나 문턱값이 없다(타 트레이더 B B-1, 45번 "아직 안 붙인 것"). 대장 서지
+배선돼 있으나 문턱값이 없다(타 트레이더 B B-1, (비공개 — 공개본 미포함) "아직 안 붙인 것"). 대장 서지
 트리거(30초 +1.5%) 순간의 accel_ratio(뒤 15초/앞 15초 수익률) 분포를 재고,
 그 분위를 후보 문턱으로 삼아 pass/fail 두 군의 forward 수익을 비교한다.
 
 **대장 자신의 forward 수익으로 잰다 — 후속주(2등주) 페어링은 범위 밖이다**
-(사전등록 §1). 10거래일 전부 저유동성 국면(45번)이라 확정 배선 판단에는
+(사전등록 §1). 10거래일 전부 저유동성 국면((비공개 — 공개본 미포함))이라 확정 배선 판단에는
 쓰지 않는다(사전등록 §0·§6).
 
 사용:
@@ -161,7 +161,7 @@ def build_report(acc: Accum, date_from: str, date_to: str) -> str:
     L.append(f"# 체결 가속도(accel) 필터 sanity — {date_from} ~ {date_to}")
     L.append("")
     L.append("> 사전등록 `docs/research/manju/56`. 대장 자신의 forward 수익으로 잰다"
-              "(후속주 페어링은 범위 밖). 10거래일 전부 저유동성 국면(45번) — 확정 배선"
+              "(후속주 페어링은 범위 밖). 10거래일 전부 저유동성 국면((비공개 — 공개본 미포함)) — 확정 배선"
               " 판단에는 쓰지 않는다.")
     L.append("")
     L.append(f"- 종목 {acc.n_codes} · 서지 트리거 {acc.n_triggers:,}건")
@@ -267,7 +267,7 @@ def build_report(acc: Accum, date_from: str, date_to: str) -> str:
                   "(Q5>Q1) 을 모두 만족하는 (τ,N) 이 없다. §0 캐베어트(저유동성 국면) 때문에"
                   " '신호 없음'이 아니라 '이 10일 데이터로는 불충분'으로 읽는다.")
     L.append("")
-    L.append("_주의: 10거래일 전부 저유동성 국면(45번). 대장 자신의 forward 수익 대리 측정"
+    L.append("_주의: 10거래일 전부 저유동성 국면((비공개 — 공개본 미포함)). 대장 자신의 forward 수익 대리 측정"
               "(후속주 페어링 범위 밖). 활황 장세 재검증 전 실배선 금지(56번 §6)._")
     return "\n".join(L)
 

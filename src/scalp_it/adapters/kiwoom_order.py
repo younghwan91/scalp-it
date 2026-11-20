@@ -35,8 +35,10 @@
 안전 가드 (코드 레벨 불변)
 ========================
 
-1. **보유 3종목 하드 차단** — 보유A(000010)·보유B(000020)·보유C(222222)엔 어떤 주문도
-   못 나간다. 계좌 조회로 확인된 실보유. :data:`HELD_STOCK_CODES`. 계좌를 조회하면
+1. **보유 종목 하드 차단** — 운영자가 환경변수 ``SCALP_HELD_STOCK_CODES``(쉼표 구분
+   6자리 코드)로 적은 종목엔 어떤 주문도 못 나간다. **fail-closed**: 변수가 없거나 비면
+   :func:`held_stock_codes` 가 :class:`HeldStockConfigError` 를 던져 가드·클라이언트가
+   만들어지지 않는다(빈 차단 목록으로 도는 일이 없다). 계좌를 조회하면
    현재 보유 전체를 블록리스트에 **동적 병합**한다(:meth:`refresh_blocklist_from_account`).
 2. **화이트리스트** — 등록 쌍의 후속주 코드만 허용. 비어 있지 않으면 그 외 전부 차단.
 3. **수량 상한** — 주문당 ``max_qty``(기본 1주), 하드캡 ``max_qty_hard_cap``(10)는
@@ -56,13 +58,14 @@
 주문 값 객체(``OrderIntent``·``OrderResult``)·가드 판정(``OrderGuardConfig``·
 ``OrderGuard``)·취소 바디·프로토콜 상수·``normalize_code`` 는 daytrade-it 과 함께 쓰는
 ``krx_quant_core.execution``/``market.codes`` 로 옮겼다(판정 순서·사유 문자열까지 동일).
-이 파일에는 **계좌에 묶인 것**(보유 3종목 표)과 **HTTP 전송**만 남는다. 기존 이름은
+이 파일에는 **계좌에 묶인 것**(보유 종목 차단 목록 — 환경변수)과 **HTTP 전송**만 남는다. 기존 이름은
 전부 여기서 그대로 import 된다.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
@@ -105,26 +108,86 @@ from .kiwoom import (
 )
 
 __all__ = [
-    "HELD_STOCK_CODES",
+    "HELD_CODES_ENV",
+    "HeldStockConfigError",
     "KiwoomOrderClient",
     "OrderBlocked",
     "OrderGuardConfig",
     "OrderIntent",
     "OrderLogSink",
     "OrderResult",
+    "held_stock_codes",
     "normalize_code",
 ]
 
 _JSON_CT = "application/json;charset=UTF-8"
 
-#: **하드 차단** — 사용자 실보유 3종목. 계좌 조회(2026-08-25)로 확인:
-#: 보유A A000010 · 보유B A000020 · 보유C A222222. 절대 건들지 않는다.
-HELD_STOCK_CODES: frozenset[str] = frozenset({"000010", "000020", "222222"})
-HELD_STOCK_NAMES: dict[str, str] = {
-    "000010": "보유A",
-    "000020": "보유B",
-    "222222": "보유C",
-}
+#: 하드 차단 코드의 환경변수. 쉼표(또는 공백) 구분 6자리 코드. **레포에 값을 두지 않는다** —
+#: 운영 호스트의 ``~/.config/scalp-it/held.env`` 에만 있다(``pair_detect_daily.sh`` 가 읽는다).
+HELD_CODES_ENV = "SCALP_HELD_STOCK_CODES"
+#: 선택. ``코드:이름`` 쉼표 구분 — 로그 표시용일 뿐 차단과 무관하다.
+HELD_NAMES_ENV = "SCALP_HELD_STOCK_NAMES"
+
+
+class HeldStockConfigError(KiwoomError):
+    """보유 종목 차단 목록(``SCALP_HELD_STOCK_CODES``)이 없거나 잘못됐다 — fail-closed."""
+
+
+def held_stock_codes(environ: Mapping[str, str] | None = None) -> frozenset[str]:
+    """환경변수에서 하드 차단 종목 코드를 읽는다. 없거나 비었거나 형식이 틀리면 예외.
+
+    빈 차단 목록으로 실주문 경로가 도는 것을 막는 fail-closed 문이다. 호출 때마다 읽는다.
+    """
+    env = os.environ if environ is None else environ
+    raw = (env.get(HELD_CODES_ENV) or "").strip()
+    if not raw:
+        raise HeldStockConfigError(
+            f"{HELD_CODES_ENV} 가 비어 있다 — 보유 종목 차단 목록 없이는 주문 클라이언트를 만들지 않는다"
+            "(쉼표 구분 6자리 코드. 운영 호스트는 ~/.config/scalp-it/held.env)"
+        )
+    codes: set[str] = set()
+    for tok in raw.replace(",", " ").split():
+        bare = tok.upper().removeprefix("A")
+        code = normalize_code(tok)
+        if not (bare.isdigit() and len(bare) <= 6 and len(code) == 6):
+            raise HeldStockConfigError(f"{HELD_CODES_ENV} 에 6자리 코드가 아닌 값이 있다")
+        codes.add(code)
+    if not codes:  # "," 처럼 토큰이 하나도 없는 값 — 빈 차단 목록은 허용하지 않는다
+        raise HeldStockConfigError(f"{HELD_CODES_ENV} 에 코드가 하나도 없다")
+    return frozenset(codes)
+
+
+class _HeldCodes:
+    """``always_blocked`` 용 디스크립터 — 클래스 속성을 읽을 때마다 환경변수를 확인한다."""
+
+    def __get__(self, obj: object, owner: type | None = None) -> frozenset[str]:
+        return held_stock_codes()
+
+
+class _HeldNames(Mapping[str, str]):
+    """종목명 표시용 선택 매핑(``SCALP_HELD_STOCK_NAMES``). 없으면 빈 매핑 — 차단과 무관."""
+
+    @staticmethod
+    def _load() -> dict[str, str]:
+        out: dict[str, str] = {}
+        for item in (os.environ.get(HELD_NAMES_ENV) or "").split(","):
+            code, _, name = item.partition(":")
+            code = normalize_code(code)
+            if code and name.strip():
+                out[code] = name.strip()
+        return out
+
+    def __getitem__(self, key: str) -> str:
+        return self._load()[key]
+
+    def __iter__(self):
+        return iter(self._load())
+
+    def __len__(self) -> int:
+        return len(self._load())
+
+
+HELD_STOCK_NAMES: Mapping[str, str] = _HeldNames()
 
 
 class OrderBlocked(_CoreOrderBlocked, KiwoomError):
@@ -137,20 +200,20 @@ class OrderBlocked(_CoreOrderBlocked, KiwoomError):
 # --------------------------------------------------------------------- 설정
 
 class OrderGuardConfig(_CoreOrderGuardConfig):
-    """주문 안전 가드 파라미터. 보수적 기본값(코어와 같음) + **보유 3종목 상시 차단**.
+    """주문 안전 가드 파라미터. 보수적 기본값(코어와 같음) + **보유 종목 상시 차단(환경변수)**.
 
     코어는 블록리스트 기본이 비어 있고 ``always_blocked`` 를 무조건 병합한다. 여기서
-    그걸 :data:`HELD_STOCK_CODES` 로 채우므로 기본 생성·``with_allowed``·``with_blocked``
-    결과가 코어 이전 구현과 정확히 같다(보유 3종목은 무슨 설정을 줘도 빠지지 않는다).
+    그걸 환경변수 :data:`HELD_CODES_ENV` 로 채운다(보유 종목은 무슨 설정을 줘도 빠지지
+    않는다). 변수가 없거나 비면 **설정 객체 생성 자체가 예외**다(fail-closed).
     """
 
-    always_blocked: ClassVar[frozenset[str]] = HELD_STOCK_CODES
+    always_blocked: ClassVar[frozenset[str]] = _HeldCodes()  # type: ignore[assignment]
 
 
 # --------------------------------------------------------------------- 주문
 
 class OrderIntent(_CoreOrderIntent):
-    """낼(또는 낼 뻔한) 주문 하나. 종목명 표시는 보유 3종목 표를 쓴다."""
+    """낼(또는 낼 뻔한) 주문 하나. 종목명 표시는 선택 환경변수 표를 쓴다."""
 
     code_names: ClassVar[Mapping[str, str]] = HELD_STOCK_NAMES
 
@@ -186,6 +249,7 @@ class KiwoomOrderClient:
         verify_holdings_before_order: bool = True,
         holdings_ttl: float = 5.0,
     ) -> None:
+        held_stock_codes()  # fail-closed: 차단 목록 없이는 클라이언트를 만들지 않는다
         self._auth = KiwoomClient(
             appkey, secretkey, client=client, base_url=base_url, sleep=0.0, sleeper=sleeper
         )
@@ -203,7 +267,7 @@ class KiwoomOrderClient:
         # 들고 있다. 시계는 이 클라이언트의 naive KST 시계를 그대로 넘긴다.
         #
         # N-1: 실시간 보유 동적 병합은 **매수(buy)에만** 적용하는 별도 집합
-        # (OrderGuard.dynamic_buy_block). guard.blocklist(하드 3종목+설정)는 양방향 차단이지만,
+        # (OrderGuard.dynamic_buy_block). guard.blocklist(하드 보유 종목+설정)는 양방향 차단이지만,
         # 우리가 방금 매수해 보유가 된 후속주까지 거기에 넣으면 그 종목의 **청산 매도**까지
         # 막혀 실포지션이 무감시로 방치된다.
         self._order_guard = OrderGuard(
@@ -327,7 +391,7 @@ class KiwoomOrderClient:
         """계좌 보유 전체를 **매수 차단** 집합에 동적 병합. 보유 종목 매수 사고를 이중 차단.
 
         N-1: 청산 매도까지 막지 않도록 guard.blocklist(양방향) 가 아니라 매수 전용
-        집합(``OrderGuard.dynamic_buy_block``)에 병합한다. 하드코딩 3종목만 양방향 차단.
+        집합(``OrderGuard.dynamic_buy_block``)에 병합한다. 환경변수 보유 종목만 양방향 차단.
 
         반환: 새로 추가된 보유 코드 집합.
         """
@@ -409,7 +473,7 @@ class KiwoomOrderClient:
         ``blocked`` 결과를 돌려주고 절대 POST 하지 않는다.
 
         매수는 **주문 직전 실시간 잔고조회(fail-closed)** 로 보유종목을 한 번 더
-        차단한다 — 하드코딩 3종목 + 현재 보유 전종목. dry-run 도 동일 경로.
+        차단한다 — 환경변수 보유 종목 + 현재 보유 전종목. dry-run 도 동일 경로.
         """
         self.last_timing = None
         reason = self._preorder_holdings_guard(intent) or self.guard_reason(intent, ref_price)
