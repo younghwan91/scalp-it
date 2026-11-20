@@ -7,7 +7,7 @@
 **`scalp-it` = 트레이더 만쥬의 일중 단타 복제.** 장중 틱·호가 실시간 수집 →
 신호 탐지 → 실측. 저빈도 팩터(PEAD·저변동성·결합 북)는 `kr-quant` 로 이관했다.
 
-레포는 **private** 이다(2026-08-29 잠깐 public 이었다가 되돌림). 커밋 신원 가드가
+레포는 **public** 이다(2026-11-21 민감 이력을 지우고 다시 공개). 커밋 신원 가드가
 로컬 훅(`.githooks/pre-commit`)과 CI(`.github/workflows/commit-identity.yml`) 2중으로
 걸려 있다 — 클론하면 `git config core.hooksPath .githooks` 를 한 번 실행해야 한다.
 
