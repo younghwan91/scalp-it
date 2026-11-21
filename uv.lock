@@ -169,7 +169,7 @@ wheels = [
 
 [[package]]
 name = "krx-quant-core"
-version = "0.7.0"
+version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "kiwoom-client" },
@@ -177,9 +177,9 @@ dependencies = [
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pandas" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c3/ff/74511aa2bf05559dbe42dbf95a21f63e077d00ee5be6ebff6bea085fa272/krx_quant_core-0.7.0.tar.gz", hash = "sha256:8156bdf881704f271cf07a58baf40e554457f2f7f285f4dd3d19dd02ef87ecb0", size = 392467, upload-time = "2026-10-08T17:42:59.303Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/d9/f79d716345f447cdb3c03f93e6ebb1b06f1c3afb20b0b1289f98015afb64/krx_quant_core-0.9.0.tar.gz", hash = "sha256:f0a5f6d98194a49e09ce63773c87c0da0d8d224a004e6b812a1b0448536a4234", size = 405628, upload-time = "2026-11-21T06:17:18.513Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/52/25/a9a83b1319b7c335ab5367b22338c29b022b332564dad23aa3a36c7a093a/krx_quant_core-0.7.0-py3-none-any.whl", hash = "sha256:042f97bfb9ad157d82337a6250b84c8e70bf1c9db1cccacdb16fb634d03fc365", size = 233980, upload-time = "2026-10-08T17:42:57.611Z" },
+    { url = "https://files.pythonhosted.org/packages/c0/31/501d1b0c7fcc8691fac1b3f39477b7c8105d968874a229a0ca29dac2457c/krx_quant_core-0.9.0-py3-none-any.whl", hash = "sha256:fac3d06af0c6108de5822798daa2fe45e31e2c989d731df50dd803f89739a900", size = 312167, upload-time = "2026-11-21T06:17:16.794Z" },
 ]
 
 [package.optional-dependencies]
@@ -990,7 +990,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "kiwoom-client", specifier = ">=0.4.0" },
     { name = "krx-news-client", specifier = ">=0.4.0" },
-    { name = "krx-quant-core", extras = ["db"], specifier = "==0.7.0" },
+    { name = "krx-quant-core", extras = ["db"], specifier = "==0.9.0" },
     { name = "numba", marker = "extra == 'features'", specifier = ">=0.60" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "openpyxl", specifier = ">=3.1" },

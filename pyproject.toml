@@ -21,7 +21,7 @@ dependencies = [
     "krx-news-client>=0.4.0",
     # 시장규칙·주문가드·체결판정·검증통계 공통 코어(scalp-it·daytrade-it·swing-it 공유)
     # [db] = psycopg v3 — 없으면 runtime.runindex 가 조용히 None 을 돌려 kqc_runs 가 영영 빈다.
-    "krx-quant-core[db]==0.7.0",
+    "krx-quant-core[db]==0.9.0",
 ]
 
 [project.optional-dependencies]
