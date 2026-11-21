@@ -4,7 +4,7 @@
 장중 틱·호가 실시간 수집 → 신호 탐지 → 실측이 지금의 축이다.
 
 > ⚠️ **레포 이름은 역사의 잔재다.** 지금은 스윙이 아니라
-> **트레이더 만쥬의 일중 단타 시스템 복제**를 만든다.
+> **공개된 한 개인 트레이더의 일중 단타 시스템 복제**를 만든다.
 > **2026-09-16 밤부터 실주문 중단 — 지금은 dry-run**(주문 0). 2026-08-27~09-16 에만
 > `--confirm-real` 로 1주 실주문이 나갔다(`scripts/pair_detect_daily.sh` 헤더 참고).
 > 2026년 10월 사전등록 연구 프로그램(호가 흐름 스캘핑, LightGBM, Double-DQN, 대기열 인지 지정가 엔진)은
@@ -190,7 +190,7 @@ flowchart TD
 | [`docs/TRADING_CRITERIA.md`](docs/TRADING_CRITERIA.md) | **여기부터** — 날짜별 결정·현재 판정 상태 |
 | [`docs/PROMOTION_CHECKLIST.md`](docs/PROMOTION_CHECKLIST.md) | 실주문 재개 전 통과해야 하는 게이트 |
 | [`docs/PAIR_TRADING_RUNBOOK.md`](docs/PAIR_TRADING_RUNBOOK.md) | 짝꿍 실시간 매매 런북 — dry-run→실발주 순서, 안전장치 |
-| `docs/research/manju/` | 만쥬·스승 리서치, 사전등록, 판정 결과 |
+| `docs/research/manju/` | 원본 시스템 리서치, 사전등록, 판정 결과 |
 |  `docs/archive/` | v1·v2 시기 기록 + **반드시 기억할 실패 5가지** |
 
 ## 관련 레포
