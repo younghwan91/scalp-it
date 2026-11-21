@@ -29,7 +29,9 @@
   - ``dmst_stex_tp`` 거래소구분 = ``"KRX"`` (기본). "NXT"/"SOR" 가능.
   - ``stk_cd`` 종목코드(6자리). ``ord_qty`` 주문수량(문자열). ``ord_uv`` 주문단가.
   - ``trde_tp`` 매매구분 = ``"0"`` 보통(=지정가). "3"=시장가. 우리는 **지정가만**.
-* 취소 바디: ``{dmst_stex_tp, stk_cd, org_ord_no, ord_qty}`` — 원주문번호 필수.
+* 취소 바디(공식 스펙 kt10003, krx-quant-core ``cancel_body`` 0.9.0+):
+  ``{dmst_stex_tp, orig_ord_no, stk_cd, cncl_qty}`` — 원주문번호 필수, ``cncl_qty="0"`` 이면 잔량 전부.
+  0.7.0 까지의 ``{org_ord_no, ord_qty}`` 바디는 실취소 14건이 모두 ``return_code == 2`` 였다.
 * 성공 응답: ``return_code=0`` + ``ord_no`` (주문번호).
 
 안전 가드 (코드 레벨 불변)
