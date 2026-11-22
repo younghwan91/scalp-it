@@ -1,7 +1,18 @@
-# scalp-it
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/brand/wordmark-dark.svg">
+  <img alt="scalp-it" src="docs/images/brand/wordmark-light.svg" height="56">
+</picture>
 
-한국 주식(KOSPI·KOSDAQ) 단타 전략의 **검증 프레임워크이자 실행 도구**.
-장중 틱·호가 실시간 수집 → 신호 탐지 → 실측이 지금의 축이다.
+**한국어** | [English](README.en.md)
+
+**한국 주식(KOSPI·KOSDAQ) 단타 전략의 검증 프레임워크이자 실시간 수집·감지 실행 도구.** 장중 틱·호가 실시간 수집 → 짝꿍 신호 탐지 → 사후 실측이 핵심 축입니다.
+
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+- **단일 세션 수집 + 실시간 감지**: 키움 WebSocket(`0B` 체결·`0D` 호가) 프레임을 TimescaleDB에 저장하면서 동시에 `PairDetector`로 대장-후속 짝꿍 신호를 지연 없이 판정합니다.
+- **엄격한 가드레일과 dry-run 기본값**: `RiskGuard`(일일 손실한도·연속 손절·킬스위치)와 `krx-quant-core` 공용 주문가드를 통과해야만 실행 경로에 도달하며, `--confirm-real` 없이는 주문 0건(dry-run)으로 동작합니다.
+- **사전등록 & 단일 검증 규율**: 기각된 가설을 살리려고 파라미터를 사후 조정하지 않으며, 모든 판정과 결정은 [`docs/TRADING_CRITERIA.md`](docs/TRADING_CRITERIA.md)에 누적 기록합니다.
 
 > ⚠️ **레포 이름은 역사의 잔재다.** 지금은 스윙이 아니라
 > **공개된 한 개인 트레이더의 일중 단타 시스템 복제**를 만든다.
