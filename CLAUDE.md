@@ -13,7 +13,7 @@
   `daily-ops.workflow.json`이다. 크론을 바꾸면 JSON을 고쳐 `finalize`로 다시 만든다. archify 스킬은 커밋하지 않는다(18MB) —
   `npx -y skills@latest add https://archify.si --skill archify --agent claude-code --copy --yes`로 `.claude/skills/`에 설치한다
   (`skills-lock.json`이 출처를 고정). 헤드리스 검사는 AppArmor 때문에 `--no-sandbox` 래퍼를 `ARCHIFY_CHROME`으로 준다.
-- 낡은 문서: `docs/STATUS.md`(2026-08-29)와 README의 운영표·"실주문 1주" 문구는 옛 내용이다. 운영의 정본은
+- 낡은 문서: `docs/STATUS.md`(2026-08-29)와 `docs/guide.md`(구 README)의 운영표·"실주문 1주" 문구는 옛 내용이다. 운영의 정본은
   `deploy/crontab.simnode`와 `scripts/pair_detect_daily.sh`다.
 
 ## 명령
@@ -104,5 +104,5 @@ deploy/research_run.sh uv run python <학습·대규모 스크립트>  # 무거�
 ## Git
 - 커밋 신원은 레포 설정(`you@example.com`)을 그대로 쓴다. 세션 컨텍스트의 다른 이메일로 `git -c user.email=...`를
   쓰지 않는다. `.githooks/pre-commit`이 막는다(2026-08-29 사고). 새 클론에서는 `git config core.hooksPath .githooks`를 실행한다.
-- 커밋 메시지는 한국어 conventional 형식을 쓴다. 예: `fix(realtime): ...`, `research(106): ...`, `docs(108): ...`, `chore(cron): ...`
+- 커밋 메시지는 영문 Conventional Commits 형식을 쓴다. 예: `fix(realtime): ...`, `research(106): ...`, `docs(readme): ...`, `chore(cron): ...`
 - 데이터(`data/`, csv, parquet, jsonl)는 커밋하지 않는다. 예외는 `research/runs/*/RUNS.jsonl`과 연구 원장이다.
