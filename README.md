@@ -12,6 +12,7 @@
 현재는 2026-09-16부로 실주문을 중단하고 dry-run 감지기와 장중 수집 크론만 운영합니다.
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![CI](https://github.com/younghwan91/scalp-it/actions/workflows/ci.yml/badge.svg)](https://github.com/younghwan91/scalp-it/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 [가이드](docs/guide.md) · [판정 기록](docs/TRADING_CRITERIA.md) · [런북](docs/PAIR_TRADING_RUNBOOK.md) · [English](README.en.md)
@@ -23,14 +24,25 @@
 > 2026년 10월 사전등록 연구 프로그램은 **전진 판정 전부 기각으로 종결**했습니다(소매 왕복비용 미달성).
 > 현재 판정과 결정은 [`docs/TRADING_CRITERIA.md`](docs/TRADING_CRITERIA.md)에서 확인합니다.
 
-## 빠른 시작
+## 바로 해 보기
+
+키움 계좌·DB·API 키 없이 돌아갑니다. 커밋된 사전등록 판정 잠금 파일(`research/runs/*/FINAL.lock`)에서 전진 판정 10건을 읽어 표로 보여 줍니다(읽기 전용).
 
 ```bash
+git clone https://github.com/younghwan91/scalp-it && cd scalp-it
 uv sync --extra dev
-uv run pytest
+uv run python scripts/forward_verdicts.py   # 전진 최종 판정 모아보기
+uv run pytest -q                            # 단위 테스트
 ```
 
-클론 직후 키움 계좌나 DB 없이 단위 테스트를 바로 실행할 수 있습니다.
+## 핵심 결과
+
+부정적 결과를 그대로 공개합니다. 수치는 모두 레포의 문서에 근거가 있습니다.
+
+- **사전등록 전진 판정 10건 전부 기각**: 한 번만 측정한 평균이 −5.9 ~ −44.7bp, CI 하한은 전부 음수입니다. `uv run python scripts/forward_verdicts.py`, [판정 기록](docs/TRADING_CRITERIA.md).
+- **비용 벽**: 주식 왕복 실비용 약 41.5bp(거래세·농특세 20 + 수수료 3 + 스프레드 14~31). 매도 시점을 사후에 완벽히 고른 오라클로도 시장가 10초 스캘핑은 −35.9bp입니다. [한 장 요약](docs/research/manju/99-where-we-stand.md).
+- **유니버스 진단**: 일봉 10년 550만 관측에서 거래대금 상위 300종목의 일중 수익은 −28.0bp로, 이익은 야간에만 있고 일중은 잃는 구간입니다. 같은 문서.
+- **야간 선택(autoresearch) 기각**: 거래당 총 +45.3bp, 순 −18.0bp. [VERDICT](research/autoresearch/VERDICT.md).
 
 ## 주요 기능
 
@@ -86,12 +98,14 @@ python3 scripts/pair_daily_summary.py                        # 짝꿍 dry-run �
 | `docs/research/manju/` | 원본 시스템 리서치, 사전등록, 판정 결과 |
 | `docs/archive/` | v1·v2 시기 기록 및 실패 사례 5가지 |
 
-## 관련 레포
+## 같은 저자의 도구
 
 | 레포 | 역할 |
 |---|---|
 | [kiwoom-client](https://github.com/younghwan91/kiwoom-client) | 시세·수급·분봉·테마·주문 (182 REST + WebSocket) |
 | [krx-quant-core](https://github.com/younghwan91/krx-quant-core) | 국장 공통 코어 — 호가단위·상한가·세션·주문 가드·체결 판정·검증 통계 ([매핑 표](docs/guide.md#공통-코어-의존성-krx-quant-core)) |
+| [fin-checkup](https://github.com/younghwan91/fin-checkup) | 상장사 재무제표를 신호등으로 읽어 주는 무료 도구 — 지표 17개의 계산식·경계값 공개, 측정값만 |
+| [daytrade-it](https://github.com/younghwan91/daytrade-it) | 뉴스 데이트레이딩 전략에 실제 우위가 있는지 측정한 독립 리서치 기록 |
 | [swing-it](https://github.com/younghwan91/swing-it) | 검증 프레임워크 (walk-forward·음성대조) 및 이관된 저빈도 팩터 |
 | [quant-airflow](https://github.com/younghwan91/quant-airflow) | 일일 데이터 적재 및 TimescaleDB PRIMARY/리플리카 구성 ([DB 주의사항](docs/guide.md#db-의존성-주의)) |
 
