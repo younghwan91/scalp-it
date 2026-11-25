@@ -64,11 +64,14 @@ import argparse
 import hashlib
 import itertools
 import json
+import multiprocessing
 import os
 import statistics as st
 import sys
 import time
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import fields, replace
 from datetime import datetime
 from pathlib import Path
@@ -333,6 +336,22 @@ def run_serial(combos: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return results
 
 
+@contextmanager
+def _fork_start_method() -> Iterator[None]:
+    """``run_sweep`` 의 ``ProcessPoolExecutor`` 가 fork 로 자식을 띄우게 한다(끝나면 원래대로).
+
+    :data:`_CTX` 는 fork 상속으로만 자식에게 간다. Python 3.14 부터 Linux 기본 시작 방식이
+    ``forkserver`` 라 자식은 빈 ``_CTX`` 로 떠서 모든 조합이 ``KeyError('base')`` 로 죽었다.
+    ``run_sweep`` 은 ``mp_context`` 를 받지 않으므로 기본 컨텍스트를 잠시 fork 로 바꾼다.
+    """
+    prev = multiprocessing.get_start_method(allow_none=True)
+    multiprocessing.set_start_method("fork", force=True)
+    try:
+        yield
+    finally:
+        multiprocessing.set_start_method(prev, force=True)
+
+
 def run_engine(combos: list[dict[str, Any]], *, day: str, repo_root: Path | str = ROOT,
                n_jobs: int | None = None, cache: bool = True) -> list[dict[str, Any]]:
     """krx-quant-core ``run_sweep`` 으로 병렬 실행 + 시행 원장 기록. 순서는 ``combos`` 그대로.
@@ -349,8 +368,9 @@ def run_engine(combos: list[dict[str, Any]], *, day: str, repo_root: Path | str 
             print(hw, file=sys.stderr, flush=True)
     fp = _context_fingerprint()
     configs = [{**params, _CTX_KEY: fp} for params in combos]
-    sweep = run_sweep(_objective, configs, label=f"pair-sweep-{day}", repo_root=repo_root,
-                      data=DataSpec(day, day, "sweep"), n_jobs=n_jobs, cache=cache)
+    with _fork_start_method():
+        sweep = run_sweep(_objective, configs, label=f"pair-sweep-{day}", repo_root=repo_root,
+                          data=DataSpec(day, day, "sweep"), n_jobs=n_jobs, cache=cache)
     rows = sweep.frame.to_dict("records")
     errors = [r["error"] for r in rows if isinstance(r.get("error"), str)]
     if errors:

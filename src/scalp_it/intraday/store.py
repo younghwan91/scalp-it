@@ -135,8 +135,12 @@ _CARDINALITY_VIOLATION = "21000"
 FAST_PATH_MAX_AGE = timedelta(days=7)
 
 #: ``str(datetime)``·``isoformat()`` 이 내는 모양만 정규화한다. 소수 7자리 이상은 파이썬이 자르고 PG 는
-#: 반올림해서, 정규화하면 PG 가 다르게 보는 두 행을 합쳐 행을 잃는다.
-_NAIVE_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d{1,6})?")
+#: 반올림해서, 정규화하면 PG 가 다르게 보는 두 행을 합쳐 행을 잃는다. 시는 00~23, 분·초는 00~59 만 —
+#: ``24:00:00`` 은 Python 3.14 부터 ``fromisoformat`` 이 다음 날 0시로 받아들여, 파이썬 버전에 따라
+#: 키가 달라졌다. ``str(datetime)`` 은 그 모양을 내지 않으므로 정규식에서 막는다.
+_NAIVE_TS_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}[ T](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,6})?"
+)
 
 
 def ts_key(value: Any) -> Any:
@@ -150,7 +154,7 @@ def ts_key(value: Any) -> Any:
     if isinstance(value, str) and _NAIVE_TS_RE.fullmatch(value):
         try:
             return datetime.fromisoformat(value)
-        except ValueError:  # 24:00:00·23:59:60 처럼 PG 만 받는 값 — 그대로 둬 원래 경로로 보낸다
+        except ValueError:  # 2월 30일처럼 없는 날짜 — 그대로 둬 원래 경로로 보낸다
             return value
     return value
 

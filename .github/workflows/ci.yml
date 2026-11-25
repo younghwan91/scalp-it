@@ -19,10 +19,4 @@ jobs:
       - name: Forward verdicts (no keys, read-only)
         run: uv run python scripts/forward_verdicts.py
       - name: Tests
-        # Two tests already fail on main (found 2026-11-26): the pair-sweep parallel
-        # engine KeyError('base') and ts_key '24:00:00' handling. Excluded so CI is
-        # a usable gate for everything else; remove the deselects once fixed.
-        run: >-
-          uv run pytest -q
-          --deselect tests/test_pair_sweep_engine.py::test_engine_parallel_matches_legacy
-          --deselect tests/test_store_pg.py::test_ts_key_reads_only_str_datetime_shapes
+        run: uv run pytest -q
